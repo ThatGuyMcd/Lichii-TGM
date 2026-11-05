@@ -294,6 +294,7 @@ void VisitInfo(Io& io, I& info) {
     io(info.uses_is_helper_invocation);
     io(info.uses_subgroup_invocation_id);
     io(info.uses_subgroup_shuffles);
+    io(info.uses_software_matrix);
     io(info.uses_quad_shuffles);
     io(info.uses_patches);
     io(info.interpolation);

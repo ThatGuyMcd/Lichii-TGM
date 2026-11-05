@@ -600,6 +600,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                                                                      : GetTotalPipelineWorkers()},
       emission_budget{num_pipeline_workers},
       workers(num_pipeline_workers, "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
+      deferred_workers(1, "VkDeferredPipelines", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {}, Common::ThreadPlacement::Background),
       background_pipelines{64, 16 * 1024 * 1024, device.HasBrokenParallelShaderCompiling()} {
     const auto& float_control{device.FloatControlProperties()};
@@ -946,6 +947,7 @@ size_t KeptPipelines(size_t cached_at_boot) {
 PipelineCache::~PipelineCache() {
     serialization_stop.request_stop();
     background_pipelines.Stop();
+    deferred_workers.WaitForRequests();
     workers.WaitForRequests();
     HeavyBuildSlots::Instance().WaitForBuilds();
     serialization_thread.WaitForRequests();
@@ -1190,6 +1192,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     if (!pipeline_cache_filename.empty()) {
         background_pipelines.Stop();
+    deferred_workers.WaitForRequests();
         workers.WaitForRequests();
         HeavyBuildSlots::Instance().WaitForBuilds();
         serialization_thread.WaitForRequests();
@@ -1629,6 +1632,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     if (stop_loading.stop_requested()) {
         background_pipelines.Stop();
+    deferred_workers.WaitForRequests();
     } else {
         background_pipelines.Start(std::clamp<size_t>(num_pipeline_workers / 4, 1, 2));
     }
@@ -1832,7 +1836,7 @@ std::string PipelineCache::NativePreparationStamp(const std::filesystem::path& p
     }
     const auto properties = device.GetPhysical().GetProperties();
     std::string stamp = fmt::format(
-        "lichii-3 {} {} {} {} {} {} {}", content, LICHII_PREPARATION_REVISION, CACHE_VERSION,
+        "lichii-4 {} {} {} {} {} {} {}", content, LICHII_PREPARATION_REVISION, CACHE_VERSION,
         properties.vendorID, properties.deviceID, properties.driverVersion, properties.apiVersion);
     for (const auto byte : properties.pipelineCacheUUID) {
         stamp += fmt::format("{:02x}", byte);
@@ -2623,11 +2627,12 @@ ComputePipelineCacheEntry PipelineCache::CreatePrecompiledComputePipeline(
             precompiled_from_spirv.fetch_add(1, std::memory_order_relaxed);
             return module;
         };
+        const bool deferred = info.uses_software_matrix && device.DefersSoftwareMatrixPipelines();
         ComputePipelineCacheEntry entry{
             .pipeline = std::make_unique<ComputePipeline>(
                 device, scheduler, vulkan_pipeline_cache, descriptor_pool, guest_descriptor_queue,
-                descriptor_buffer_ring, &workers, nullptr, &shader_notify, info, vk::ShaderModule{},
-                key.unique_hash, std::move(emit_module)),
+                descriptor_buffer_ring, deferred ? &deferred_workers : &workers, nullptr, &shader_notify, info, vk::ShaderModule{},
+                key.unique_hash, std::move(emit_module), deferred),
             // The live environment answered the same questions, as the translation would have.
             .null_pointer_slots = env.IsNativeProgram() ? env.NullStoragePointerSlots()
                                                         : std::vector<std::pair<u32, u32>>{},
@@ -4079,7 +4084,8 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         const auto name{fmt::format("Shader {:016x}", key.unique_hash)};
         spv_module.SetObjectNameEXT(name.c_str());
     }
-    Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
+    const bool deferred = program.info.uses_software_matrix && device.DefersSoftwareMatrixPipelines();
+    Common::ThreadWorker* const thread_worker{deferred ? &deferred_workers : build_in_parallel ? &workers : nullptr};
     const Shader::Info info{std::move(program.info)};
     if (!thread_worker) {
         // The driver compiles on this thread. Precache and boot workers would otherwise hold their
@@ -4092,7 +4098,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
     return {.pipeline = std::make_unique<ComputePipeline>(
                 device, scheduler, vulkan_pipeline_cache, descriptor_pool, guest_descriptor_queue,
                 descriptor_buffer_ring, thread_worker, statistics, &shader_notify, info,
-                std::move(spv_module), key.unique_hash),
+                std::move(spv_module), key.unique_hash, std::function<vk::ShaderModule()>{}, deferred),
             .null_pointer_slots = env.IsNativeProgram() ? env.NullStoragePointerSlots()
                                                         : std::vector<std::pair<u32, u32>>{},
             .mapped_pointers =

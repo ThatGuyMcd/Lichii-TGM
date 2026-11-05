@@ -396,6 +396,9 @@ private:
     /// and yuzu_cmd load with a stop token that never stops
     std::stop_source serialization_stop;
     Common::ThreadWorker workers;
+    /// Software HMMA compute pipelines on drivers that take minutes on them
+    /// (Device::DefersSoftwareMatrixPipelines); nothing waits for this worker.
+    Common::ThreadWorker deferred_workers;
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;
     PipelinePrebuild<GraphicsPipelineCacheKey, GraphicsPipeline> background_pipelines;

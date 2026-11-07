@@ -414,6 +414,10 @@ private:
     FixedPipelineState native_state{};
     GraphicsPipeline* current_pipeline{};
 
+    /// EDEN_NX2_GPL: shader libraries shared by the graphics pipelines. Declared before the
+    /// pipelines, so it outlives them.
+    GraphicsPipelineLibraryCache graphics_libraries;
+
     /// Destroys graphics pipelines unused for a while, once the GPU is done with them.
     void EvictUnusedPipelines();
     void LogEvictionPolicy() const;

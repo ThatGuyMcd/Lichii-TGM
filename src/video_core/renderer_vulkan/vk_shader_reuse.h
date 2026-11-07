@@ -64,6 +64,8 @@ struct ShaderTranslationKey {
     u32 point_size;           ///< Float bits, only when a stage may write a fixed point size.
 
     /// Settings read by the translation passes and the SPIR-V backend.
+    u32 library_context;
+    u32 reserved{};
     u32 motion_context;
     u32 depth_context;
     u32 resolution_up_scale;
@@ -203,6 +205,8 @@ private:
 /// The shaders of a graphics pipeline, as built for the first key that needed them.
 struct ReusableShaders {
     std::shared_ptr<const GraphicsShaderModules> modules;
+    std::array<u128, Maxwell::MaxShaderStage> spirv_hashes{};
+    bool libraries{};
     std::array<Shader::Info, Maxwell::MaxShaderStage> infos;
     /// What translation asked each program's environment, in the order the environments come.
     boost::container::static_vector<TranslationReads, Maxwell::MaxShaderProgram> reads;

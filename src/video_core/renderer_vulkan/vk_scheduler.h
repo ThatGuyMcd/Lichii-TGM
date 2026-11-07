@@ -192,6 +192,10 @@ public:
     }
 
     /// Update the pipeline to the current execution context.
+    void ForgetGraphicsPipeline(const void* pipeline) {
+        if (state.graphics_pipeline == pipeline) state.graphics_pipeline = nullptr;
+    }
+
     bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline);
 
     /// Worker thread only: whether the bound graphics pipeline failed to build, so the draws

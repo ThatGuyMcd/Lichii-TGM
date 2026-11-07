@@ -311,6 +311,13 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
                 impl->rasterizer.FinishReport(cpu_addr, report_size);
             }
         };
+        // Counted on every way out, written or discarded: FlushQueryResults waits for these.
+        struct Settle {
+            DAddr address;
+            ~Settle() {
+                Tegra::Nx2CompleteAsyncReport(address);
+            }
+        } const settle{cpu_addr};
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Discard)) {
                 LOG_INFO(HW_GPU,
@@ -376,6 +383,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         }
     });
     if (is_fence) {
+        Tegra::Nx2IssueAsyncReport(cpu_addr);
         VideoCore::g_signaling_query_report_fence = !is_synced;
         impl->rasterizer.SignalFence(std::move(operation));
         VideoCore::g_signaling_query_report_fence = false;
@@ -415,6 +423,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             streamer->Free(new_query_id);
             return;
         }
+        Tegra::Nx2IssueAsyncReport(cpu_addr);
         impl->rasterizer.SyncOperation(std::move(operation));
     }
     auto [cont_addr, base] = gen_caching_indexing(cpu_addr);

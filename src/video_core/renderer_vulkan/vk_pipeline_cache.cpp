@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -764,7 +765,12 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       workers(num_pipeline_workers, "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
       deferred_workers(1, "VkDeferredPipelines", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {}, Common::ThreadPlacement::Background),
-      background_pipelines{64, 16 * 1024 * 1024, device.HasBrokenParallelShaderCompiling()} {
+      background_pipelines{64, 16 * 1024 * 1024, device.HasBrokenParallelShaderCompiling()},
+      num_translation_threads{use_asynchronous_shaders && !device.HasBrokenParallelShaderCompiling()
+                                  ? std::max<size_t>(1, num_pipeline_workers / 2)
+                                  : 0},
+      translation_workers(num_translation_threads, "VkPipelineTranslator", {},
+                          Common::ThreadPlacement::Background) {
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
     const VkShaderStageFlags subgroup_stages{device.GetSubgroupSupportedStages()};
@@ -3077,23 +3083,44 @@ void ReportUnsupportedMeshPipeline(const GraphicsPipelineCacheKey& key, const Pr
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     namespace StutterTrace = VideoCommon::StutterTrace;
-    const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
-    auto& pipeline{pair->second};
-    if (is_new) {
+    if (num_translated.load(std::memory_order_acquire) != 0) {
+        AdoptTranslatedGraphicsPipelines();
+    }
+    auto it{graphics_cache.find(graphics_key)};
+    if (it == graphics_cache.end()) {
+        if (translating_graphics.contains(graphics_key)) {
+            // Its translation is still running on a translation worker.
+            return nullptr;
+        }
         ReportNewPipelineKey(graphics_key);
-        pipeline = background_pipelines.Take(graphics_key);
+        std::unique_ptr<GraphicsPipeline> new_pipeline{background_pipelines.Take(graphics_key)};
         if (StutterTrace::Enabled()) {
-            StutterTrace::CountLookup(pipeline ? StutterTrace::Lookup::GraphicsBackground
+            StutterTrace::CountLookup(new_pipeline ? StutterTrace::Lookup::GraphicsBackground
                                       : disk_pipelines.contains(graphics_key.Hash())
                                           ? StutterTrace::Lookup::GraphicsRecorded
                                           : StutterTrace::Lookup::GraphicsNew);
         }
-        if (!pipeline) {
-            pipeline = CreateGraphicsPipeline();
+        if (!new_pipeline && CanTranslateAsynchronously()) {
+            GraphicsEnvironments environments;
+            GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
+            new_pipeline = CreateGraphicsPipelineFromReusedShaders(environments);
+            if (!new_pipeline) {
+                if (!QueueGraphicsTranslation(std::move(environments.envs))) {
+                    return nullptr;
+                }
+                it = graphics_cache.find(graphics_key);
+            }
         }
-    } else if (StutterTrace::Enabled() && pipeline && !pipeline->WasUsed()) {
+        if (it == graphics_cache.end()) {
+            if (!new_pipeline) {
+                new_pipeline = CreateGraphicsPipeline();
+            }
+            it = graphics_cache.emplace(graphics_key, std::move(new_pipeline)).first;
+        }
+    } else if (StutterTrace::Enabled() && it->second && !it->second->WasUsed()) {
         StutterTrace::CountLookup(StutterTrace::Lookup::GraphicsPrebuilt);
     }
+    auto& pipeline{it->second};
     if (!pipeline) {
         return nullptr;
     }
@@ -3115,6 +3142,9 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
 
 void PipelineCache::TickFrame() {
     ++frame_count;
+    if (num_translated.load(std::memory_order_acquire) != 0) {
+        AdoptTranslatedGraphicsPipelines();
+    }
     native_wait_budget_us =
         static_cast<s64>(Settings::values.native_pipeline_wait_ms.GetValue()) * 1000;
     while (!evicted_pipelines.empty() && scheduler.IsFree(evicted_pipelines.front().first)) {
@@ -3240,16 +3270,7 @@ void PipelineCache::LogEvictionPolicy() const {
     }
 }
 
-/// Returns `pipeline` when it is built or the current draw must wait for it, and nullptr when the
-/// draw may be skipped while it builds (asynchronous shaders; native draws only with
-/// EDEN_NX2_ASYNC_DISCARD=1). Each nullptr returned for an unbuilt pipeline is counted for the log.
-GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexcept {
-    if (pipeline->IsBuilt()) {
-        return pipeline;
-    }
-    if (!use_asynchronous_shaders) {
-        return pipeline;
-    }
+PipelineCache::PendingDrawPolicy PipelineCache::CurrentPendingDrawPolicy() const {
     // EDEN_NX2_ASYNC_DISCARD=1: skip native draws whose pipeline is still building instead of
     // waiting for it (experimental; the draw may be missing for a frame or more).
     /// Reads EDEN_NX2_ASYNC_DISCARD once and logs when it is on.
@@ -3302,9 +3323,41 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexc
     const bool can_discard = CanDiscardPendingDraw(
         native, maxwell3d->regs.zeta_enable != 0, draw_state.draw_element_count,
         draw_state.draw_element_count, native && mode != NativePendingMode::Wait);
-    bool discard = can_discard;
-    if (native) {
-        switch (DecideNativePending(mode, can_discard, native_wait_budget_us)) {
+    return {.native = native, .mode = mode, .can_discard = can_discard};
+}
+
+void PipelineCache::ChargeNativeWait(std::chrono::steady_clock::time_point begin) {
+    const auto spent = std::chrono::duration_cast<std::chrono::microseconds>(
+                           std::chrono::steady_clock::now() - begin)
+                           .count();
+    native_wait_budget_us -= spent;
+    native_wait_used_us += spent;
+    static auto window = std::chrono::steady_clock::now();
+    if (std::chrono::steady_clock::now() - window > std::chrono::seconds{10}) {
+        LOG_INFO(Render_Vulkan,
+                 "Bounded pipeline wait: {:.1f} ms spent in the last 10 s (budget {} ms "
+                 "per frame)",
+                 static_cast<double>(native_wait_used_us) / 1000.0,
+                 Settings::values.native_pipeline_wait_ms.GetValue());
+        native_wait_used_us = 0;
+        window = std::chrono::steady_clock::now();
+    }
+}
+
+/// Returns `pipeline` when it is built or the current draw must wait for it, and nullptr when the
+/// draw may be skipped while it builds (asynchronous shaders; native draws only with
+/// EDEN_NX2_ASYNC_DISCARD=1). Each nullptr returned for an unbuilt pipeline is counted for the log.
+GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexcept {
+    if (pipeline->IsBuilt()) {
+        return pipeline;
+    }
+    if (!use_asynchronous_shaders) {
+        return pipeline;
+    }
+    const PendingDrawPolicy policy{CurrentPendingDrawPolicy()};
+    bool discard = policy.can_discard;
+    if (policy.native) {
+        switch (DecideNativePending(policy.mode, policy.can_discard, native_wait_budget_us)) {
         case NativeDrawAction::Wait:
             discard = false;
             break;
@@ -3315,21 +3368,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexc
             const auto begin = std::chrono::steady_clock::now();
             const bool built =
                 pipeline->WaitBuilt(std::chrono::microseconds{native_wait_budget_us});
-            const auto spent = std::chrono::duration_cast<std::chrono::microseconds>(
-                                   std::chrono::steady_clock::now() - begin)
-                                   .count();
-            native_wait_budget_us -= spent;
-            native_wait_used_us += spent;
-            static auto window = std::chrono::steady_clock::now();
-            if (std::chrono::steady_clock::now() - window > std::chrono::seconds{10}) {
-                LOG_INFO(Render_Vulkan,
-                         "Bounded pipeline wait: {:.1f} ms spent in the last 10 s (budget {} ms "
-                         "per frame)",
-                         static_cast<double>(native_wait_used_us) / 1000.0,
-                         Settings::values.native_pipeline_wait_ms.GetValue());
-                native_wait_used_us = 0;
-                window = std::chrono::steady_clock::now();
-            }
+            ChargeNativeWait(begin);
             if (built) {
                 return pipeline;
             }
@@ -3859,7 +3898,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
     bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools,
     std::unique_ptr<EmissionBudget::Reservation> reservation,
-    std::array<std::vector<u32>, Maxwell::MaxShaderStage>* spirv_out, bool heavy_on_own_threads) try {
+    std::array<std::vector<u32>, Maxwell::MaxShaderStage>* spirv_out, bool heavy_on_own_threads,
+    bool allow_translation) try {
     LOG_DEBUG(Render_Vulkan, "{:#016x}", key.Hash());
     auto translation_key = MakeShaderTranslationKey(key, envs, device);
     translation_key.motion_context = VideoCommon::OotDlss::ObjectMotionRequested() ? 1U : 0U;
@@ -3883,6 +3923,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, worker, statistics,
             render_pass_cache, key, reused->modules, reused->InfoPointers());
     }
+    if (!reused && !allow_translation) return nullptr;
     boost::container::static_vector<RecordingEnvironment, Maxwell::MaxShaderProgram> recorders;
     boost::container::static_vector<Shader::Environment*, Maxwell::MaxShaderProgram> recorded_envs;
     for (auto* env : envs) {
@@ -4008,6 +4049,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 }
 
 namespace {
+/// Graphics pipelines translated on translation workers since the last 10 s report (GPU thread).
+struct {
+    u32 queued{};
+    size_t copied_bytes{}; ///< Constant buffer contents copied to detach their environments.
+    u32 adopted{};
+    u32 timed_out{}; ///< Draws skipped because the translation outlasted the wait budget.
+} async_translations;
+
 // Pipelines built on the GPU thread at run time (shader translation, and the SPIR-V unless a worker
 // emits it; the driver compile is on workers): the first 400 over 2 ms and every one over 100 ms
 // are logged, and the totals every 10 s, to tell how much of the stutter on new content is
@@ -4041,9 +4090,14 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
         LOG_INFO(Render_Vulkan,
                  "Runtime pipelines in the last 10 s: {} built, {:.1f} ms on the GPU thread "
                  "({:.1f} ms of it graphics SPIR-V), {:.1f} ms graphics SPIR-V on workers, "
-                 "{:.1f} ms of draws held for unbuilt pipelines",
+                 "{:.1f} ms of draws held for unbuilt pipelines; graphics translations on "
+                 "workers: {} queued ({} KiB of state copied), {} adopted, {} past the wait "
+                 "budget",
                  count, ms(total), ms(take(runtime_spirv_ns[0])), ms(take(runtime_spirv_ns[1])),
-                 ms(GraphicsPipeline::TakeHoldTime()));
+                 ms(GraphicsPipeline::TakeHoldTime()), async_translations.queued,
+                 async_translations.copied_bytes / 1024, async_translations.adopted,
+                 async_translations.timed_out);
+        async_translations = {};
         std::string reasons;
         {
             std::scoped_lock lock{precompiled_reasons_mutex};
@@ -4125,16 +4179,23 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
         pipeline = CreateGraphicsPipeline(pools, graphics_key, environments.Span(), nullptr, true,
                                           std::move(emit_pools), std::move(reservation));
     }
-    if (!pipeline || pipeline_cache_filename.empty()) {
-        return pipeline;
+    if (pipeline) {
+        SerializeGraphicsPipeline(graphics_key, std::move(environments.envs));
     }
-    if (disk_pipelines.contains(graphics_key.Hash())) {
+    return pipeline;
+}
+
+void PipelineCache::SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                              GraphicsEnvironmentArray envs) {
+    if (pipeline_cache_filename.empty()) {
+        return;
+    }
+    if (!disk_pipelines.insert(key.Hash()).second) {
         // In the disk cache already, only not built at boot.
         QueueVulkanPipelineCacheFlush();
-        return pipeline;
+        return;
     }
-    disk_pipelines.insert(graphics_key.Hash());
-    serialization_thread.QueueWork([this, key = graphics_key, envs = std::move(environments.envs)] {
+    serialization_thread.QueueWork([this, key, envs = std::move(envs)] {
         boost::container::static_vector<const GenericEnvironment*, Maxwell::MaxShaderProgram>
             env_ptrs;
         for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
@@ -4146,7 +4207,133 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
                           host_info.EnvironmentReadProperties());
     });
     QueueVulkanPipelineCacheFlush();
+}
+
+// Asynchronous translation of native graphics pipelines. A new pipeline whose draw may be skipped
+// (CurrentPendingDrawPolicy) and whose programs are all lowered native code, so translation reads
+// no guest memory for instructions, is translated with its driver compile on a translation
+// worker, from environments detached from the 3D engine (GraphicsEnvironment::Detach). The draw
+// waits for it within the frame's native wait budget and is skipped past that; a later lookup
+// adopts the pipeline. Compute pipelines stay synchronous: a skipped dispatch loses its outputs.
+bool PipelineCache::CanTranslateAsynchronously() const {
+    if (num_translation_threads == 0) {
+        return false;
+    }
+    const PendingDrawPolicy policy{CurrentPendingDrawPolicy()};
+    if (!policy.native || policy.mode == NativePendingMode::Wait || !policy.can_discard) {
+        return false;
+    }
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        if (graphics_key.unique_hashes[index] != 0 &&
+            (!shader_infos[index] || !shader_infos[index]->lowered_native)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipelineFromReusedShaders(
+    GraphicsEnvironments& environments) {
+    if (auto prepared = CreatePrecompiledGraphicsPipeline(environments)) {
+        if (PrecompiledAudit()) AuditPrecompiled(environments.Span(), false, graphics_key.Hash());
+        SerializeGraphicsPipeline(graphics_key, std::move(environments.envs));
+        return prepared;
+    }
+    const auto begin = std::chrono::steady_clock::now();
+    main_pools.ReleaseContents();
+    auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr,
+                                         true, nullptr, nullptr, nullptr, false, false)};
+    if (!pipeline) {
+        return nullptr;
+    }
+    ReportRuntimePipeline("Graphics (reused shaders)", begin,
+                          fmt::format("pipeline={:016x}", graphics_key.Hash()));
+    SerializeGraphicsPipeline(graphics_key, std::move(environments.envs));
     return pipeline;
+}
+
+bool PipelineCache::QueueGraphicsTranslation(GraphicsEnvironmentArray envs) {
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        if (graphics_key.unique_hashes[index] != 0) {
+            envs[index].Detach();
+            async_translations.copied_bytes += envs[index].SnapshotSizeBytes();
+        }
+    }
+    std::promise<void> done;
+    std::future<void> translated{done.get_future()};
+    translating_graphics.insert(graphics_key);
+    translation_workers.QueueWork([this, key = graphics_key, envs = std::move(envs),
+                                   done = std::move(done)]() mutable {
+        TranslateGraphicsPipeline(key, std::move(envs), std::move(done));
+    });
+    ++async_translations.queued;
+
+    const PendingDrawPolicy policy{CurrentPendingDrawPolicy()};
+    // No wait while more translations are pending than there are translation threads.
+    if (DecideNativePending(policy.mode, policy.can_discard, native_wait_budget_us) !=
+            NativeDrawAction::WaitTimed ||
+        translating_graphics.size() > num_translation_threads) {
+        return false;
+    }
+    const auto begin = std::chrono::steady_clock::now();
+    const bool in_time = translated.wait_for(std::chrono::microseconds{native_wait_budget_us}) ==
+                         std::future_status::ready;
+    ChargeNativeWait(begin);
+    if (!in_time) {
+        ++async_translations.timed_out;
+        return false;
+    }
+    AdoptTranslatedGraphicsPipelines();
+    return true;
+}
+
+void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                              GraphicsEnvironmentArray envs,
+                                              std::promise<void> done) {
+    ShaderPools pools;
+    boost::container::static_vector<Shader::Environment*, Maxwell::MaxShaderProgram> env_ptrs;
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        if (key.unique_hashes[index] != 0) {
+            env_ptrs.push_back(&envs[index]);
+        }
+    }
+    std::unique_ptr<GraphicsPipeline> pipeline;
+    try {
+        // Not built in parallel: the driver compile runs here too, so the pipeline can be drawn
+        // with as soon as the GPU thread adopts it.
+        pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, false);
+    } catch (const std::exception& exception) {
+        // Shader errors are handled inside; nothing else may end the worker thread.
+        LOG_ERROR(Render_Vulkan, "Graphics pipeline translation failed: {}", exception.what());
+    }
+    {
+        std::scoped_lock lock{translated_mutex};
+        translated_graphics.push_back({
+            .key = key,
+            .pipeline = std::move(pipeline),
+            .envs = std::move(envs),
+        });
+        num_translated.store(translated_graphics.size(), std::memory_order_release);
+    }
+    // Signalled after the lock is released: the GPU thread may be waiting to adopt this result.
+    done.set_value();
+}
+
+void PipelineCache::AdoptTranslatedGraphicsPipelines() {
+    std::vector<TranslatedGraphicsPipeline> translated;
+    {
+        std::scoped_lock lock{translated_mutex};
+        translated.swap(translated_graphics);
+        num_translated.store(0, std::memory_order_relaxed);
+    }
+    for (TranslatedGraphicsPipeline& result : translated) {
+        translating_graphics.erase(result.key);
+        ++async_translations.adopted;
+        if (result.pipeline) {
+            SerializeGraphicsPipeline(result.key, std::move(result.envs));
+        }
+        graphics_cache.emplace(result.key, std::move(result.pipeline));
+    }
 }
 
 ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(const ComputePipelineCacheKey& key,

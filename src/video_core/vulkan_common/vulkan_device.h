@@ -22,6 +22,8 @@
 #include "common/settings.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
+#include <vulkan/vulkan_beta.h>
+
 VK_DEFINE_HANDLE(VmaAllocator)
 VK_DEFINE_HANDLE(VmaPool)
 
@@ -1419,6 +1421,8 @@ private:
 #endif
     bool neural_rendering_supported{};
     VkPhysicalDeviceFaultFeaturesEXT device_fault_features{};
+    /// Enabled as the driver reports them (VK_KHR_portability_subset devices only).
+    VkPhysicalDevicePortabilitySubsetFeaturesKHR portability_subset_features{};
     VkPhysicalDeviceProperties2 properties2{};
 
     // Misc features

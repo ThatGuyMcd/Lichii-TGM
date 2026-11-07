@@ -144,6 +144,9 @@ public:
 
     bool CanReportMemoryUsage() const;
 
+    /// Bytes each cached buffer allocates past its size.
+    u64 GetBufferAllocationTail() const;
+
     u32 GetUniformBufferAlignment() const;
 
     u32 GetStorageBufferAlignment() const;

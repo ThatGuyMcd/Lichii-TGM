@@ -419,6 +419,22 @@ public:
                id != VK_DRIVER_ID_MESA_RADV;
     }
 
+    /// Whether pipelines linked from graphics pipeline libraries without link time optimization
+    /// draw correctly. On AMD's Windows driver such links draw white fringes around alpha blended
+    /// effects (clouds, particles and glows in a test title, RX 7800 XT), while optimized links
+    /// and monolithic pipelines from the same SPIR-V do not, so libraries are linked optimized
+    /// there. EDEN_NX2_GPL_FAST_LINK=1 allows fast links on any driver, =0 on none.
+    bool CanFastLinkGraphicsLibraries() const {
+        static const char forced = [] {
+            const char* value = std::getenv("EDEN_NX2_GPL_FAST_LINK");
+            return value == nullptr ? '\0' : value[0];
+        }();
+        if (forced == '0' || forced == '1') {
+            return forced == '1';
+        }
+        return GetDriverID() != VK_DRIVER_ID_AMD_PROPRIETARY;
+    }
+
     /// AMD's own drivers can spend minutes on a software HMMA compute pipeline (Ocarina of
     /// Time's upscaling network) and then fail it with VK_ERROR_OUT_OF_HOST_MEMORY. Such
     /// pipelines are built on their own worker and their dispatches skipped until they exist,

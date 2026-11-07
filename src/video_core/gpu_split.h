@@ -291,6 +291,10 @@ public:
     /// Writes are placed by the device memory the GPU addresses map to when noted and read: GPU
     /// maps drain the split first (GPU::MapInOrder), the unmaps it is sent count as anywhere.
     bool WaitForWrites(const Tegra::MemoryManager& memory, GPUVAddr address, u64 size);
+    /// Waits until the back executed the compute and copy work sent before the last NoteSync:
+    /// the writers a command list fetched now is ordered after. Returns whether any of it was
+    /// still queued.
+    bool WaitForSyncedWriters();
 
 private:
     friend struct GpuSplitTestAccess;

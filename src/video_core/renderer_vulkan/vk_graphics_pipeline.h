@@ -506,6 +506,8 @@ private:
     bool texture_memo_eligible{};
     VideoCommon::SampledTextureMemo texture_memo;
     bool writes_images{};
+    bool uses_page_table{};   ///< a stage reaches storage through the GPU page table
+    u64 page_table_address{}; ///< the page table of the draw being configured
 
     DeltaBlocker delta_blocker{};
     bool delta_views_valid{};

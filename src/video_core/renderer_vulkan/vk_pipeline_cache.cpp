@@ -990,6 +990,12 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_handle_table_arrays = device.IsSampledImageArrayNonUniformIndexingSupported(),
     };
     host_info.ApplyDescriptorLimitPolicy();
+    // Storage buffers and global memory through the GPU page table (the buffer cache keeps it on
+    // the same condition, BufferCacheRuntime::SupportsGpuPageTable).
+    profile.gpu_page_table = device.SupportsGpuPageTable();
+    host_info.gpu_page_table = profile.gpu_page_table;
+    LOG_INFO(Render_Vulkan, "Storage and global memory through the GPU page table: {}",
+             profile.gpu_page_table ? "yes" : "no");
 
     {
         // The descriptor arrays of bindless handle tables (HandleTableSize in texture_pass.cpp).
@@ -3788,7 +3794,7 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
                 }
             };
             add(info.constant_buffer_descriptors, nullptr);
-            add(info.storage_buffers_descriptors, &compute_storage_buffers);
+            add(Shader::BoundStorageBuffers(info), &compute_storage_buffers);
             add(info.texture_buffer_descriptors, &compute_sampled_images);
             add(info.image_buffer_descriptors, nullptr);
             add(info.texture_descriptors, &compute_sampled_images);
@@ -4060,7 +4066,7 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
              index < Maxwell::MaxShaderProgram; ++index) {
             if (key.unique_hashes[index] != 0) {
                 storage_buffers +=
-                    Shader::NumDescriptors(programs[index].info.storage_buffers_descriptors);
+                    Shader::NumDescriptors(Shader::BoundStorageBuffers(programs[index].info));
             }
         }
         // The fallback binds its output buffer (and, for task draws, payload,

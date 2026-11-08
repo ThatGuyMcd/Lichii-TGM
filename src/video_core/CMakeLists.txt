@@ -149,6 +149,8 @@ add_library(video_core STATIC
     nx2_download_trace.h
     nx2_read_trace.h
     pending_maps.h
+    perf_overlay.cpp
+    perf_overlay.h
     present.h
     pte_kind.h
     query_cache/bank_base.h
@@ -186,6 +188,9 @@ add_library(video_core STATIC
     renderer_vulkan/present/smaa.h
     renderer_vulkan/present/sgsr.cpp
     renderer_vulkan/present/sgsr.h
+    renderer_vulkan/present/perf_overlay_font.h
+    renderer_vulkan/present/perf_overlay_pass.cpp
+    renderer_vulkan/present/perf_overlay_pass.h
     renderer_vulkan/present/util.cpp
     renderer_vulkan/present/util.h
     renderer_vulkan/present/window_adapt_pass.cpp

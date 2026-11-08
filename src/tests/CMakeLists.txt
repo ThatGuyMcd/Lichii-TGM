@@ -93,6 +93,7 @@ add_executable(tests
     video_core/ampere_trap_guards.cpp
     video_core/async_draw_policy.cpp
     video_core/pipeline_eviction_policy.cpp
+    video_core/perf_overlay.cpp
     video_core/async_shader_emission.cpp
     video_core/heavy_build_slots.cpp
     video_core/pipeline_build.cpp

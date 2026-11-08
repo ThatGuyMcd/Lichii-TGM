@@ -197,6 +197,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Replaces Ocarina of Time's native upscaler using scene depth and camera motion. "
               "Works on any supported Vulkan GPU. NVIDIA DLSS takes precedence when enabled and "
               "available. RCAS Sharpness controls sharpening. Takes effect when a game starts."));
+    INSERT(Settings, anti_lag, tr("AMD Anti-Lag 2"),
+           tr("Lowers input latency on AMD Radeon GPUs (VK_AMD_anti_lag): the driver delays the "
+              "start of the game's next frame instead of letting frames queue, and holds the "
+              "frame rate limit there."));
     INSERT(Settings, amd_fsr_dir, tr("AMD FSR runtime folder"),
            tr("Folder with AMD's FSR runtime: amd_fidelityfx_loader_vk.dll, "
               "amd_fidelityfx_upscaler_vk.dll and amd_fidelityfx_framegeneration_vk.dll (AMD FSR "

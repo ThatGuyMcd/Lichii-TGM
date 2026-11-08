@@ -34,6 +34,7 @@
 #endif
 #include "video_core/hdr_capture.h"
 #include "video_core/guest_frame_timing.h"
+#include "video_core/host_vsync.h"
 #include "video_core/oot_dlss.h"
 #include "video_core/vulkan_common/amd_ffx.h"
 #ifdef _WIN32
@@ -167,6 +168,7 @@ try
     , memory_allocator(device)
     , state_tracker()
     , scheduler(device, state_tracker)
+    , anti_lag(device)
     , swapchain(*surface,
                 render_window.GetWindowInfo().render_surface,
                 device,
@@ -213,9 +215,17 @@ try
     VideoCore::FxChain::Instance().LoadFromSettings();
 #endif
 
-    present_manager.SetBeforePresent([](const Frame& frame) {
+    present_manager.SetBeforePresent([this](const Frame& frame) {
+        // Anti-Lag 2's present stage of the frame whose input stage was at its start.
+        anti_lag.Present(frame.guest_frame);
         VideoCore::GuestFrameTiming::RecordPresent({frame.guest_frame, frame.guest_start_ns});
     });
+    if (anti_lag.Available()) {
+        // The driver holds the frame rate where the display starts the game's next frame.
+        VideoCore::HostVsync::SetInputStage(
+            [this](u64 next_frame, u32 max_fps) { anti_lag.Input(next_frame, max_fps); }, true);
+        LOG_INFO(Render_Vulkan, "AMD Anti-Lag 2 (VK_AMD_anti_lag) on");
+    }
 
 #ifdef _WIN32
     // Ocarina of Time's AMD modes run on the HDR image only with FSR 4 (oot_dlss.h HdrInput).
@@ -239,6 +249,7 @@ try
 }
 
 RendererVulkan::~RendererVulkan() {
+    VideoCore::HostVsync::SetInputStage({}, false);
     scheduler.RegisterOnSubmit([] {});
     // Members are destroyed before the scheduler: run the commands that still point into them,
     // such as frame generation's optical flow copies.
@@ -258,6 +269,8 @@ void RendererVulkan::UpdatePacing() {
     SCOPE_EXIT {
         // The status the debug server reads, gathered here on the presenting thread.
         VideoCore::PresentStatus status{
+            .anti_lag = anti_lag.Available(),
+            .host_vsync = VideoCore::HostVsync::LastStart().has_value(),
             .refresh_hz = refresh_hz,
             .frame_cap = swapchain.GetFrameCap(),
         };

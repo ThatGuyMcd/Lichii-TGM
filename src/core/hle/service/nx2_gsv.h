@@ -37,6 +37,7 @@
 #include "core/core.h"
 #include "core/arm/dynarmic/window_trace.h"
 #include "core/device_memory.h"
+#include "core/file_sys/patch_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "core/frontend/emu_window.h"
@@ -45,6 +46,7 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_wait_stats.h"
 #include "video_core/guest_frame_timing.h"
+#include "video_core/host_vsync.h"
 #include "video_core/framebuffer_config.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_session.h"
@@ -1784,6 +1786,10 @@ public:
     }
 
     ~INx2Vi2Session() override {
+        // The display stops starting frames for this session's events.
+        if (m_vsync_timer) {
+            VideoCore::HostVsync::SetListener({});
+        }
         // The vsync callback may be running on the HostTiming thread: empty its event list under
         // its lock first (it holds the state, not this session), then close the events.
         {
@@ -2150,9 +2156,20 @@ private:
             const char* value = std::getenv("EDEN_NX2_FPS_LIMIT");
             return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
         }();
-        const u32 fps_limit = EffectiveFpsLimit(
+        // The user's limit lowered to the host's VRR frame cap; while a movie plays, a multiple
+        // of the movie's rate, so each movie frame gets as many presents.
+        const u32 fps_limit = MovieCadenceRate(
+            EffectiveFpsLimit(forced_fps_limit != 0 ? forced_fps_limit
+                                                    : Settings::values.fps_limit.GetValue(),
+                              system.GPU().Renderer().HostFrameCap()),
+            m_objects->movie_rate.load(std::memory_order_relaxed));
+        // The display starts the game's frames (HostVsync) no faster than this limit, and no
+        // faster than the console's vsync unless the game's frame rate is unlocked.
+        VideoCore::HostVsync::SetRate(DisplayStartRate(
+            FileSys::FrameRateUnlocked(system.GetApplicationProcessProgramID()), Nx2VsyncRateHz(),
             forced_fps_limit != 0 ? forced_fps_limit : Settings::values.fps_limit.GetValue(),
-            system.GPU().Renderer().HostFrameCap());
+            system.GPU().Renderer().HostFrameCap(),
+            m_objects->movie_rate.load(std::memory_order_relaxed)));
         const u32 speed_limit =
             Settings::values.use_speed_limit.GetValue() ? Settings::SpeedLimit() : 0;
         const auto vblank_interval =
@@ -2754,11 +2771,19 @@ private:
                 [vsync_state = m_vsync, objects = m_objects, &kernel = system.Kernel(), vsync_hz](
                     s64 scheduled,
                     std::chrono::nanoseconds late) -> std::optional<std::chrono::nanoseconds> {
+                    // While the display starts frames (HostVsync), this timer only steps in when
+                    // it stops doing so. Read before the vsync lock: HostVsync signals under its
+                    // own lock and then takes this one.
+                    const bool timer_signals = Service::TimerVsyncSignals(
+                        VideoCore::HostVsync::LastStart(), std::chrono::steady_clock::now(),
+                        VblankInterval);
                     std::scoped_lock lk{vsync_state->mutex};
-                    // The game starts its next frame here and samples input then.
-                    Common::InputLatency::FrameStart();
-                    for (auto* vsync : vsync_state->events) {
-                        vsync->Signal(kernel);
+                    if (timer_signals) {
+                        // The game starts its next frame here and samples input then.
+                        Common::InputLatency::FrameStart();
+                        for (auto* vsync : vsync_state->events) {
+                            vsync->Signal(kernel);
+                        }
                     }
                     const u32 rate_hz =
                         objects->movie_vsync.RateHz((scheduled + late.count()) / 1000, vsync_hz);
@@ -2800,6 +2825,17 @@ private:
                     return interval;
                 });
             system.CoreTiming().ScheduleLoopingEvent(VblankInterval, VblankInterval, m_vsync_timer);
+            if (VideoCore::HostVsync::Enabled()) {
+                // The host's display starts the game's frames: each frame on screen (or taken by
+                // AMD's frame generation swapchain) signals this session's vsync events.
+                VideoCore::HostVsync::SetListener([vsync_state = m_vsync, &kernel = system.Kernel()] {
+                    std::scoped_lock lk{vsync_state->mutex};
+                    for (auto* vsync : vsync_state->events) {
+                        vsync->Signal(kernel);
+                    }
+                });
+                LOG_INFO(Service, "nx2:vi2 vsync: started by the host display (timer as fallback)");
+            }
         }
     }
 

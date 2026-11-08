@@ -133,6 +133,8 @@ add_library(video_core STATIC
     nx2_fast_draw.cpp
     nx2_fast_draw.h
     guest_frame_timing.cpp
+    host_vsync.cpp
+    host_vsync.h
     guest_frame_timing.h
     oot_camera.h
     oot_dlss.h
@@ -297,6 +299,8 @@ add_library(video_core STATIC
     renderer_vulkan/descriptor_payload_growth.h
     vulkan_common/vulkan_debug_callback.cpp
     vulkan_common/vulkan_debug_callback.h
+    renderer_vulkan/vk_anti_lag.cpp
+    renderer_vulkan/vk_anti_lag.h
     vulkan_common/amd_ffx.cpp
     vulkan_common/amd_ffx.h
     vulkan_common/frame_gen_queues.h

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -77,6 +78,8 @@ struct BuiltinPatch {
     /// Applied only while this returns true (an env kill switch); null means always.
     bool (*env_enabled)() = nullptr;
     bool ultrawide = false;
+    /// Lets the game run faster than its console frame rate (FrameRateUnlocked()).
+    bool unlocks_frame_rate = false;
 };
 
 // EDEN_NX2_<NAME>: unset or empty gives the default, otherwise on unless it starts with '0'.
@@ -106,6 +109,9 @@ bool OotFastLookupEnabled() {
 using Core::OotUltrawide::UltrawideRendering;
 
 constexpr std::string_view UltrawideAddOn = "Ultrawide 21:9 (built-in)";
+
+/// The title whose main module got a frame rate unlock in its last PatchNSO, or 0.
+std::atomic<u64> frame_rate_unlocked_title{0};
 
 constexpr std::array<u8, 4> MAX_RESOLUTION_ORIGINAL{0xE8, 0x41, 0x00, 0x36};
 constexpr std::array<u8, 4> MAX_RESOLUTION_BRANCH{0x0F, 0x02, 0x00, 0x14};
@@ -525,6 +531,7 @@ constexpr std::array BUILTIN_PATCHES{
         .state_offset = 0x4E9FE00,
         .state_size = 16,
         .replaces = "Dynamic FPS by Dark (built-in)",
+        .unlocks_frame_rate = true,
     },
     BuiltinPatch{
         .name = "Dynamic FPS by Dark (built-in)",
@@ -534,6 +541,7 @@ constexpr std::array BUILTIN_PATCHES{
         .records = DYNAMIC_FPS_RECORDS,
         .state_offset = 0x4E9FE00,
         .state_size = 16,
+        .unlocks_frame_rate = true,
     },
     // Photo mode (core/ocarina_photo_mode.h): the emulator's free camera replaces the game's.
     BuiltinPatch{
@@ -946,6 +954,10 @@ std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualD
     return out;
 }
 
+bool FrameRateUnlocked(u64 title_id) {
+    return title_id != 0 && frame_rate_unlocked_title.load() == title_id;
+}
+
 std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::string& name) const {
     if (nso.size() < sizeof(Loader::NSOHeader)) {
         return nso;
@@ -1007,6 +1019,10 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
 
     const auto disabled = GetDisabledAddons();
     std::vector<std::string_view> replaced;
+    if (name == "main") {
+        u64 expected = title_id;
+        frame_rate_unlocked_title.compare_exchange_strong(expected, 0);
+    }
     for (const auto& patch : BUILTIN_PATCHES) {
         if (patch.title_id != title_id || patch.module != name) {
             continue;
@@ -1125,6 +1141,9 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
                  patch.records.size(), name);
         if (!patch.replaces.empty()) {
             replaced.push_back(patch.replaces);
+        }
+        if (patch.unlocks_frame_rate) {
+            frame_rate_unlocked_title.store(title_id);
         }
     }
 

@@ -1842,6 +1842,7 @@ void TextureCache<P>::TakeMirrorUpdates(bool compute, u64 draw_seq, Func&& func)
             update.slot = slot;
             update.physical = target.physical;
             update.copy_from = target.copy_from;
+            update.fresh = target.fresh;
             update.view = view_id;
             counted(update);
         }
@@ -1859,6 +1860,7 @@ void TextureCache<P>::TakeMirrorUpdates(bool compute, u64 draw_seq, Func&& func)
         update.slot = tic;
         update.physical = target.physical;
         update.copy_from = target.copy_from;
+        update.fresh = target.fresh;
         update.view = view_id;
         update.meta = meta;
         counted(update);
@@ -1883,6 +1885,7 @@ void TextureCache<P>::TakeMirrorUpdates(bool compute, u64 draw_seq, Func&& func)
         update.slot = slot;
         update.physical = target.physical;
         update.copy_from = target.copy_from;
+        update.fresh = target.fresh;
         update.sampler = id;
         update.class_key = sampler_classes.Key(sampler_class);
         counted(update);

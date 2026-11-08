@@ -143,6 +143,9 @@ private:
     /// With EDEN_DKB_FRAME_TRACE=1 and frame generation on, logs the presents of every 10 s.
     void LogPacing(const Frame* frame, std::chrono::steady_clock::duration took,
                    std::chrono::steady_clock::time_point now);
+    /// Waits until the copy that last waited on the current swapchain slot's acquire semaphore has
+    /// run (present thread only).
+    void WaitForSlot();
 
 private:
     const vk::Instance& instance;
@@ -180,6 +183,10 @@ private:
         std::chrono::nanoseconds spacing{};
         std::chrono::steady_clock::duration present_time{};
     } pacing_log;
+
+    /// Per swapchain slot (Swapchain::GetFrameIndex): signaled once the present thread's copy
+    /// that waited on that slot's acquire semaphore has run.
+    std::vector<vk::Fence> slot_fences;
 
     std::atomic<u32> guest_present_rate{};
     PresentCadence cadence;

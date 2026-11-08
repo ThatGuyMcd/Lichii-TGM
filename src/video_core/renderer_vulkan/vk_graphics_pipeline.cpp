@@ -2605,7 +2605,7 @@ bool InPart(GplPart part, size_t stage) {
 /// on or fast links are not usable on `device`.
 VkPipelineCreateFlags LibraryFlags(const Device& device) {
     VkPipelineCreateFlags flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR;
-    if (GplOptimizeEnabled() || !device.CanFastLinkGraphicsLibraries()) {
+    if (GplOptimizeEnabled() || device.KeepsGraphicsLibraryLinkInfo()) {
         flags |= VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT;
     }
     return flags;
@@ -3089,7 +3089,8 @@ bool GraphicsPipeline::MakeLibraryPipeline(VkRenderPass render_pass) {
             .basePipelineIndex = 0,
         },
         *pipeline_cache);
-    pipeline = LinkLibraries(render_pass, !device.CanFastLinkGraphicsLibraries());
+    pipeline = LinkLibraries(render_pass, device.LinksGraphicsLibrariesOptimized(
+                                              stage_infos[NUM_STAGES - 1].uses_quad_after_demote));
     linked = true;
     return true;
 }

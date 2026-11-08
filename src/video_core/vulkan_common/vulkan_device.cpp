@@ -2087,8 +2087,8 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
 
-    // VK_EXT_graphics_pipeline_library (EDEN_NX2_GPL): used only with fast linking, which makes
-    // a link cost a fraction of a millisecond.
+    // VK_EXT_graphics_pipeline_library. Without fast linking every link is optimized
+    // (GraphicsLibraryLinksOptimized).
     if (graphics_pipeline_library_requested) {
         const bool usable =
             graphics_pipeline_library_features.graphicsPipelineLibrary &&
@@ -2104,8 +2104,10 @@ void Device::RemoveUnsuitableExtensions() {
         graphics_pipeline_library_enabled = usable;
         if (usable) {
             LOG_INFO(Render_Vulkan,
-                     "Nx2Perf gpl: graphics pipeline libraries on (fast linking, independent "
-                     "interpolation decoration {})",
+                     "Nx2Perf gpl: graphics pipeline libraries on (fast linking {}, link time "
+                     "optimization info kept {}, independent interpolation decoration {})",
+                     properties.graphics_pipeline_library.graphicsPipelineLibraryFastLinking,
+                     KeepsGraphicsLibraryLinkInfo(),
                      properties.graphics_pipeline_library
                          .graphicsPipelineLibraryIndependentInterpolationDecoration);
         }

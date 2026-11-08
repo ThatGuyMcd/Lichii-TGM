@@ -341,6 +341,9 @@ struct Info {
     bool uses_sampled_1d{};
     bool uses_sparse_residency{};
     bool uses_demote_to_helper_invocation{};
+    /// Fragment stage: derivatives, implicit-LOD samples or quad reads may run after a demote
+    /// (UsesQuadAfterDemote).
+    bool uses_quad_after_demote{};
     bool uses_subgroup_vote{};
     bool removed_conditional_barrier{};
     bool uses_subgroup_mask{};

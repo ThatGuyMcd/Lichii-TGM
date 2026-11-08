@@ -105,6 +105,9 @@ private:
 
     void DiscardFrame(Frame* frame);
 
+    /// Sends the HDR10 metadata of the monitor's current state to an HDR10 swapchain.
+    void UpdateHdrMetadata();
+
     void SetImageCount();
 
     /// With EDEN_DKB_FRAME_TRACE=1 and frame generation on, logs the presents of every 10 s.
@@ -131,6 +134,7 @@ private:
     std::jthread present_thread;
     VkFormat transfer_source_format{VK_FORMAT_UNDEFINED};
     TransferMode transfer_mode{TransferMode::Unsupported};
+    u64 hdr_metadata_generation{}; ///< DisplayHdrMonitor generation of the metadata sent
     bool storage_supported;
     bool use_present_thread;
     std::atomic<std::size_t> image_count{};

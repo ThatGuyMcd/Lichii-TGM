@@ -191,6 +191,8 @@ struct InstanceDispatch {
     PFN_vkGetPhysicalDeviceToolProperties vkGetPhysicalDeviceToolProperties{};
     PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties{};
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR vkGetPhysicalDeviceSurfaceCapabilitiesKHR{};
+    /// Null unless the instance enabled VK_KHR_get_surface_capabilities2.
+    PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR vkGetPhysicalDeviceSurfaceCapabilities2KHR{};
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR vkGetPhysicalDeviceSurfaceFormatsKHR{};
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR vkGetPhysicalDeviceSurfacePresentModesKHR{};
     PFN_vkGetPhysicalDeviceSurfaceSupportKHR vkGetPhysicalDeviceSurfaceSupportKHR{};
@@ -376,6 +378,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdSetDescriptorBufferOffsetsEXT vkCmdSetDescriptorBufferOffsetsEXT{};
     PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets{};
     PFN_vkWaitForFences vkWaitForFences{};
+    PFN_vkWaitForPresent2KHR vkWaitForPresent2KHR{};
     PFN_vkWaitSemaphores vkWaitSemaphores{};
 };
 
@@ -1233,6 +1236,17 @@ public:
         dld->vkSetHdrMetadataEXT(handle, 1, &swapchain, &metadata);
     }
 
+    VkResult WaitForPresent2KHR(VkSwapchainKHR swapchain, u64 present_id,
+                                u64 timeout) const noexcept {
+        const VkPresentWait2InfoKHR info{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR,
+            .pNext = nullptr,
+            .presentId = present_id,
+            .timeout = timeout,
+        };
+        return dld->vkWaitForPresent2KHR(handle, swapchain, &info);
+    }
+
     VkResult WaitIdle() const noexcept {
         return dld->vkDeviceWaitIdle(handle);
     }
@@ -1285,6 +1299,11 @@ public:
     bool GetSurfaceSupportKHR(u32 queue_family_index, VkSurfaceKHR) const;
 
     VkSurfaceCapabilitiesKHR GetSurfaceCapabilitiesKHR(VkSurfaceKHR) const;
+
+    /// Fills capabilities (and its pNext chain) through VK_KHR_get_surface_capabilities2. Returns
+    /// false when the instance does not have it.
+    bool GetSurfaceCapabilities2KHR(VkSurfaceKHR surface,
+                                    VkSurfaceCapabilities2KHR& capabilities) const;
 
     std::vector<VkSurfaceFormatKHR> GetSurfaceFormatsKHR(VkSurfaceKHR) const;
 

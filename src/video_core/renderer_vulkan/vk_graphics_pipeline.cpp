@@ -701,6 +701,7 @@ GraphicsPipeline::GraphicsPipeline(
                     FallBackToMonolithic(render_pass);
                 }
                 if (made && !libraries_only && build_workers &&
+                    std::getenv("EDEN_NX2_EXP_NO_GPL_RELINK") == nullptr &&
                     !device.LinksGraphicsLibrariesOptimized(
                         stage_infos[NUM_STAGES - 1].uses_quad_after_demote) &&
                     (GplOptimizeEnabled() || GraphicsLibraryRelinksOptimized(

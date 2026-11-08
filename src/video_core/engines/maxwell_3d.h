@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "video_core/draw_class_stats.h"
+
 #include <array>
 #include <bitset>
 #include <cmath>

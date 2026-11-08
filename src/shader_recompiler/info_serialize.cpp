@@ -352,6 +352,8 @@ void VisitInfo(Io& io, I& info) {
     io(info.requires_coherent_image_memory);
     io(info.uses_cooperative_matrix);
     io(info.native_global_bounds);
+    io(info.storage_by_address);
+    io(info.uniforms_by_address);
     io(info.uses_atomic_image_u32);
     io(info.uses_shadow_lod);
     io(info.uses_rescaling_uniform);

@@ -295,6 +295,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_resource_pool.h
     renderer_vulkan/vk_scheduler.cpp
     renderer_vulkan/vk_scheduler.h
+    renderer_vulkan/vk_shader_object.cpp
+    renderer_vulkan/vk_shader_object.h
     renderer_vulkan/fragment_barrier_state.h
     renderer_vulkan/vk_shader_reuse.cpp
     renderer_vulkan/vk_shader_reuse.h

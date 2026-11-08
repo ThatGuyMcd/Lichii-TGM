@@ -22,6 +22,7 @@ add_executable(tests
     video_core/nx2_stutter_trace.cpp
     video_core/heap_mappings.cpp
     video_core/dynamic_state_delta.cpp
+    video_core/shader_object_cache.cpp
     video_core/host_mip_limits.cpp
     video_core/gpu_timestamp.cpp
     video_core/semaphore_waiters.cpp

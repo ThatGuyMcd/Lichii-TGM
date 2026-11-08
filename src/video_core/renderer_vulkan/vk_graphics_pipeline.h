@@ -29,6 +29,7 @@
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_pipeline_library.h"
+#include "video_core/renderer_vulkan/vk_shader_object.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -112,6 +113,7 @@ struct GraphicsPipelineLibraryParams {
         GraphicsPipelineLibraryCache* library_cache{};
         std::array<u128, Tegra::Engines::Maxwell3D::Regs::MaxShaderStage> spirv_hashes{};
         bool libraries_only{};
+        ShaderObject::Cache* shader_objects{};
     };
 
 class GraphicsPipeline {
@@ -121,7 +123,8 @@ public:
     /// Emits the stages' SPIR-V on a worker; with libraries it also returns each stage's SPIR-V
     /// hash (zero for absent stages).
     using EmitStagesFunc = std::function<std::shared_ptr<const GraphicsShaderModules>(
-        std::array<u128, NUM_STAGES>& spirv_hashes)>;
+        std::array<u128, NUM_STAGES>& spirv_hashes,
+        std::array<std::vector<u32>, NUM_STAGES>& spirv_code)>;
 
     /// Graphics pipeline libraries (EDEN_NX2_GPL): non-null `library_cache` builds the pipeline
     /// from per-stage libraries; the stages were emitted with one descriptor set per stage.
@@ -139,11 +142,23 @@ public:
         const std::array<const Shader::Info*, NUM_STAGES>& infos,
         EmitStagesFunc emit_stages = {},
         std::optional<MeshEmulationSetup> mesh_emulation = std::nullopt,
-        LibraryParams library_params = {});
+        LibraryParams library_params = {},
+        std::array<std::vector<u32>, NUM_STAGES> spirv_code = {});
 
     static std::chrono::nanoseconds TakeHoldTime() noexcept;
 
     bool HasDynamicVertexInput() const noexcept { return key.state.dynamic_vertex_input; }
+
+    /// Drawn with shader objects: every state the key holds is set dynamically, in a dynamic
+    /// rendering instance.
+    [[nodiscard]] bool UsesShaderObjects() const noexcept {
+        return shader_object_cache != nullptr;
+    }
+
+    /// The fixed-function state of the key (shader objects set it dynamically).
+    [[nodiscard]] const FixedPipelineState& State() const noexcept {
+        return key.state;
+    }
     const std::array<u64, 6>& ShaderHashes() const noexcept {
         return key.unique_hashes;
     }
@@ -461,8 +476,22 @@ private:
 
     vk::Pipeline MakePipeline(VkRenderPass render_pass, bool fast);
 
-    /// Library build (EDEN_NX2_GPL): gets or builds the two shader libraries, then (unless
-    /// libraries_only) links them with this pipeline's vertex input and fragment output parts.
+    /// Gets the stages' linked shader objects from the cache, building them where no pipeline
+    /// with the same shaders did.
+    void MakeShaderObjects();
+
+    /// The pipeline or shader objects exist (or failed: false).
+    [[nodiscard]] bool Bindable() const noexcept {
+        return !build->Failed() &&
+               (shader_object_cache ? shader_set != nullptr : static_cast<bool>(pipeline));
+    }
+
+    /// Records the bind of the pipeline (the optimized link when `optimized` and built) or the
+    /// shader objects. False when there is nothing to bind.
+    bool RecordBind(vk::CommandBuffer cmdbuf, bool optimized) const;
+
+    /// Library build: gets or builds the two shader libraries, then links them with this
+    /// pipeline's vertex input and fragment output parts.
     /// False when a library failed; the caller then builds the pipeline the monolithic way.
     bool MakeLibraryPipeline(VkRenderPass render_pass);
 
@@ -568,6 +597,12 @@ private:
     vk::Pipeline fragment_output_library;
     vk::DescriptorSetLayout fallback_empty_set_layout;
     bool linked{};
+
+    /// VK_EXT_shader_object: the shared sets and this pipeline's, and the SPIR-V it is made of
+    /// until then.
+    ShaderObject::Cache* const shader_object_cache;
+    std::shared_ptr<const ShaderObject::Set> shader_set;
+    std::array<std::vector<u32>, NUM_STAGES> spirv_code;
 
     vk::DescriptorSetLayout descriptor_set_layout;
     DescriptorAllocator descriptor_allocator;

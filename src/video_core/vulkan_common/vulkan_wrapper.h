@@ -380,6 +380,8 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdBindResourceHeapEXT vkCmdBindResourceHeapEXT{};
     PFN_vkCmdBindSamplerHeapEXT vkCmdBindSamplerHeapEXT{};
     PFN_vkCmdPushDataEXT vkCmdPushDataEXT{};
+    PFN_vkRegisterCustomBorderColorEXT vkRegisterCustomBorderColorEXT{};
+    PFN_vkUnregisterCustomBorderColorEXT vkUnregisterCustomBorderColorEXT{};
     PFN_vkCmdSetDescriptorBufferOffsetsEXT vkCmdSetDescriptorBufferOffsetsEXT{};
     PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets{};
     PFN_vkWaitForFences vkWaitForFences{};
@@ -1234,6 +1236,16 @@ public:
                                      const VkHostAddressRangeEXT* descriptors) const {
         Check(dld->vkWriteResourceDescriptorsEXT(handle, resources.size(), resources.data(),
                                                  descriptors));
+    }
+
+    /// Registers a custom border color for heap sampler descriptors; returns its index.
+    VkResult RegisterCustomBorderColorEXT(const VkSamplerCustomBorderColorCreateInfoEXT& color,
+                                          u32* index) const noexcept {
+        return dld->vkRegisterCustomBorderColorEXT(handle, &color, VK_TRUE, index);
+    }
+
+    void UnregisterCustomBorderColorEXT(u32 index) const noexcept {
+        dld->vkUnregisterCustomBorderColorEXT(handle, index);
     }
 
     /// Writes sampler descriptors for VK_EXT_descriptor_heap at host addresses.

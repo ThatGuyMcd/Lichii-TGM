@@ -265,6 +265,8 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdBindResourceHeapEXT);
     X(vkCmdBindSamplerHeapEXT);
     X(vkCmdPushDataEXT);
+    X(vkRegisterCustomBorderColorEXT);
+    X(vkUnregisterCustomBorderColorEXT);
     X(vkCmdSetDescriptorBufferOffsetsEXT);
     X(vkWaitForFences);
     X(vkWaitForPresent2KHR);

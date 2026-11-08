@@ -20,6 +20,7 @@
 #include "common/common_types.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "video_core/vulkan_common/frame_gen_queues.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 #include <vulkan/vulkan_beta.h>
@@ -352,6 +353,29 @@ public:
 
     const VkPhysicalDeviceOpticalFlowPropertiesNV& GetOpticalFlowProperties() const {
         return optical_flow_properties;
+    }
+
+    /// A queue of AMD's frame generation swapchain (see FrameGenQueuePlan).
+    struct FrameGenQueue {
+        vk::Queue queue;
+        u32 family{~0U};
+    };
+    [[nodiscard]] bool HasFrameGenQueues() const {
+        return frame_gen_queues.has_value();
+    }
+    [[nodiscard]] const FrameGenQueue& GetFrameGenPresentQueue() const {
+        return frame_gen_present_queue;
+    }
+    [[nodiscard]] const FrameGenQueue& GetAmdFrameGenComputeQueue() const {
+        return amd_frame_gen_compute_queue;
+    }
+    [[nodiscard]] const FrameGenQueue& GetFrameGenAcquireQueue() const {
+        return frame_gen_acquire_queue;
+    }
+
+    /// vkAntiLagUpdateAMD (VK_AMD_anti_lag), or null without the extension.
+    [[nodiscard]] PFN_vkAntiLagUpdateAMD GetAntiLagUpdate() const {
+        return anti_lag_update;
     }
 
     vk::Queue GetPresentQueue() const {
@@ -1337,6 +1361,18 @@ private:
     /// Sets up queue families.
     void SetupFamilies(VkSurfaceKHR surface);
 
+    /// Device features AMD's FSR runtime uses, kept alive until the device is created.
+    struct AmdFfxFeatures {
+        VkPhysicalDeviceShaderFloat8FeaturesEXT float8{};
+        VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR derivatives{};
+        VkPhysicalDeviceShaderIntegerDotProductFeatures integer_dot{};
+        VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering{};
+    };
+    /// AMD's FSR runtime: its device features and the frame generation swapchain's queues.
+    void SetupAmdFfx(std::vector<VkDeviceQueueCreateInfo>& queue_cis,
+                     std::vector<std::vector<float>>& priorities, AmdFfxFeatures& features,
+                     const void*& first_next);
+
     /// Collects information about attached tools.
     void CollectToolingInfo();
 
@@ -1372,6 +1408,13 @@ private:
     u32 frame_gen_compute_family = ~0U;
     u32 frame_gen_queue_index = 0;
     VkPhysicalDeviceOpticalFlowPropertiesNV optical_flow_properties{};
+    std::vector<bool> queue_family_present; ///< Per family: can present to the surface.
+    std::optional<FrameGenQueuePlan> frame_gen_queues; ///< AMD FG swapchain queues, when made.
+    FrameGenQueue frame_gen_present_queue;
+    FrameGenQueue amd_frame_gen_compute_queue;
+    FrameGenQueue frame_gen_acquire_queue;
+    VkPhysicalDeviceAntiLagFeaturesAMD anti_lag_features{};
+    PFN_vkAntiLagUpdateAMD anti_lag_update{};
     vk::PipelineCache static_pipeline_cache;
     bool owns_static_pipeline_cache{};
     u32 instance_version{};      ///< Vulkan instance version.

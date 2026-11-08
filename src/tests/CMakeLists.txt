@@ -113,6 +113,7 @@ add_executable(tests
     video_core/command_snapshot_suspensions.cpp
     video_core/pending_maps.cpp
     video_core/maxwell_fast_method.cpp
+    hid_core/npad_input_publish.cpp
     hid_core/sensor_info.cpp
     common/input_latency.cpp
     common/paged_scalar.cpp

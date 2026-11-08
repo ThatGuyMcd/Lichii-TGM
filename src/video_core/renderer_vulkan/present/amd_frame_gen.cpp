@@ -14,10 +14,13 @@
 #include "common/logging.h"
 #include "common/settings.h"
 #include "video_core/renderer_vulkan/present/amd_frame_gen.h"
+#include "video_core/renderer_vulkan/present/perf_overlay_pass.h"
+#include "video_core/renderer_vulkan/present/util.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/vulkan_common/amd_ffx.h"
 #include "video_core/vulkan_common/amd_ffx_api.h"
 #include "video_core/vulkan_common/vulkan_device.h"
+#include "video_core/vulkan_common/vulkan_memory_allocator.h"
 
 namespace Vulkan {
 
@@ -378,7 +381,7 @@ VkResult AmdFrameGen::CreateSwapchain(const VkSwapchainCreateInfoKHR& ci,
     desc.gameQueue = {.queue = *device.GetGraphicsQueue(),
                       .familyIndex = device.GetGraphicsFamily(),
                       .submitFunc = &SubmitToGameQueue};
-    desc.asyncComputeQueue = queue(device.GetFrameGenComputeQueue());
+    desc.asyncComputeQueue = queue(device.GetAmdFrameGenComputeQueue());
     desc.presentQueue = queue(device.GetFrameGenPresentQueue());
     desc.imageAcquireQueue = queue(device.GetFrameGenAcquireQueue());
     desc.header.pNext = &version.header;

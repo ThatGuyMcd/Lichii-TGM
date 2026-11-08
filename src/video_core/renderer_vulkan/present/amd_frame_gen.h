@@ -17,7 +17,9 @@
 namespace Vulkan {
 
 class Device;
+class MemoryAllocator;
 class Scheduler;
+struct PerfOverlayDraw;
 
 /// What Lichii knows of AMD's frame pacing for the FG swapchain. AMD's driver meters the flips
 /// itself (Driver-Assisted Frame Pacing, frame-interpolation-swap-chain.md:206-229) when all of

@@ -126,6 +126,8 @@ add_library(video_core STATIC
     page_filter.h
     native_qmd.h
     native_query_trace.h
+    native_verify.cpp
+    native_verify.h
     nx2.h
     nx2_cmdpage_diag.h
     nx2_debug_control.cpp

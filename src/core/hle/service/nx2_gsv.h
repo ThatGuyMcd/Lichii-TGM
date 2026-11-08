@@ -1544,6 +1544,9 @@ struct Nx2NativeObjects {
     std::map<u32, Image> images;
     std::optional<VideoTrace> last_video_write;
     Nx2MovieVsync movie_vsync; ///< Decoders mark movie frames, the vi2 vsync event reads it
+    /// Frame rate of the movie a video decoder session is playing (started, not stopped), or 0:
+    /// presents and the vsync event pace at a multiple of it meanwhile (MovieCadenceRate).
+    std::atomic<u32> movie_rate{0};
     u32 next_memory{1};
     u32 next_image{1};
 
@@ -2165,11 +2168,12 @@ private:
             m_objects->movie_rate.load(std::memory_order_relaxed));
         // The display starts the game's frames (HostVsync) no faster than this limit, and no
         // faster than the console's vsync unless the game's frame rate is unlocked.
-        VideoCore::HostVsync::SetRate(DisplayStartRate(
+        VideoCore::HostVsync::SetRate((std::min)(DisplayStartRate(
             FileSys::FrameRateUnlocked(system.GetApplicationProcessProgramID()), Nx2VsyncRateHz(),
             forced_fps_limit != 0 ? forced_fps_limit : Settings::values.fps_limit.GetValue(),
             system.GPU().Renderer().HostFrameCap(),
-            m_objects->movie_rate.load(std::memory_order_relaxed)));
+            m_objects->movie_rate.load(std::memory_order_relaxed)),
+            m_objects->movie_vsync.RateHz(system.CoreTiming().GetGlobalTimeUs().count(), ~u32{0})));
         const u32 speed_limit =
             Settings::values.use_speed_limit.GetValue() ? Settings::SpeedLimit() : 0;
         const auto vblank_interval =
@@ -2768,7 +2772,8 @@ private:
             m_vsync->rate_hz = vsync_hz;
             m_vsync_timer = Core::Timing::CreateEvent(
                 "nx2:vi2 vsync",
-                [vsync_state = m_vsync, objects = m_objects, &kernel = system.Kernel(), vsync_hz](
+                [vsync_state = m_vsync, objects = m_objects, &kernel = system.Kernel(), vsync_hz,
+                 VblankInterval](
                     s64 scheduled,
                     std::chrono::nanoseconds late) -> std::optional<std::chrono::nanoseconds> {
                     // While the display starts frames (HostVsync), this timer only steps in when
@@ -2926,6 +2931,7 @@ public:
 
     ~INx2VideoSession() override {
         m_ready->SetRunning(system.Kernel(), false);
+        SetMovieRate(0);
         if (m_worker.joinable()) {
             {
                 std::scoped_lock lk{m_mutex};
@@ -3015,7 +3021,24 @@ private:
         }
         m_ready->SetRunning(system.Kernel(), true);
         m_ready->Signal(system.Kernel());
+        {
+            std::scoped_lock lk{m_mutex};
+            SetMovieRate(m_rate);
+        }
         TipcReplyWords(ctx, {});
+    }
+
+    // Publishes this session's movie rate for present pacing (0: stopped). A session only
+    // clears the rate it set.
+    void SetMovieRate(u32 rate) {
+        const u32 published = rate >= 1 && rate <= 240 ? rate : 0;
+        if (published != 0) {
+            m_objects->movie_rate.store(published, std::memory_order_relaxed);
+        } else if (m_published_rate != 0) {
+            u32 expected = m_published_rate;
+            m_objects->movie_rate.compare_exchange_strong(expected, 0, std::memory_order_relaxed);
+        }
+        m_published_rate = published;
     }
 
     void Configure(HLERequestContext& ctx) {
@@ -3221,6 +3244,9 @@ private:
         }
         {
             std::scoped_lock lk{m_mutex};
+            if (ctx.GetCommand() == 207) {
+                SetMovieRate(0);
+            }
             if (Nx2VideoTraceEnabled()) {
                 LOG_INFO(Service,
                          "nx2:vdec trace {} syncpoint={} inputs={} decoded={} outputs={} "
@@ -3261,6 +3287,7 @@ private:
             CompleteHandedFences();
             m_clock.Reset();
             m_stream_start.reset();
+            SetMovieRate(0);
         }
         TipcReplyWords(ctx, {});
     }
@@ -3689,6 +3716,8 @@ private:
     std::string m_codec;
     u32 m_width{};
     u32 m_height{};
+    u32 m_rate{};           ///< Frames a second (Configure), 0 when not given
+    u32 m_published_rate{}; ///< Movie rate this session published (SetMovieRate)
     u32 m_handed{}; ///< Output images handed out (registered or released) so far
     u64 m_frames_out{};
     u64 m_decoded_frames{};

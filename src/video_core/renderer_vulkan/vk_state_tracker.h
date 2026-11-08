@@ -71,6 +71,12 @@ enum : u8 {
     ColorMask,
     ViewportSwizzles,
 
+    PolygonMode,        ///< polygon_mode_front (dynamic polygon mode)
+    ProvokingVertex,    ///< provoking_vertex (dynamic provoking vertex mode)
+    PatchControlPoints, ///< patch_vertices (dynamic patch control points)
+    PipelineState,      ///< a register FixedPipelineState::Refresh reads was written
+                        ///< (PipelineStateWatch)
+
     Last,
 };
 static_assert(Last <= (std::numeric_limits<u8>::max)());
@@ -261,6 +267,15 @@ public:
 
     bool TouchLineRasterizationMode() {
         return Exchange(Dirty::LineRasterizationMode, false);
+    }
+    bool TouchPolygonMode() {
+        return Exchange(Dirty::PolygonMode, false);
+    }
+    bool TouchProvokingVertex() {
+        return Exchange(Dirty::ProvokingVertex, false);
+    }
+    bool TouchPatchControlPoints() {
+        return Exchange(Dirty::PatchControlPoints, false);
     }
 
     bool ChangePrimitiveTopology(Maxwell::PrimitiveTopology new_topology) {

@@ -4200,7 +4200,26 @@ void RasterizerVulkan::BuildDynamicStateMask() {
         set({Dirty::VertexInput, VideoCommon::Dirty::VertexBuffers});
         slots |= Bit(Slot::VertexInput);
     }
-    if (pipeline_cache.UsesShaderObjects()) {
+    const bool shader_objects = pipeline_cache.UsesShaderObjects();
+    const DynamicFeatures& features = pipeline_cache.Features();
+    dyn_polygon_mode = shader_objects || features.has_dynamic_polygon_mode;
+    dyn_provoking_vertex = (shader_objects && device.IsExtProvokingVertexSupported()) ||
+                           features.has_dynamic_provoking_vertex;
+    dyn_line_stipple = (shader_objects && device.IsExtLineRasterizationSupported()) ||
+                       features.has_dynamic_line_stipple;
+    dyn_patch_control_points =
+        shader_objects || features.has_extended_dynamic_state_2_patch_control_points;
+    const auto dynamic_raster = [&](bool dynamic, int flag, Slot slot) {
+        if (dynamic) {
+            set({flag});
+            slots |= Bit(slot);
+        }
+    };
+    dynamic_raster(dyn_polygon_mode, Dirty::PolygonMode, Slot::PolygonMode);
+    dynamic_raster(dyn_provoking_vertex, Dirty::ProvokingVertex, Slot::ProvokingVertexMode);
+    dynamic_raster(dyn_line_stipple, Dirty::LineStippleParams, Slot::LineStipple);
+    dynamic_raster(dyn_patch_control_points, Dirty::PatchControlPoints, Slot::PatchControlPoints);
+    if (shader_objects) {
         // A pipeline's static state, set per draw from the bound pipeline's key.
         slots |= SHADER_OBJECT_SLOTS;
     }
@@ -4627,11 +4646,10 @@ u32 RasterizerVulkan::ComputeDynamicState(DynamicStateDelta::Slot slot,
         return two(words[0], words[1]);
     }
     case Slot::PolygonMode:
-        if (!so_state) {
+        if (!dyn_polygon_mode) {
             return 0;
         }
-        return one(static_cast<u32>(MaxwellToVK::PolygonMode(
-            FixedPipelineState::UnpackPolygonMode(so_state->polygon_mode))));
+        return one(static_cast<u32>(MaxwellToVK::PolygonMode(regs.polygon_mode_front)));
     case Slot::RasterizationSamples:
         if (!so_state) {
             return 0;
@@ -4650,10 +4668,10 @@ u32 RasterizerVulkan::ComputeDynamicState(DynamicStateDelta::Slot slot,
         }
         return one(static_cast<u32>(VK_TESSELLATION_DOMAIN_ORIGIN_UPPER_LEFT));
     case Slot::PatchControlPoints:
-        if (!so_state) {
+        if (!dyn_patch_control_points) {
             return 0;
         }
-        return one(std::min(so_state->patch_control_points_minus_one.Value() + 1,
+        return one(std::min(std::clamp<u32>(regs.patch_vertices, 1, 32),
                             device.GetMaxTessellationPatchSize()));
     case Slot::DepthClipEnable:
         // VK_EXT_depth_clip_enable is not enabled: depth clip follows depth clamp.
@@ -4663,26 +4681,20 @@ u32 RasterizerVulkan::ComputeDynamicState(DynamicStateDelta::Slot slot,
             return 0;
         }
         return one(so_state->ndc_minus_one_to_one.Value() != 0 ? 1U : 0U);
-    case Slot::ProvokingVertexMode: {
-        if (!so_state || !device.IsExtProvokingVertexSupported()) {
+    case Slot::ProvokingVertexMode:
+        if (!dyn_provoking_vertex) {
             return 0;
         }
-        // As GraphicsPipeline::FillStates picks it.
-        const bool last = so_state->provoking_vertex_last != 0;
-        const VkProvokingVertexModeEXT mode =
-            last ? (device.SupportsProvokingVertexLastMode()
-                        ? VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT
-                        : VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT)
-                 : (device.SupportsProvokingVertexFirstMode()
-                        ? VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT
-                        : VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT);
-        return one(static_cast<u32>(mode));
-    }
+        // UseLastProvokingVertex settles the device's modes, as the pipeline key does.
+        return one(static_cast<u32>(
+            FixedPipelineState::UseLastProvokingVertex(regs, pipeline_cache.Features())
+                ? VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT
+                : VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT));
     case Slot::LineStipple:
-        if (!so_state || !device.IsExtLineRasterizationSupported()) {
+        if (!dyn_line_stipple) {
             return 0;
         }
-        return two(so_state->line_stipple_factor, so_state->line_stipple_pattern);
+        return two(regs.line_stipple_params.factor, regs.line_stipple_params.pattern);
     case Slot::ExtraPrimitiveOverestimationSize:
         if (!so_state || !device.IsExtConservativeRasterizationSupported()) {
             return 0;
@@ -4833,6 +4845,9 @@ void RasterizerVulkan::UpdateDynamicStates(const GraphicsPipeline* pipeline) {
     }
     // Shader objects: the state of the bound pipeline's key, again when the pipeline changes or
     // the command buffer no longer holds it.
+    // HLE macros write transform_feedback_enabled without a dirty flag.
+    const bool xfb_changed =
+        dyn_provoking_vertex && regs.transform_feedback_enabled != last_xfb_enabled;
     const bool so_changed =
         pipeline != nullptr && pipeline->UsesShaderObjects() &&
         (pipeline != last_so_pipeline || dyn_state.Held(Slot::RasterizationSamples).empty());
@@ -4840,7 +4855,7 @@ void RasterizerVulkan::UpdateDynamicStates(const GraphicsPipeline* pipeline) {
         VideoCommon::NativeVerify::Enabled(VideoCommon::NativeVerify::Layer::DynState);
     // Nothing dirty: every slot below holds its value already.
     if (!topology_changed && !logic_op_changed && !color_output_changed && !pipeline_changed &&
-        !rt_formats_changed && !so_changed &&
+        !rt_formats_changed && !so_changed && !xfb_changed &&
         !(flags & dyn_state_mask).any()) {
         if (verify) {
             VerifyDynamicState(regs, pipeline, emulated_mesh);
@@ -4961,6 +4976,20 @@ void RasterizerVulkan::UpdateDynamicStates(const GraphicsPipeline* pipeline) {
         if (state_tracker.TouchAlphaToOneEnable() || pipeline_changed) {
             stage(Slot::AlphaToOneEnable);
         }
+    }
+
+    if (dyn_polygon_mode && state_tracker.TouchPolygonMode()) {
+        stage(Slot::PolygonMode);
+    }
+    if (dyn_provoking_vertex && (state_tracker.TouchProvokingVertex() || xfb_changed)) {
+        last_xfb_enabled = regs.transform_feedback_enabled;
+        stage(Slot::ProvokingVertexMode);
+    }
+    if (dyn_line_stipple && state_tracker.TouchLineStipple()) {
+        stage(Slot::LineStipple);
+    }
+    if (dyn_patch_control_points && state_tracker.TouchPatchControlPoints()) {
+        stage(Slot::PatchControlPoints);
     }
 
     if (device.IsExtExtendedDynamicState3BlendingSupported()) {

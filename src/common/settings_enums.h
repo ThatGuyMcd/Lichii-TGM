@@ -158,6 +158,7 @@ ENUM(DlssPreset, Auto, K, L, M);
 ENUM(OcarinaDlssMode, Quality, Balanced, Performance, UltraPerformance);
 ENUM(NvidiaDlssQuality, Automatic, Native);
 ENUM(NeuralRendering, Off, Standard, Natural, Cinematic);
+ENUM(HdrMode, Off, On, Auto);
 ENUM(AspectRatio, R16_9, R4_3, R21_9, R16_10, Stretch);
 ENUM(ConsoleMode, Handheld, Docked);
 ENUM(AppletMode, HLE, LLE, Disabled);

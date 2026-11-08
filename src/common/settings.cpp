@@ -51,6 +51,7 @@ SWITCHABLE(DlssPreset, false);
 SWITCHABLE(OcarinaDlssMode, false);
 SWITCHABLE(NvidiaDlssQuality, false);
 SWITCHABLE(NeuralRendering, false);
+SWITCHABLE(HdrMode, false);
 SWITCHABLE(AspectRatio, true);
 SWITCHABLE(AstcDecodeMode, true);
 SWITCHABLE(AstcRecompression, true);

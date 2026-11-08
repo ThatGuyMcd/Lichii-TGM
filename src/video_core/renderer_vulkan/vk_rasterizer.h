@@ -22,19 +22,21 @@
 #include "common/dkb_frame_trace.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/hazard_tracker.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/oot_network.h"
 #include "video_core/ocarina_upscale.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/blit_image.h"
+#include "video_core/renderer_vulkan/dynamic_state_delta.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_fence_manager.h"
+#include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
-#include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -323,6 +325,42 @@ private:
 
     void UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs);
 
+    /// The value a dynamic state slot takes for the registers and the draw's pipeline (null:
+    /// DrawTexture); 0 words when the device doesn't record it dynamically.
+    u32 ComputeDynamicState(DynamicStateDelta::Slot slot,
+                            const Tegra::Engines::Maxwell3D::Regs& regs,
+                            const GraphicsPipeline* pipeline, u32* out);
+    /// Stages the slot's value; without batching records it at once.
+    void StageDynamicState(DynamicStateDelta::Slot slot,
+                           const Tegra::Engines::Maxwell3D::Regs& regs,
+                           const GraphicsPipeline* pipeline);
+    /// Records the staged slots among `slots` as one command.
+    void RecordDynamicStatePacket(u64 slots);
+    /// EDEN_NX2_NATIVE_VERIFY=dynstate: every slot the draw uses holds what the registers give.
+    void VerifyDynamicState(const Tegra::Engines::Maxwell3D::Regs& regs,
+                            const GraphicsPipeline* pipeline, bool emulated_mesh);
+    /// Whether HostLogicOpEnable differs from what the command buffer holds (or it holds none).
+    [[nodiscard]] bool LogicOpEnableChanged(const Tegra::Engines::Maxwell3D::Regs& regs) const;
+    /// The viewports alone (clears).
+
+
+    void BuildDynamicStateMask();
+
+    using VertexInputLayout = DynamicStateDelta::VertexInputLayout;
+    /// Attribute formats, per binding stride, instancing and divisor, and the repacked bindings.
+    using VertexInputKey = std::array<u32, 32 + 32 * 3 + 1>;
+    [[nodiscard]] VertexInputKey MakeVertexInputKey(
+        const Tegra::Engines::Maxwell3D::Regs& regs) const;
+    [[nodiscard]] u32 MaxVertexInputAttributes() const;
+    [[nodiscard]] u32 MaxVertexInputBindings() const;
+    struct VertexInputKeyHash {
+        size_t operator()(const VertexInputKey& key) const noexcept;
+    };
+    void BuildVertexInputLayout(const Tegra::Engines::Maxwell3D::Regs& regs, u32 max_attributes,
+                                u32 max_bindings, VertexInputLayout& layout) const;
+    /// BufferCacheRuntime::SetVertexRepackLayout, skipped while its inputs are unchanged.
+    u32 UpdateVertexRepackLayout(bool dynamic_input);
+
     void FrameDumpPass(const Framebuffer* framebuffer);
     /// EDEN_NX2_PENDING_WRITE_TRACE: logs bound buffer ranges with collected, unapplied CPU writes.
     void TracePendingCpuWrites(bool compute, std::span<const u64> shader_hashes);
@@ -542,6 +580,29 @@ private:
     /// Nx2FastDraw::Enabled and VerifyEnabled as the drawing thread last read them.
     bool fast_draw_on{};
     bool fast_draw_verify{};
+    /// What the command buffer holds of each dynamic state, and the slots staged for the draw.
+    DynamicStateDelta::Tracker dyn_state;
+    /// The slots the draws record dynamically on this device (BuildDynamicStateMask).
+    u64 dyn_state_slots{};
+    DynamicStateDelta::ApplyOptions dyn_apply_options{};
+    /// One command per draw for the changed states (false: one per changed state).
+    bool dyn_state_batch{true};
+    /// The dirty flags UpdateDynamicStates consumes on this device: none set, nothing to record.
+    Tegra::Engines::Maxwell3D::DirtyState::Flags dyn_state_mask{};
+    bool dyn_state_mask_built{};
+    /// AMD with a dynamic logic op enable: VideoCommon::HostLogicOpEnable's float workaround.
+    bool logic_op_float_workaround{};
+
+    /// Vertex input layouts, built once and recorded by pointer
+    /// (immutable while the rasterizer lives).
+    std::unordered_map<VertexInputKey, std::unique_ptr<VertexInputLayout>, VertexInputKeyHash>
+        vertex_input_layouts;
+    VertexInputKey last_vertex_input_key{};
+    const VertexInputLayout* last_vertex_input_layout{};
+    /// Attribute formats and strides SetVertexRepackLayout last chose its repack mask from.
+    std::array<u32, 64> repack_key{};
+    bool repack_key_valid{};
+    bool repack_key_dynamic{};
 
     struct IndirectTrace {
         vk::Buffer readback;

@@ -260,6 +260,11 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkGetDescriptorSetLayoutBindingOffsetEXT);
     X(vkGetDescriptorEXT);
     X(vkCmdBindDescriptorBuffersEXT);
+    X(vkWriteResourceDescriptorsEXT);
+    X(vkWriteSamplerDescriptorsEXT);
+    X(vkCmdBindResourceHeapEXT);
+    X(vkCmdBindSamplerHeapEXT);
+    X(vkCmdPushDataEXT);
     X(vkCmdSetDescriptorBufferOffsetsEXT);
     X(vkWaitForFences);
     X(vkWaitForPresent2KHR);

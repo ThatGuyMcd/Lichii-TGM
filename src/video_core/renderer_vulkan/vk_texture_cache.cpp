@@ -44,6 +44,7 @@
 #endif
 #include "video_core/texture_cache/host_mip_limits.h"
 
+#include "video_core/dlss_contract.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/renderer_vulkan/blit_image.h"
 #include "video_core/renderer_vulkan/framebuffer_limits.h"
@@ -55,9 +56,9 @@
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/formatter.h"
+#include "video_core/texture_cache/pool_mirror.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/util.h"
-#include "video_core/dlss_contract.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #ifdef EGLANTINE_NVIDIA_DLSS
 #include "video_core/vulkan_common/nvidia_dlss.h"

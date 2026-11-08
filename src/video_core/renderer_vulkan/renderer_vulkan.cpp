@@ -424,9 +424,33 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     }
 
     scheduler.RequestOutsideRenderPassOperationContext();
-    blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
-                              render_window.GetFramebufferLayout(),
-                              present_manager.SwapchainImageCount(), output_format, hdr_output);
+    // Under AMD frame generation the overlay goes to the swapchain's UI layer, over real and
+    // generated frames alike, instead of into the frame it interpolates.
+    AmdFrameGen* const ui_frame_gen = swapchain.GetAmdFrameGen();
+    std::optional<PerfOverlayDraw> overlay_ui;
+    blit_swapchain.DrawToFrame(
+        device, rasterizer, frame, framebuffers, render_window.GetFramebufferLayout(),
+        present_manager.SwapchainImageCount(), output_format, hdr_output,
+        overlay_input ? &*overlay_input : nullptr, ui_frame_gen != nullptr ? &overlay_ui : nullptr);
+#ifdef _WIN32
+    if (ui_frame_gen != nullptr) {
+        ui_frame_gen->ComposeUi(memory_allocator, output_format,
+                                overlay_ui ? &*overlay_ui : nullptr);
+        if (!hdr_output) {
+            // This frame's scene before the HUD, where it is shown 1:1.
+            const auto& scene = rasterizer.OotHudless();
+            const auto& layout = render_window.GetFramebufferLayout();
+            ui_frame_gen->ComposeHudless(
+                memory_allocator, *frame->image, frame->image_format, {frame->width, frame->height},
+                scene.image, scene.extent,
+                scene.scene_frame + 1 ==
+                    VideoCommon::OotDlss::SceneFrame().load(std::memory_order_relaxed),
+                VkRect2D{.offset = {static_cast<s32>(layout.screen.left),
+                                    static_cast<s32>(layout.screen.top)},
+                         .extent = {layout.screen.GetWidth(), layout.screen.GetHeight()}});
+        }
+    }
+#endif
 
     VkSemaphore flow_wait = VK_NULL_HANDLE;
     if (!framebuffers.empty()) {

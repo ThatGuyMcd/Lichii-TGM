@@ -30,6 +30,7 @@
 #include "common/div_ceil.h"
 #include "common/dkb_frame_trace.h"
 #include "common/game_presets.h"
+#include "common/input_latency.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/ocarina_photo_mode.h"
@@ -2391,6 +2392,7 @@ private:
             .guest_frame = VideoCore::GuestFrameTiming::Current().id,
             .guest_start_ns = VideoCore::GuestFrameTiming::Current().start_ns,
             .linear_unit_luminance = linear_unit_luminance,
+            .input_ns = Common::InputLatency::CurrentFrameInput(),
         }};
         std::vector<Nvidia::NvFence> fences;
         if (fence_id < 192) {
@@ -2748,6 +2750,8 @@ private:
                     s64 scheduled,
                     std::chrono::nanoseconds late) -> std::optional<std::chrono::nanoseconds> {
                     std::scoped_lock lk{vsync_state->mutex};
+                    // The game starts its next frame here and samples input then.
+                    Common::InputLatency::FrameStart();
                     for (auto* vsync : vsync_state->events) {
                         vsync->Signal(kernel);
                     }

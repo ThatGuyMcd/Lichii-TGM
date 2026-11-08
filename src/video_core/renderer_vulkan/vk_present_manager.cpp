@@ -8,6 +8,7 @@
 
 #include "common/dkb_frame_trace.h"
 #include "common/display_hdr.h"
+#include "common/input_latency.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #ifdef _WIN32

@@ -11,6 +11,7 @@
 #include "common/assert.h"
 #include "common/bit_field.h"
 #include "common/common_types.h"
+#include "common/input_latency.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/core_timing.h"
@@ -144,6 +145,9 @@ void NPad::FreeAppletResourceId(u64 aruid) {
 }
 
 void NPad::ControllerUpdate(Kernel::KernelCore& kernel, Core::HID::ControllerTriggerType type, std::size_t controller_idx) {
+    if (type == Core::HID::ControllerTriggerType::Button) {
+        Common::InputLatency::Changed();
+    }
     // Input callbacks can arrive before SetNpadExternals installs the applet resource.
     const auto applet_resource = applet_resource_holder.applet_resource;
     if (applet_resource == nullptr) {

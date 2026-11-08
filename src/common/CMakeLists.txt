@@ -201,6 +201,8 @@ if(ARCHITECTURE_x86_64)
     target_sources(
         common
         PRIVATE
+        x64/monitor_wait.cpp
+        x64/monitor_wait.h
         x64/rdtsc.cpp
         x64/rdtsc.h
         x64/xbyak.h)

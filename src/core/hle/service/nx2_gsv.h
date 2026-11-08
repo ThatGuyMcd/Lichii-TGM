@@ -43,6 +43,7 @@
 #include "core/perf_stats.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_wait_stats.h"
+#include "video_core/guest_frame_timing.h"
 #include "video_core/framebuffer_config.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_session.h"
@@ -1991,6 +1992,8 @@ private:
                 m_stats = {.last_present = entered};
             }
         }
+        // The game starts its next frame once this returns.
+        system.GPU().GuestFrameBoundary();
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
                              static_cast<u32>(AvailableSlots >> 32), 0, 0, 0, 0});
@@ -2385,6 +2388,8 @@ private:
             .blending = Tegra::BlendMode::Opaque,
             .native_tiling = true,
             .color_space = color_space,
+            .guest_frame = VideoCore::GuestFrameTiming::Current().id,
+            .guest_start_ns = VideoCore::GuestFrameTiming::Current().start_ns,
             .linear_unit_luminance = linear_unit_luminance,
         }};
         std::vector<Nvidia::NvFence> fences;

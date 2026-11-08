@@ -33,6 +33,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/guest_frame_timing.h"
 #include "video_core/gpu.h"
 #include "video_core/pending_maps.h"
 #include "video_core/gpu_split.h"
@@ -663,6 +664,10 @@ const VideoCore::ShaderNotify& GPU::ShaderNotify() const {
 void GPU::RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
                            std::vector<Service::Nvidia::NvFence>&& fences) {
     impl->RequestComposite(std::move(layers), std::move(fences));
+}
+
+void GPU::GuestFrameBoundary() {
+    static_cast<void>(VideoCore::GuestFrameTiming::BeginFrame());
 }
 
 void GPU::WaitForComposite() {

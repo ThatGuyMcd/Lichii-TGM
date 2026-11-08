@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <condition_variable>
 #include <mutex>
 #include <boost/container/deque.hpp>
@@ -50,6 +51,12 @@ struct Frame {
     /// signals, so the graphics queue never waits for it.
     bool generated_async{};
     vk::Fence generated_ready;
+    /// The button change the guest frame shown sampled (Common::InputLatency), 0 for none.
+    u64 input_ns{};
+    /// The guest frame shown (GuestFrameTiming id, 0 when unknown) and when the guest started
+    /// it (steady clock ns), for Anti-Lag 2's present stage and the input-to-present latency.
+    u64 guest_frame{};
+    u64 guest_start_ns{};
 };
 
 class PresentManager {
@@ -68,6 +75,11 @@ public:
 
     /// Pushes a frame for presentation
     void Present(Frame* frame);
+
+    /// Called right before each present (on the presenting thread) with the frame.
+    void SetBeforePresent(std::function<void(const Frame&)> callback) {
+        before_present = std::move(callback);
+    }
 
     /// Recreates the present frame to match the provided parameters
     void RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat image_view_format,
@@ -122,6 +134,7 @@ private:
     Scheduler& scheduler;
     Swapchain& swapchain;
     vk::SurfaceKHR& surface;
+    std::function<void(const Frame&)> before_present;
     vk::CommandPool cmdpool;
     std::vector<Frame> frames;
     boost::container::deque<Frame*> present_queue;

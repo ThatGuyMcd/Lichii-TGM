@@ -172,7 +172,7 @@ ENUM(ExtendedDynamicState, Disabled, EDS1, EDS2, EDS3);
 ENUM(GpuLogLevel, Off, Errors, Standard, Verbose, All)
 ENUM(GameListMode, TreeView, GridView, CarouselView);
 ENUM(SpeedMode, Standard, Turbo, Slow);
-ENUM(FrameGenType, Lsfg, Fsr3);
+ENUM(FrameGenType, Lsfg, Fsr3, AmdFsr);
 ENUM(FrameGenMotion, Auto, Shader);
 ENUM(FrameGenFlowQuality, Fast, Medium, Best);
 ENUM(MeshShaderMode, Automatic, Native, Compute);

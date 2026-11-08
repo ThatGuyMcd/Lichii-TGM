@@ -132,6 +132,8 @@ add_library(video_core STATIC
     nx2_entry_check.h
     nx2_fast_draw.cpp
     nx2_fast_draw.h
+    guest_frame_timing.cpp
+    guest_frame_timing.h
     oot_camera.h
     oot_dlss.h
     nx2_list_indirect.h
@@ -660,6 +662,8 @@ endif()
 # externals/FidelityFX-API are compiled in; nothing of AMD's is linked or shipped.
 if (WIN32)
     target_sources(video_core PRIVATE
+        renderer_vulkan/present/amd_frame_gen.cpp
+        renderer_vulkan/present/amd_frame_gen.h
         renderer_vulkan/vk_amd_fsr4_upscaler.cpp
         renderer_vulkan/vk_amd_fsr4_upscaler.h
         vulkan_common/amd_ffx_api.h

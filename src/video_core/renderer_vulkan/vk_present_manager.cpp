@@ -253,7 +253,21 @@ Frame* PresentManager::GetRenderFrame() {
 }
 
 void PresentManager::Present(Frame* frame) {
-    if (!use_present_thread && Settings::values.frame_gen.GetValue()) {
+    // AMD FSR frame generation presents on the thread that configured and prepared the frame
+    // (FG 4.0.2's configure, prepare, present order; AMD's swapchain has its own pacing threads).
+    const bool amd_frame_gen =
+        Settings::values.frame_gen.GetValue() &&
+        Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::AmdFsr;
+    if (use_present_thread && amd_frame_gen) {
+        WaitPresent();
+        scheduler.WaitWorker();
+        CopyToSwapchain(frame);
+        std::scoped_lock lock{free_mutex};
+        free_queue.push_back(frame);
+        free_cv.notify_one();
+        return;
+    }
+    if (!use_present_thread && Settings::values.frame_gen.GetValue() && !amd_frame_gen) {
         // Frame generation was turned on from the status bar while a game runs. Earlier frames
         // were presented here, so none are in flight.
         StartPresentThread();
@@ -747,7 +761,13 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
         }
     }
 
-    // Present
+    // Present. A repeat of the last image is no new guest frame for Anti-Lag 2 or the latency.
+    if (!presenting_repeat) {
+        if (before_present) {
+            before_present(*frame);
+        }
+        Common::InputLatency::RecordPresent(std::exchange(frame->input_ns, 0));
+    }
     swapchain.Present(render_semaphore);
 }
 

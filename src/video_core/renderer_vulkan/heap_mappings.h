@@ -9,6 +9,7 @@
 
 #include "common/common_types.h"
 #include "shader_recompiler/shader_info.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 // Descriptor heap mode (VK_EXT_descriptor_heap) of a graphics pipeline: textures come from the
@@ -26,8 +27,8 @@ constexpr u32 SAMPLER_HEAP_INDEX_STRIDE = 16; ///< bytes per sampler descriptor
 constexpr u32 NUM_STAGES = 5;
 
 /// Push data offset of the stage tables' device addresses (u64 each): after the push block
-/// shaders read (Shader::Backend::SPIRV::PushConstantLayout, 80 bytes).
-constexpr u32 TABLE_PUSH_OFFSET = 80;
+/// shaders read (Shader::Backend::SPIRV::PushConstantLayout, including motion data).
+constexpr u32 TABLE_PUSH_OFFSET = Shader::Backend::SPIRV::PUSH_CONSTANT_LAYOUT_SIZE;
 constexpr u32 PUSH_DATA_SIZE = TABLE_PUSH_OFFSET + NUM_STAGES * 8;
 
 [[nodiscard]] constexpr u32 TablePushOffset(u32 stage) noexcept {
@@ -65,7 +66,8 @@ struct TableLayout {
         return false;
     }
     for (const Shader::Info& info : infos) {
-        if (!info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty() ||
+        if (info.oot_motion.history || info.oot_motion.image ||
+            !info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty() ||
             !info.image_descriptors.empty() ||
             (!info.constant_buffer_descriptors.empty() && !info.uniforms_by_address) ||
             (!info.storage_buffers_descriptors.empty() && !info.storage_by_address)) {

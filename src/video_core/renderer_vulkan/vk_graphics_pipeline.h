@@ -22,6 +22,7 @@
 #include "shader_recompiler/shader_info.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/renderer_vulkan/heap_mappings.h"
 #include "video_core/renderer_vulkan/pipeline_build.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -224,6 +225,12 @@ public:
     }
 
     /// Switch 2 task/mesh pipeline: drawn with vkCmdDrawMeshTasksEXT.
+    /// Descriptor heap mode (heap_mappings.h): textures from the heaps mirroring the guest
+    /// pools, no pipeline layout or descriptor sets.
+    [[nodiscard]] bool IsHeapMode() const noexcept {
+        return heap_mode;
+    }
+
     [[nodiscard]] bool IsMeshPipeline() const noexcept {
         return stage_infos[0].is_task || stage_infos[0].is_mesh;
     }
@@ -367,7 +374,10 @@ public:
     /// Fast draw (nx2_fast_draw.h): whether draws can keep the image views and samplers the last
     /// captured Configure resolved. Handles computed at draw time are resolved on every draw.
     [[nodiscard]] bool TakesDeltaDraws() const noexcept {
-        return delta_blocker == DeltaBlocker::None && delta_views_valid;
+        return !heap_mode && !std::ranges::any_of(stage_infos, [](const auto& info) {
+                   return info.storage_by_address || info.uniforms_by_address;
+               }) &&
+               delta_blocker == DeltaBlocker::None && delta_views_valid;
     }
 
     /// Why TakesDeltaDraws is false (diagnostics).
@@ -458,6 +468,18 @@ private:
 
     GplLibrary MakeShaderLibrary(GplPart part, const PipelineStates& states,
                                  VkRenderPass render_pass) const;
+
+    /// `flags` as VkPipelineCreateFlags2 with DESCRIPTOR_HEAP_BIT_EXT, chained in front of `next`
+    /// (for heap mode).
+    [[nodiscard]] VkPipelineCreateFlags2CreateInfo HeapFlags(VkPipelineCreateFlags flags,
+                                                             const void* next) const noexcept;
+
+    /// In heap mode, the stage's descriptor mappings chained in front of `next` (stored in
+    /// `infos`); otherwise `next`.
+    [[nodiscard]] const void* ChainHeapMappings(
+        size_t stage, const void* next,
+        std::array<VkShaderDescriptorSetAndBindingMappingInfoEXT, NUM_STAGES>& infos)
+        const noexcept;
 
     std::string ShaderLibraryKey(GplPart part, const PipelineStates& states,
                                  VkRenderPass render_pass) const;
@@ -564,6 +586,26 @@ private:
     VkDeviceSize last_descriptor_buffer_offset{};
     u32 last_descriptor_buffer_chunk{};
     u64 last_descriptor_buffer_generation{};
+    /// Heap draws: resolves the draw's texture handles for the heap mirror, applies the
+    /// mirror's updates and writes each stage's index table (heap_table_addresses); sets the
+    /// views' ids (feedback checks, barriers) and the per-element rescaling. False when the heap
+    /// is not usable.
+    bool WriteHeapTables(std::span<VideoCommon::ImageViewInOut> views,
+                         std::span<const u32> sampler_handles, bool via_header_index);
+    /// EDEN_NX2_NATIVE_VERIFY=bindless: one texture element of a heap draw against what the
+    /// bound path binds for its handle (view, image and sampler descriptor bytes).
+    void VerifyHeapElement(const TextureHeap& heap, u32 tic, u32 tsc,
+                           const Shader::TextureDescriptor& desc, u32 image_index,
+                           u32 sampler_index, VideoCommon::ImageViewId heap_view);
+    /// ConfigureDraw for heap draws: binds the heaps and pushes the push block as push data.
+    bool ConfigureHeapDraw(const RescalingPushConstant& rescaling,
+                           const RenderAreaPushConstant& render_area);
+
+    bool heap_mode{};
+    std::array<u64, NUM_STAGES> heap_table_addresses{};
+    std::vector<u8> heap_rescaled; ///< per texture element of the last heap draw
+    HeapMappings::TableLayout heap_layout;
+    std::array<std::vector<VkDescriptorSetAndBindingMappingEXT>, NUM_STAGES> heap_mappings;
 
     const bool worker_only_build;
     static inline std::atomic<u32> pending_builds{};

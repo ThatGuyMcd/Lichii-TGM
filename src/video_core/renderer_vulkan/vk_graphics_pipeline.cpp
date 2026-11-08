@@ -700,8 +700,11 @@ GraphicsPipeline::GraphicsPipeline(
                     library_cache->RecordFallback();
                     FallBackToMonolithic(render_pass);
                 }
-                if (made && !libraries_only && GplOptimizeEnabled() &&
-                    device.CanFastLinkGraphicsLibraries() && build_workers) {
+                if (made && !libraries_only && build_workers &&
+                    !device.LinksGraphicsLibrariesOptimized(
+                        stage_infos[NUM_STAGES - 1].uses_quad_after_demote) &&
+                    (GplOptimizeEnabled() || GraphicsLibraryRelinksOptimized(
+                        device.GetDriverID(), false, device.KeepsGraphicsLibraryLinkInfo()))) {
                     // Optimized link on a worker, swapped in at a later draw (ConfigureDraw)
                     // like the fast first build's optimized pipeline.
                     optimized_build.emplace(build_workers, [this, render_pass] {

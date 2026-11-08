@@ -38,6 +38,7 @@
 #include "video_core/nx2.h"
 #include "video_core/fsr.h"
 #include "video_core/render_trace.h"
+#include "video_core/renderer_vulkan/sampler_class_key.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #ifdef _WIN32
 #include "video_core/renderer_vulkan/present/amd_frame_gen.h"
@@ -5435,28 +5436,58 @@ Sampler::Sampler(TextureCacheRuntime& runtime, const Tegra::Texture::TSCEntry& t
     Emplace(VariantKey{});
 }
 
-Sampler::VariantKey Sampler::MakeKey(const ImageView& image_view, bool is_depth) const noexcept {
+u64 ImageView::SamplerClassKey() const noexcept {
+    SamplerViewTraits traits{
+        .anisotropy = SupportsAnisotropy(),
+        .integer = IsPixelFormatInteger(format),
+        .minmax = SupportsMinmaxFilter(),
+        .border_format = RequiresBorderColorFormat(),
+        .srgb = IsPixelFormatSRGB(format),
+        .identity_swizzle = HasIdentitySwizzle(),
+        .gpu_written = BackingImage() != nullptr &&
+                       True(BackingImage()->flags & ImageFlagBits::GpuModified),
+    };
+    if (!traits.identity_swizzle) {
+        const VkComponentMapping& mapping = Swizzle();
+        traits.swizzle = {static_cast<u8>(mapping.r), static_cast<u8>(mapping.g),
+                          static_cast<u8>(mapping.b), static_cast<u8>(mapping.a)};
+    }
+    return PackSamplerClassKey(traits);
+}
+
+u32 ImageView::PoolMetaBits() const noexcept {
+    namespace Meta = VideoCommon::PoolMirror::Meta;
+    u32 bits = 0;
+    if (!SupportsDepthComparison()) {
+        bits |= Meta::NO_DEPTH_COMPARE;
+    }
+    if (IsPixelFormatInteger(format) || IsPixelFormatASTC(format) || IsPixelFormatBCn(format) ||
+        IsPixelFormatETC2(format)) {
+        bits |= Meta::UNCOMPARABLE_FORMAT;
+    }
+    return bits;
+}
+
+Sampler::VariantKey Sampler::MakeKey(u64 view_key, bool is_depth) const noexcept {
+    const SamplerViewTraits view = UnpackSamplerClassKey(view_key);
     VariantKey key{};
-    key.reduce_anisotropy = has_added_anisotropy && !image_view.SupportsAnisotropy();
-    key.force_nearest = has_linear_filtering && IsPixelFormatInteger(image_view.format);
-    key.drop_reduction = has_minmax_reduction && !image_view.SupportsMinmaxFilter();
-    key.drop_custom_border = has_custom_border_colors && image_view.RequiresBorderColorFormat();
-    key.srgb_border = has_srgb_border_color && IsPixelFormatSRGB(image_view.format);
+    key.reduce_anisotropy = has_added_anisotropy && !view.anisotropy;
+    key.force_nearest = has_linear_filtering && view.integer;
+    key.drop_reduction = has_minmax_reduction && !view.minmax;
+    key.drop_custom_border = has_custom_border_colors && view.border_format;
+    key.srgb_border = has_srgb_border_color && view.srgb;
     // A compare-enabled TSC read by a plain (non-Dref) sample: Maxwell ignores the comparison,
     // Vulkan leaves it undefined and AMD returns the 0/1 compare result (Ocarina forest fog
     // composite read alpha 0 -> black screen). Use a variant without comparison.
     key.drop_compare = has_depth_comparison && !is_depth;
-    // The FSR bias is for the game's textures. Images the GPU wrote (render targets: bloom and
-    // blur chains, reflections, fog) keep the game's own bias, or they'd read a mip too sharp.
-    // After the upscaler failed this session every image does (the game's pass runs again).
     if (added_lod_bias != 0.0f) {
-        const Image* const image = image_view.BackingImage();
         key.drop_lod_bias = !VideoCommon::KeepOcarinaFsrLodBias(
-            *ocarina_fsr_failed, image != nullptr && True(image->flags & ImageFlagBits::GpuModified));
+            *ocarina_fsr_failed, view.gpu_written);
     }
-    if (needs_swizzle_mapping && !key.drop_custom_border && !image_view.HasIdentitySwizzle()) {
-        const VkComponentMapping& mapping = image_view.Swizzle();
-        key.swizzle = {mapping.r, mapping.g, mapping.b, mapping.a};
+    if (needs_swizzle_mapping && !key.drop_custom_border && !view.identity_swizzle) {
+        for (size_t i = 0; i < key.swizzle.size(); ++i) {
+            key.swizzle[i] = static_cast<VkComponentSwizzle>(view.swizzle[i]);
+        }
     }
     return key;
 }
@@ -5625,17 +5656,22 @@ bool Sampler::HeapSamplerCreateInfo(VkSampler variant, HeapSamplerInfo& out) con
     return true;
 }
 
-VkSampler Sampler::HandleFor(const ImageView& image_view, bool is_depth) {
-    VariantKey key = MakeKey(image_view, is_depth);
+VkSampler Sampler::HandleForClass(u64 view_key, bool is_depth) {
+    VariantKey key = MakeKey(view_key, is_depth);
     if (variants.size() >= MAX_VARIANTS) {
         key.srgb_border = false;
         key.swizzle = {};
     }
-    VkSampler handle = Find(key);
-    if (handle == VK_NULL_HANDLE) {
-        handle = Emplace(key);
-    }
+    const VkSampler handle = Find(key);
+    return handle != VK_NULL_HANDLE ? handle : Emplace(key);
+}
+
+VkSampler Sampler::HandleFor(const ImageView& image_view, bool is_depth) {
+    const u64 view_key = image_view.SamplerClassKey();
+    const VkSampler handle = HandleForClass(view_key, is_depth);
     if (VideoCommon::RenderTrace::Enabled() && (is_depth || has_depth_comparison)) {
+        // The variant cap leaves force_nearest alone.
+        const VariantKey key = MakeKey(view_key, is_depth);
         static thread_local std::set<std::tuple<VkSampler, VkImage, s32, s32, s32, bool, bool>> seen;
         if (seen.size() < 4096 &&
             seen.emplace(handle, image_view.ImageHandle(), image_view.range.base.level,

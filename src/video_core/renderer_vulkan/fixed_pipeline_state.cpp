@@ -15,6 +15,7 @@
 #include "common/settings.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/pipeline_cache_policy.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 
@@ -434,6 +435,8 @@ void FixedPipelineState::CanonicalizeNative(u32 generic_read_mask) noexcept {
             }
         }
         attribute_types &= keep;
+    } else {
+        VideoCommon::MaskStaticVertexInput(attributes, binding_divisors, generic_read_mask);
     }
     if (!extended_dynamic_state_3_blend) {
         size_t used = 0;

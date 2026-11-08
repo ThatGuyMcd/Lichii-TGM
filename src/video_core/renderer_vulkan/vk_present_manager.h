@@ -15,6 +15,8 @@
 
 #include "common/common_types.h"
 #include "common/polyfill_thread.h"
+#include "common/thread.h"
+#include "video_core/renderer_vulkan/present_cadence.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -43,6 +45,7 @@ struct Frame {
     vk::CommandBuffer cmdbuf;
     vk::Semaphore render_ready;
     vk::Fence present_done;
+    u64 ready_tick{}; ///< Scheduler tick of the submission that renders it
     bool storage_capable{};
     /// Time the present thread leaves before presenting the next frame. Frame generation sets it
     /// on generated frames, so they share the screen time evenly with the real ones.
@@ -96,6 +99,11 @@ public:
     /// How many additional frames can be queued without stalling the render thread
     [[nodiscard]] size_t MaxExtraFrames() const;
 
+    /// The rate the guest's presents are paced at, 0 when they are not (see PresentCadence).
+    void SetGuestPresentRate(u32 hz) {
+        guest_present_rate.store(hz, std::memory_order_relaxed);
+    }
+
     [[nodiscard]] std::size_t SwapchainImageCount() const { return swapchain_image_count; }
     [[nodiscard]] VkFormat SwapchainImageFormat() const { return swapchain_image_format; }
 
@@ -104,6 +112,16 @@ private:
     enum class TransferMode { Unsupported, Copy, Blit };
 
     void PresentThread(std::stop_token token);
+
+    /// Presents one frame on the next tick of the cadence at `rate` ticks per second: the oldest
+    /// queued frame the GPU has finished, or the last presented one again.
+    void PresentOnTick(std::stop_token token, u32 rate);
+
+    /// Returns the frame kept for re-presenting to the free queue.
+    void ReleaseHeldFrame();
+
+    /// Logs the cadence's work every 10 s.
+    void ReportCadence(PresentCadence::Clock::time_point now, u32 rate);
 
     void CopyToSwapchain(Frame* frame);
 
@@ -162,6 +180,17 @@ private:
         std::chrono::nanoseconds spacing{};
         std::chrono::steady_clock::duration present_time{};
     } pacing_log;
+
+    std::atomic<u32> guest_present_rate{};
+    PresentCadence cadence;
+    Common::Event cadence_wake; ///< Set to end a tick wait early (shutdown)
+    Frame* held_frame{};      ///< Last presented frame, presented again on ticks without a new one
+    bool presenting_repeat{}; ///< CopyToSwapchain is presenting held_frame again
+    struct CadenceStats {
+        PresentCadence::Clock::time_point since{};
+        u32 frames{}, repeats{}, late_frames{}, max_queued{};
+        s64 max_late_us{};
+    } cadence_stats;
 };
 
 } // namespace Vulkan

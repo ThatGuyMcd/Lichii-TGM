@@ -465,7 +465,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         frame_gen.GenerateInto(device, generated, generation);
         if (!generated->generated_async) {
             // Generated on the graphics queue (or not at all): this submission signals it.
-            scheduler.Flush(*generated->render_ready, std::exchange(flow_wait, VK_NULL_HANDLE));
+            generated->ready_tick = scheduler.Flush(*generated->render_ready, std::exchange(flow_wait, VK_NULL_HANDLE));
         }
         frame_gen.DumpInterpolation(generated);
         present_manager.Present(generated);
@@ -476,7 +476,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     if (trace) {
         scheduler.MarkFrameEnd(++trace_frame);
     }
-    scheduler.Flush(*frame->render_ready, flow_wait);
+    frame->ready_tick = scheduler.Flush(*frame->render_ready, flow_wait);
 
     const auto presenting = trace ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};

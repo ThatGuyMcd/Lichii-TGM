@@ -79,6 +79,7 @@ add_executable(tests
     video_core/maxwell_numeric.cpp
     video_core/maxwell_permute_lod.cpp
     video_core/submission_policy.cpp
+    video_core/present_cadence.cpp
     video_core/present_mode_policy.cpp
     video_core/native_pending_policy.cpp
     video_core/framebuffer_clear_layers.cpp

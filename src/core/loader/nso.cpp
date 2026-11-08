@@ -27,6 +27,7 @@
 #include "core/hle/kernel/k_thread.h"
 #include "core/loader/nso.h"
 #include "core/memory.h"
+#include "core/oot_zstd_hook.h"
 
 #ifdef HAS_NCE
 #include "core/arm/nce/patcher.h"
@@ -343,6 +344,8 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     process.AddGuestFunctions(build_id, load_base);
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x}, build id {})", nso_file.GetName(),
              load_base, image_size, build_id);
+    Core::OotZstd::PatchModule(process.GetProgramId(), nso_header.build_id, name, codeset.memory,
+                               load_base);
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         process.SetMkwDynamicFpsPatchApplied(mkw_dynamic_fps_patch_applied);

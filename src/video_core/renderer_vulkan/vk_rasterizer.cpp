@@ -1400,6 +1400,22 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         fast_draw_stats.prepare_ns[index] += Profile::Now() - fast_draw_start;
         ++fast_draw_stats.prepare_draws[index];
     }
+    if (VideoCommon::DrawClass::Enabled()) {
+        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        VideoCommon::DrawClass::GetStats().NoteDraw({
+            .pipeline = pipeline,
+            .handle_hash = 0,
+            .binding_hash = 0,
+            .render_targets_serial = texture_cache.RenderTargetsSerial(),
+            .frame = render_trace_frame,
+            .first = is_indexed ? draw_state.index_buffer.first : draw_state.vertex_buffer.first,
+            .count = is_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count,
+            .instances = draw_state.instance_count,
+            .changes = maxwell3d->TakeDrawChanges(),
+            .indexed = is_indexed,
+            .bindings_valid = false,
+        });
+    }
     static u32 native_capture_count{};
     if (maxwell3d->GetNativeMacroEngine().native_turing &&
         native_capture_count < 16 && [] {

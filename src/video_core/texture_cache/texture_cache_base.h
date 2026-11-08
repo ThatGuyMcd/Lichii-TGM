@@ -352,6 +352,10 @@ public:
     /// Refresh the state for graphics/compute image view and sampler descriptors
     void SynchronizeDescriptors(bool compute);
 
+    [[nodiscard]] u64 RenderTargetsSerial() const noexcept {
+        return render_targets_serial;
+    }
+
     /// Updates the Render Targets if they can be rescaled
     /// @retval True if the Render Targets have been rescaled.
     bool RescaleRenderTargets();

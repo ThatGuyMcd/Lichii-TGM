@@ -22,6 +22,7 @@
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "video_core/dirty_flags.h"
+#include "video_core/draw_class_stats.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
@@ -60,6 +61,7 @@ Maxwell3D::Maxwell3D(MemoryManager& memory_manager_)
 #endif
     , upload_state{memory_manager, regs.upload}
 {
+    draw_classes = VideoCommon::DrawClass::Enabled();
     dirty.flags.flip();
     InitializeRegisterDefaults();
     reports_fast_draw_breaks = true;
@@ -860,6 +862,9 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 13:
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 14:
     case MAXWELL3D_REG_INDEX(const_buffer.buffer) + 15:
+        if (draw_classes) {
+            draw_changes |= VideoCommon::DrawClass::Bit(VideoCommon::DrawClass::ConstData);
+        }
         ProcessCBMultiData(base_start, amount);
         break;
     case MAXWELL3D_REG_INDEX(inline_data): {

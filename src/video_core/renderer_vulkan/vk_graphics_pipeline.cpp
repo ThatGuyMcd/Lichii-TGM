@@ -19,6 +19,7 @@
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 
+#include "video_core/draw_class_stats.h"
 #include "video_core/renderer_vulkan/pipeline_build_failure.h"
 #include "video_core/renderer_vulkan/pipeline_build_trace.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
@@ -966,6 +967,21 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     Profile::AddFine(Profile::FineCounter::TextureHandles, views.size());
     ASSERT(views.size() == num_image_elements);
     ASSERT(samplers.size() == num_textures);
+    if (VideoCommon::DrawClass::Enabled()) {
+        // The draw's handles and what they resolved to, for EDEN_NX2_DRAW_CLASSES.
+        u64 handles = 0xcbf29ce484222325ULL;
+        u64 bindings = handles;
+        const auto mix = [](u64& hash, u64 value) { hash = (hash ^ value) * 0x100000001b3ULL; };
+        for (const auto& view : views) {
+            mix(handles, view.index);
+            mix(bindings, view.id.index);
+        }
+        for (const VideoCommon::SamplerId sampler : samplers) {
+            mix(bindings, sampler.index);
+        }
+        VideoCommon::DrawClass::GetStats().NoteBindings(handles, bindings);
+    }
+
     if (resolve_in_full) {
         Profile::Scope scope{Profile::Zone::FillImageViews};
         if (memo_hit && verify_memo) {

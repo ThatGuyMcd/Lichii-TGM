@@ -246,12 +246,6 @@ public:
     }
 
     VkPushConstantRange PushConstantRange() const {
-        using Shader::Backend::SPIRV::RenderAreaLayout;
-        using Shader::Backend::SPIRV::RescalingLayout;
-        const u32 size_offset = is_compute ? sizeof(RescalingLayout::down_factor) : 0u;
-        // Every graphics layout covers the OoT object motion words, so push constants stay
-        // compatible across pipelines (the down factor is only pushed when it changes).
-        const u32 graphics_size = Shader::Backend::SPIRV::OOT_MOTION_PUSH_END;
         return VkPushConstantRange{
             .stageFlags = static_cast<VkShaderStageFlags>(
                 is_compute ? VK_SHADER_STAGE_COMPUTE_BIT
@@ -261,9 +255,7 @@ public:
                                        VK_SHADER_STAGE_MESH_BIT_EXT
                                  : VK_SHADER_STAGE_ALL_GRAPHICS)),
             .offset = 0,
-            .size = is_compute ? static_cast<u32>(sizeof(RescalingLayout)) - size_offset +
-                                     static_cast<u32>(sizeof(RenderAreaLayout))
-                               : graphics_size,
+            .size = Shader::Backend::SPIRV::PUSH_CONSTANT_LAYOUT_SIZE,
         };
     }
 

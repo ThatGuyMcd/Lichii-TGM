@@ -486,12 +486,9 @@ private:
     void DefineAttributeMemAccess(const Info& info);
     void DefineWriteStorageCasLoopFunction(const Info& info);
     void DefineGlobalMemoryFunctions(const IR::Program& program);
-    void DefineRescalingInput(const Info& info);
-    void DefineRescalingInputPushConstant();
+    void DefinePushConstants(const Info& info);
     void DefineRescalingInputUniformConstant();
-    void DefineRenderArea(const Info& info);
     void DefineOotMotion(const Info& info, u32& binding);
-    void DefineOotMotionPushConstant(const Info& info);
     [[nodiscard]] bool UsesOotMotion(const Info& info) const;
 
     void DefineInputs(const IR::Program& program);

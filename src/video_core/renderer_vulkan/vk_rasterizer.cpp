@@ -25,6 +25,8 @@
 
 #include <fmt/format.h>
 
+#include "video_core/draw_input_watch.h"
+#include "video_core/draw_class_stats.h"
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
 
 #include "common/assert.h"
@@ -459,6 +461,22 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
         &scheduler);
+    // The draw input watch protects pages draws read and never trusts pages the GPU writes
+    // (images, queries, GPU-written buffers). Only Switch 2 sessions mark GPU writes.
+    VideoCommon::GetDrawInputWatch().Bind(
+        [](void* argument, DAddr address, u64 size, s32 delta) {
+            static_cast<RasterizerVulkan*>(argument)->device_memory.UpdatePagesCachedCount(
+                address, size, delta);
+        },
+        [](void* argument, DAddr page) {
+            const auto& self = *static_cast<RasterizerVulkan*>(argument);
+            constexpr u64 size = Core::DEVICE_PAGESIZE;
+            return !Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
+                   Tegra::Nx2MayBeGpuWritten(page, size) ||
+                   self.texture_cache.page_filter.Any(page, size) ||
+                   self.query_cache.page_filter.Any(page, size);
+        },
+        this);
     const auto mode = Settings::values.tensor_programs.GetValue();
     LOG_INFO(Render_Vulkan, "Tensor programs: {} (cooperative matrices {}, setting {}; Donkey Kong "
                             "Bananza always emulates)",
@@ -471,6 +489,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
+    VideoCommon::GetDrawInputWatch().Unbind();
     state_tracker.ClearChannel();
     VideoCommon::GpuSplit::Get().SetIdleHook(nullptr, nullptr);
     scheduler.WaitWorker();
@@ -2879,6 +2898,11 @@ void RasterizerVulkan::InvalidateRegion(DAddr addr, u64 size, VideoCommon::Cache
     if (addr == 0 || size == 0) {
         return;
     }
+    // Device unmaps come here before the pages lose their backing (DeviceMemoryManager::Unmap):
+    // the watch lets go of its protection then, as the caches do, or the page's cached count
+    // would outlive the mapping.
+    VideoCommon::GetDrawInputWatch().ReleaseRange(addr, size);
+    VideoCommon::GetDrawInputWatch().NoteHostWrite(addr, size);
     if (True(which & VideoCommon::CacheType::TextureCache)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.WriteMemory(addr, size);
@@ -2896,6 +2920,10 @@ void RasterizerVulkan::InvalidateRegion(DAddr addr, u64 size, VideoCommon::Cache
 }
 
 void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    auto& watch = VideoCommon::GetDrawInputWatch();
+    for (const auto& [addr, size] : sequences) {
+        watch.NoteHostWrite(addr, size);
+    }
     // The GPU's own cached writes (constant buffer data, every draw): most land where no image,
     // query or shader was ever registered, which page_filter tells without the caches' locks.
     const auto any = [&](const VideoCommon::PageFilter& filter) {
@@ -2965,6 +2993,7 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
     if (addr == 0 || size == 0) {
         return;
     }
+    VideoCommon::GetDrawInputWatch().NoteHostWrite(addr, size);
 
     {
         std::scoped_lock lock{texture_cache.mutex};
@@ -2979,6 +3008,7 @@ void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
 
 bool RasterizerVulkan::TryCacheInvalidation(DAddr addr, u64 size) {
     if (addr == 0 || size == 0) return true;
+    VideoCommon::GetDrawInputWatch().NoteHostWrite(addr, size);
     {
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
         // WriteMemory downloads GPU-written bytes elsewhere on the written pages, which only the
@@ -2998,6 +3028,8 @@ void RasterizerVulkan::InvalidateGPUCache() {
 }
 
 void RasterizerVulkan::UnmapMemory(DAddr addr, u64 size) {
+    VideoCommon::GetDrawInputWatch().ReleaseRange(addr, size);
+    VideoCommon::GetDrawInputWatch().NoteHostWrite(addr, size);
     {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.UnmapMemory(addr, size);
@@ -3661,6 +3693,19 @@ void RasterizerVulkan::FrameDumpPass(const Framebuffer* framebuffer) {
 }
 
 void RasterizerVulkan::TickFrame() {
+    {
+        auto& watch = VideoCommon::GetDrawInputWatch();
+        watch.Sweep(++draw_watch_frame);
+        if (VideoCommon::DrawClass::Enabled()) {
+            const auto now = std::chrono::steady_clock::now();
+            const double seconds =
+                std::chrono::duration<double>(now - draw_watch_report).count();
+            if (seconds >= 10.0) {
+                watch.Report(seconds);
+                draw_watch_report = now;
+            }
+        }
+    }
     if (oot_object_motion) {
         oot_object_motion->EnsureImage(scheduler, OotObjectMotionSize());
     }

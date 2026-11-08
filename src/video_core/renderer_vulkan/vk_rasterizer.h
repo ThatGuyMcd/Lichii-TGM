@@ -408,6 +408,9 @@ private:
         std::array<f32, 280 * 12> bones{};
     } oot_actor, oot_previous_actor;
     u64 render_trace_frame = 0;
+    /// Frames for the draw input watch's re-arm delays, and its last report.
+    u64 draw_watch_frame = 0;
+    std::chrono::steady_clock::time_point draw_watch_report = std::chrono::steady_clock::now();
     u32 render_trace_draws = 0;
     u32 render_trace_clears = 0;
     bool pending_native_work{};

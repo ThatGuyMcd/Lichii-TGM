@@ -1202,6 +1202,8 @@ add_library(core STATIC
     ocarina_igcs.cpp
     ocarina_photo_mode.cpp
     ocarina_photo_mode.h
+    oot_ultrawide.cpp
+    oot_ultrawide.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp

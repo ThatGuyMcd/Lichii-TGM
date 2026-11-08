@@ -10,6 +10,7 @@
 #include <stop_token>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "common/common_types.h"
 #include "common/settings_enums.h"
@@ -24,6 +25,7 @@ namespace VideoCommon::ShaderWarm {
 /// (<shader dir>/<title id>/warm-compute.bin). It holds the compute programs found in the game
 /// files, in pipeline cache format with no recorded reads.
 std::filesystem::path ComputeWarmPath(u64 title_id);
+std::filesystem::path MeshWarmPath(u64 title_id);
 
 /// The title's precompile recipe (tools/nx2-precompile), kept once a build used it, and the
 /// pipeline file assembled from it with the player's game files, which the loading screen prepares.
@@ -142,6 +144,7 @@ struct Result {
     size_t native_dropped{};     ///< Recipe pipelines whose programs this copy lacks
     size_t native_programs{};    ///< Native programs found in the game files
     size_t native_combinations{}; ///< Program combinations (variations) found
+    size_t mesh_pipelines{};
     size_t compute_programs{};   ///< Entries written to the precache file
     size_t skipped{};            ///< Programs that failed to extract or convert
 };
@@ -161,6 +164,8 @@ struct BuildOptions {
     std::filesystem::path recipe_path;
     /// Conversion threads, 0: a quarter of the CPU threads, 2 to 6.
     size_t threads{};
+    std::optional<std::vector<std::filesystem::path>> runtime_caches;
+    size_t mesh_candidates = 512;
 };
 
 /// BuildWarmFiles with an explicit output folder.

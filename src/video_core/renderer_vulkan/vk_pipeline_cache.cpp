@@ -83,6 +83,7 @@
 #include "video_core/shader_notify.h"
 #include "video_core/shader_warm/prepared_store.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
+#include "video_core/shader_warm/mesh_warm_validation.h"
 #include "video_core/surface.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -758,6 +759,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
                                 !DriverCachesPipelines(device_)},
+      mesh_warm_enabled{Settings::values.use_mesh_shader_warmup.GetValue()},
       use_shader_reuse{!IsAmdProprietaryWindows(device_.GetDriverID())},
       num_pipeline_workers{device.HasBrokenParallelShaderCompiling() ? 1ULL
                                                                      : GetTotalPipelineWorkers()},
@@ -1113,6 +1115,7 @@ size_t KeptPipelines(size_t cached_at_boot) {
 } // Anonymous namespace
 
 PipelineCache::~PipelineCache() {
+    mesh_warm_thread = {};
     serialization_stop.request_stop();
     stop_translations.store(true, std::memory_order_relaxed);
     translation_workers.WaitForRequests();
@@ -1362,7 +1365,6 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     if (!pipeline_cache_filename.empty()) {
         background_pipelines.Stop();
-    deferred_workers.WaitForRequests();
         workers.WaitForRequests();
         HeavyBuildSlots::Instance().WaitForBuilds();
         serialization_thread.WaitForRequests();
@@ -1800,12 +1802,129 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         PrecacheShaders(title_id, std::move(precache_graphics), std::move(precached_pipelines),
                         stop_loading, callback);
     }
+    if (!stop_loading.stop_requested()) {
+        StartMeshWarm(title_id, precache, stop_loading, callback);
+    }
     if (stop_loading.stop_requested()) {
         background_pipelines.Stop();
-    deferred_workers.WaitForRequests();
     } else {
         background_pipelines.Start(std::clamp<size_t>(num_pipeline_workers / 4, 1, 2));
     }
+}
+
+
+void PipelineCache::StartMeshWarm(u64 title_id, bool before_start, std::stop_token stop_loading,
+                                  const VideoCore::DiskResourceLoadCallback& callback) {
+    namespace Warm = VideoCommon::ShaderWarm;
+    mesh_warm_thread = {};
+    if (!mesh_warm_enabled || !device.IsExtMeshShaderSupported() ||
+        (!before_start && device.HasBrokenParallelShaderCompiling()) || Warm::SkipWarmRequested()) {
+        return;
+    }
+    auto path = Warm::MeshWarmPath(title_id);
+    if (const char* override_path = std::getenv("EDEN_NX2_MESH_WARM")) path = override_path;
+    const auto signature = NativePreparationStamp(path);
+    if (signature.empty()) return;
+    const auto marker = Warm::WarmMarkerPath(path);
+    std::ifstream saved(marker);
+    std::string previous;
+    std::getline(saved, previous);
+    std::error_code ec;
+    if (previous == signature && (DriverCachesPipelines(device) ||
+        (use_vulkan_pipeline_cache && std::filesystem::exists(vulkan_pipeline_cache_filename, ec)))) {
+        return;
+    }
+    mesh_warm_thread = std::jthread([this, path, marker, signature, before_start, stop_loading,
+                                    callback](std::stop_token stop) {
+        Common::SetCurrentThreadName("VkMeshWarm");
+        Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
+        const auto cancelled = [&] { return stop.stop_requested() || stop_loading.stop_requested() ||
+                                           VideoCommon::ShaderWarm::SkipWarmRequested(); };
+        size_t built{}, rejected{}, failed{};
+        bool complete = false;
+        try {
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+            const std::streamoff end = file.tellg();
+            file.seekg(0);
+            std::array<char, 8> magic{};
+            u32 version{};
+            file.read(magic.data(), magic.size());
+            file.read(reinterpret_cast<char*>(&version), sizeof(version));
+            if (magic != VideoCommon::PipelineCacheMagic || version != CACHE_VERSION) {
+                throw std::runtime_error("Unsupported mesh warm cache");
+            }
+            const size_t total = Warm::ReadWarmCount(path);
+            static const GuessMissing guess{};
+            ShaderPools pools;
+            while (!cancelled() && file.tellg() < end) {
+                while (!before_start && !cancelled() && emission_budget.Pending() != 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{25});
+                }
+                if (cancelled()) break;
+                u32 count{};
+                file.read(reinterpret_cast<char*>(&count), sizeof(count));
+                if (count != 2 && count != 3) throw std::runtime_error("Invalid mesh stage count");
+                std::array<FileEnvironment, 3> envs;
+                std::array<Shader::Environment*, 3> pointers{};
+                u64 budget = Warm::MaxMeshWarmRecordBytes - sizeof(GraphicsPipelineCacheKey) - 4;
+                for (u32 i = 0; i < count; ++i) {
+                    const u32 stage = i + 1 == count ? 4 : (count == 3 && i == 0 ? 7 : 8);
+                    const std::streamoff offset = file.tellg();
+                    const u64 bytes = Warm::InspectMeshWarmEnvironment(
+                        file, stage, std::min(budget, static_cast<u64>(end - offset)));
+                    budget -= bytes;
+                    file.seekg(offset);
+                    envs[i].Deserialize(file, offset + static_cast<std::streamoff>(bytes));
+                    if (!envs[i].IsNativeProgram()) throw std::runtime_error("Non-native mesh candidate");
+                    envs[i].SetGuessMissing(&guess);
+                    pointers[i] = &envs[i];
+                }
+                if (count == 3 && envs[0].MeshRegisters() != envs[1].MeshRegisters()) {
+                    throw std::runtime_error("Inconsistent task/mesh context");
+                }
+                GraphicsPipelineCacheKey key{};
+                file.read(reinterpret_cast<char*>(&key), sizeof(key));
+                if (!Warm::ValidMeshWarmKey(key.unique_hashes, count)) {
+                    throw std::runtime_error("Invalid mesh stage slots");
+                }
+                pools.ReleaseContents();
+                try {
+                    DescriptorPool descriptors{device, scheduler};
+                    auto pipeline = CreateGraphicsPipeline(pools, key, std::span{pointers.data(), count},
+                        nullptr, false, nullptr, nullptr, nullptr, false, true, true, &descriptors);
+                    if (!pipeline) ++rejected;
+                    else if (pipeline->Failed()) ++failed;
+                    else ++built;
+                } catch (const std::bad_alloc&) {
+                    throw;
+                } catch (const std::exception& exception) {
+                    ++failed;
+                    LOG_DEBUG(Render_Vulkan, "Mesh warm candidate failed: {}", exception.what());
+                }
+                if (before_start && callback) callback(VideoCore::LoadCallbackStage::Warm,
+                    built + rejected + failed, std::max(total, built + rejected + failed));
+            }
+            complete = file.tellg() == end && !cancelled() && failed == 0;
+        } catch (const std::exception& exception) {
+            LOG_WARNING(Render_Vulkan, "Mesh prewarm stopped: {}", exception.what());
+        }
+        // Failed or interrupted work stays pending. A driver cache is only persisted after all
+        // candidates complete; speculative pipeline objects never enter the draw/reuse caches.
+        if (complete && signature == NativePreparationStamp(path)) {
+            if (use_vulkan_pipeline_cache) {
+                SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
+                                             CACHE_VERSION);
+            }
+            if (DriverCachesPipelines(device)) {
+                std::ofstream done(marker, std::ios::trunc);
+                done << signature << '\n';
+            }
+        }
+        LOG_INFO(Render_Vulkan, "Mesh prewarm: {} built, {} rejected, {} failed, complete={}",
+                 built, rejected, failed, complete);
+    });
+    if (before_start) mesh_warm_thread.join();
 }
 
 void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
@@ -3907,13 +4026,13 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools,
     std::unique_ptr<EmissionBudget::Reservation> reservation,
     std::array<std::vector<u32>, Maxwell::MaxShaderStage>* spirv_out, bool heavy_on_own_threads,
-    bool allow_translation) try {
+    bool allow_translation, bool speculative, DescriptorPool* transient_descriptors) try {
     LOG_DEBUG(Render_Vulkan, "{:#016x}", key.Hash());
     auto translation_key = MakeShaderTranslationKey(key, envs, device);
     translation_key.motion_context = VideoCommon::OotDlss::ObjectMotionRequested() ? 1U : 0U;
     translation_key.depth_context = (key.state.depth_enabled != 0 ? 0x10000U : 0U) |
                                     static_cast<u32>(key.state.depth_format.Value());
-    const auto reused = use_shader_reuse && !spirv_out ? shader_reuse.Find(translation_key, envs)
+    const auto reused = use_shader_reuse && !spirv_out && !speculative ? shader_reuse.Find(translation_key, envs)
                                                      : nullptr;
     if (reused && !VideoCommon::Nx2Perf::Verify()) {
         auto* worker = (build_in_parallel || heavy_on_own_threads) &&
@@ -3927,7 +4046,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             }
         }
         return std::make_unique<GraphicsPipeline>(
-            scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
+            scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, speculative ? nullptr : &shader_notify, device,
             descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, worker, statistics,
             render_pass_cache, key, reused->modules, reused->InfoPointers());
     }
@@ -3952,7 +4071,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (infos[stage]) reusable->infos[stage] = *infos[stage];
     }
     for (auto& recorder : recorders) reusable->reads.push_back(recorder.TakeReads());
-    const bool publish = use_shader_reuse && !stages.mesh_emulation;
+    const bool publish = use_shader_reuse && !stages.mesh_emulation && !speculative;
     auto modules = std::make_shared<GraphicsShaderModules>();
     std::function<std::shared_ptr<const GraphicsShaderModules>()> emit_stages;
     if (emit_pools) {
@@ -4028,8 +4147,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                               : build_in_parallel      ? &workers
                                                                        : nullptr};
     return std::make_unique<GraphicsPipeline>(
-        scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
-        descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, thread_worker, statistics,
+        scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, speculative ? nullptr : &shader_notify, device,
+        transient_descriptors ? *transient_descriptors : descriptor_pool, guest_descriptor_queue,
+        descriptor_buffer_ring, thread_worker, statistics,
         render_pass_cache, key, std::move(modules), infos, std::move(emit_stages),
         std::move(stages.mesh_emulation));
 

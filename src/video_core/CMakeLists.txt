@@ -325,8 +325,12 @@ add_library(video_core STATIC
     shader_warm/shader_archives.h
     shader_warm/shader_warm_builder.cpp
     shader_warm/shader_warm_builder.h
+    shader_warm/warm_defaults.cpp
     shader_warm/warm_records.cpp
     shader_warm/warm_records.h
+    shader_warm/mesh_warm_builder.cpp
+    shader_warm/mesh_warm_builder.h
+    shader_warm/mesh_warm_validation.h
     smaa_area_tex.h
     smaa_search_tex.h
     surface.cpp

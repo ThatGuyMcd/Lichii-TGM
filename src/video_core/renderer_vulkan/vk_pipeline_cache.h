@@ -196,7 +196,8 @@ private:
         bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools = nullptr,
         std::unique_ptr<EmissionBudget::Reservation> reservation = nullptr,
         std::array<std::vector<u32>, 5>* spirv_out = nullptr,
-        bool heavy_on_own_threads = false, bool allow_translation = true);
+        bool heavy_on_own_threads = false, bool allow_translation = true, bool speculative = false,
+        DescriptorPool* transient_descriptors = nullptr);
 
     using GraphicsEnvironmentArray =
         std::array<VideoCommon::GraphicsEnvironment, Maxwell::MaxShaderProgram>;
@@ -398,6 +399,10 @@ private:
     VideoCore::ShaderNotify& shader_notify;
     bool use_asynchronous_shaders{};
     bool use_vulkan_pipeline_cache{};
+    void StartMeshWarm(u64 title_id, bool before_start, std::stop_token stop_loading,
+                       const VideoCore::DiskResourceLoadCallback& callback);
+    bool mesh_warm_enabled{};
+    std::jthread mesh_warm_thread;
     bool use_shader_reuse{};
     ShaderReuseCache shader_reuse;
     const size_t num_pipeline_workers;

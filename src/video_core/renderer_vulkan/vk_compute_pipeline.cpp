@@ -256,7 +256,9 @@ vk::Pipeline ComputePipeline::MakeComputePipeline(bool fast) {
     const bool unoptimized = (flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) != 0;
     const auto begin = std::chrono::steady_clock::now();
     TracePipelineBuild("BEGIN", "compute", shader_hash, traced, unoptimized);
-    auto result = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
+    auto result = binary_cache
+        ? binary_cache->CreateComputePipeline(compute_ci, *pipeline_cache)
+        : device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
     TracePipelineBuild("END", "compute", shader_hash, traced, unoptimized,
                        std::chrono::duration<double, std::milli>(
                            std::chrono::steady_clock::now() - begin).count());
@@ -271,8 +273,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                                  PipelineStatistics* pipeline_statistics,
                                  VideoCore::ShaderNotify* shader_notify, const Shader::Info& info_,
                                  vk::ShaderModule spv_module_, u64 shader_hash_,
-                                 std::function<vk::ShaderModule()> emit_module_, bool skip_until_built_)
-    : device{device_},
+                                 std::function<vk::ShaderModule()> emit_module_, bool skip_until_built_, PipelineBinaryCache* binary_cache_)
+    : device{device_}, binary_cache{binary_cache_},
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
       shader_hash{shader_hash_}, skip_until_built{skip_until_built_}, spv_module(std::move(spv_module_)),

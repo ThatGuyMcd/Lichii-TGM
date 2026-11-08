@@ -435,13 +435,14 @@ GraphicsPipeline::GraphicsPipeline(
     const std::array<const Shader::Info*, NUM_STAGES>& infos,
     EmitStagesFunc emit_stages,
     std::optional<MeshEmulationSetup> mesh_emulation_, LibraryParams library_params,
-    std::array<std::vector<u32>, NUM_STAGES> spirv_code_)
+    std::array<std::vector<u32>, NUM_STAGES> spirv_code_, PipelineBinaryCache* binary_cache_)
     : key{key_}, device{device_}, texture_cache{texture_cache_}, buffer_cache{buffer_cache_},
       pipeline_cache(pipeline_cache_), scheduler{scheduler_},
       guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, spv_modules{std::move(modules)},
+      binary_cache{binary_cache_},
       library_cache{library_params.library_cache},
-      shader_object_cache{library_params.shader_objects}, spirv_code{std::move(spirv_code_)},
+      shader_object_cache{library_params.shader_objects}, spirv_code{std::move(spirv_code_, PipelineBinaryCache* binary_cache_)},
       libraries_only{library_params.library_cache && library_params.libraries_only},
       spirv_hashes{library_params.spirv_hashes}, build_workers{worker_thread},
       worker_only_build{worker_thread && static_cast<bool>(emit_stages)},
@@ -2553,7 +2554,7 @@ vk::Pipeline GraphicsPipeline::MakePipeline(VkRenderPass render_pass, bool fast)
     const auto trace_begin = std::chrono::steady_clock::now();
     TracePipelineBuild("BEGIN", "graphics", key.Hash(), key.unique_hashes, unoptimized);
     const VkPipelineCreateFlags2CreateInfo heap_flags_ci{HeapFlags(flags, nullptr)};
-    auto built_pipeline = device.GetLogical().CreateGraphicsPipeline({
+    const VkGraphicsPipelineCreateInfo pipeline_ci{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = heap_mode ? &heap_flags_ci : nullptr,
         .flags = flags,
@@ -2577,7 +2578,10 @@ vk::Pipeline GraphicsPipeline::MakePipeline(VkRenderPass render_pass, bool fast)
         .subpass = 0,
         .basePipelineHandle = nullptr,
         .basePipelineIndex = 0,
-    }, *pipeline_cache);
+    };
+    vk::Pipeline built_pipeline =
+        binary_cache ? binary_cache->CreateGraphicsPipeline(pipeline_ci, *pipeline_cache)
+                     : device.GetLogical().CreateGraphicsPipeline(pipeline_ci, *pipeline_cache);
     TracePipelineBuild("END", "graphics", key.Hash(), key.unique_hashes, unoptimized,
                        std::chrono::duration<double, std::milli>(
                            std::chrono::steady_clock::now() - trace_begin)

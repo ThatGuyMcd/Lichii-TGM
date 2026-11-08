@@ -433,6 +433,9 @@ private:
     /// instead of pipelines; the sets shared between pipelines with the same shaders.
     bool use_shader_objects{};
     ShaderObject::Cache shader_objects_cache;
+    /// Driver binaries of the pipelines built, kept by Lichii (VK_KHR_pipeline_binary). Declared
+    /// before the workers that use it.
+    PipelineBinaryCache binary_cache;
 
     /// Destroys graphics pipelines unused for a while, once the GPU is done with them.
     void EvictUnusedPipelines();

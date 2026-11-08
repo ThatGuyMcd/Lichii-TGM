@@ -11,6 +11,7 @@ add_executable(tests
     video_core/graphics_pipeline_library.cpp
     video_core/pipeline_cache_policy.cpp
     video_core/gpl_build_once.cpp
+    video_core/pipeline_binary_store.cpp
     video_core/vulkan_overlay_filter.cpp
     video_core/buffer_cache_ports.cpp
     video_core/draw_class_stats.cpp

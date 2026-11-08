@@ -214,6 +214,7 @@ add_library(video_core STATIC
     renderer_vulkan/maxwell_to_vk.h
     renderer_vulkan/nx2_list_slots.cpp
     renderer_vulkan/nx2_list_slots.h
+    renderer_vulkan/pipeline_binary_store.h
     renderer_vulkan/pipeline_build.h
     renderer_vulkan/heavy_build_slots.h
     renderer_vulkan/pipeline_build_failure.cpp
@@ -260,6 +261,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_gpu_cost.h
     renderer_vulkan/vk_graphics_pipeline.cpp
     renderer_vulkan/vk_graphics_pipeline.h
+    renderer_vulkan/vk_pipeline_binary.cpp
+    renderer_vulkan/vk_pipeline_binary.h
     renderer_vulkan/vk_pipeline_library.cpp
     renderer_vulkan/vk_pipeline_library.h
     renderer_vulkan/gpl_build_once.h

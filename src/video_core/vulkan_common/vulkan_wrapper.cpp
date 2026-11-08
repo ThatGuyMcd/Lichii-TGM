@@ -285,6 +285,11 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkRegisterCustomBorderColorEXT);
     X(vkUnregisterCustomBorderColorEXT);
     X(vkCmdSetDescriptorBufferOffsetsEXT);
+    X(vkCreatePipelineBinariesKHR);
+    X(vkDestroyPipelineBinaryKHR);
+    X(vkGetPipelineKeyKHR);
+    X(vkGetPipelineBinaryDataKHR);
+    X(vkReleaseCapturedPipelineDataKHR);
     X(vkWaitForFences);
     X(vkWaitForPresent2KHR);
     X(vkWaitSemaphores);

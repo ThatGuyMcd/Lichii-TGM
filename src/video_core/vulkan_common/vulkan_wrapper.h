@@ -299,6 +299,8 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdSetDepthClipEnableEXT vkCmdSetDepthClipEnableEXT{};
     PFN_vkCmdSetDepthClipNegativeOneToOneEXT vkCmdSetDepthClipNegativeOneToOneEXT{};
     PFN_vkCmdSetProvokingVertexModeEXT vkCmdSetProvokingVertexModeEXT{};
+    PFN_vkCmdSetExtraPrimitiveOverestimationSizeEXT vkCmdSetExtraPrimitiveOverestimationSizeEXT{};
+    PFN_vkCmdSetRasterizationStreamEXT vkCmdSetRasterizationStreamEXT{};
     PFN_vkCmdSetColorWriteMaskEXT vkCmdSetColorWriteMaskEXT{};
     PFN_vkCmdSetColorWriteEnableEXT vkCmdSetColorWriteEnableEXT{};
     PFN_vkCmdSetColorBlendEnableEXT vkCmdSetColorBlendEnableEXT{};
@@ -345,6 +347,11 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkDestroySampler vkDestroySampler{};
     PFN_vkDestroySemaphore vkDestroySemaphore{};
     PFN_vkDestroyShaderModule vkDestroyShaderModule{};
+    PFN_vkCreateShadersEXT vkCreateShadersEXT{};
+    PFN_vkDestroyShaderEXT vkDestroyShaderEXT{};
+    PFN_vkCmdBindShadersEXT vkCmdBindShadersEXT{};
+    PFN_vkCmdBeginRendering vkCmdBeginRendering{};
+    PFN_vkCmdEndRendering vkCmdEndRendering{};
     PFN_vkDestroySwapchainKHR vkDestroySwapchainKHR{};
     PFN_vkDeviceWaitIdle vkDeviceWaitIdle{};
     PFN_vkQueueWaitIdle vkQueueWaitIdle{};
@@ -430,6 +437,7 @@ void Destroy(VkDevice, VkSampler, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkSwapchainKHR, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkSemaphore, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkShaderModule, const DeviceDispatch&) noexcept;
+void Destroy(VkDevice, VkShaderEXT, const DeviceDispatch&) noexcept;
 void Destroy(VkInstance, VkDebugUtilsMessengerEXT, const InstanceDispatch&) noexcept;
 void Destroy(VkInstance, VkDebugReportCallbackEXT, const InstanceDispatch&) noexcept;
 void Destroy(VkInstance, VkSurfaceKHR, const InstanceDispatch&) noexcept;
@@ -673,6 +681,7 @@ using DebugReportCallback = Handle<VkDebugReportCallbackEXT, VkInstance, Instanc
 using DescriptorSetLayout = Handle<VkDescriptorSetLayout, VkDevice, DeviceDispatch>;
 using DescriptorUpdateTemplate = Handle<VkDescriptorUpdateTemplate, VkDevice, DeviceDispatch>;
 using Pipeline = Handle<VkPipeline, VkDevice, DeviceDispatch>;
+using ShaderEXT = Handle<VkShaderEXT, VkDevice, DeviceDispatch>;
 using PipelineLayout = Handle<VkPipelineLayout, VkDevice, DeviceDispatch>;
 using QueryPool = Handle<VkQueryPool, VkDevice, DeviceDispatch>;
 using RenderPass = Handle<VkRenderPass, VkDevice, DeviceDispatch>;
@@ -1182,6 +1191,11 @@ public:
 
     [[nodiscard]] ShaderModule CreateShaderModule(const VkShaderModuleCreateInfo& ci) const;
 
+    /// VK_EXT_shader_object: one shader per create info, linked when they ask for it. Throws on
+    /// failure (no shader is returned then).
+    [[nodiscard]] std::vector<ShaderEXT> CreateShadersEXT(
+        std::span<const VkShaderCreateInfoEXT> infos) const;
+
     [[nodiscard]] Event CreateEvent() const;
 
     [[nodiscard]] SwapchainKHR CreateSwapchainKHR(const VkSwapchainCreateInfoKHR& ci) const;
@@ -1417,6 +1431,19 @@ public:
 
     void BindPipeline(VkPipelineBindPoint bind_point, VkPipeline pipeline) const noexcept {
         dld->vkCmdBindPipeline(handle, bind_point, pipeline);
+    }
+
+    void BindShadersEXT(u32 count, const VkShaderStageFlagBits* stages,
+                        const VkShaderEXT* shaders) const noexcept {
+        dld->vkCmdBindShadersEXT(handle, count, stages, shaders);
+    }
+
+    void BeginRendering(const VkRenderingInfo& info) const noexcept {
+        dld->vkCmdBeginRendering(handle, &info);
+    }
+
+    void EndRendering() const noexcept {
+        dld->vkCmdEndRendering(handle);
     }
 
     void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset,
@@ -1732,6 +1759,14 @@ public:
 
     void SetProvokingVertexModeEXT(VkProvokingVertexModeEXT mode) const noexcept {
         dld->vkCmdSetProvokingVertexModeEXT(handle, mode);
+    }
+
+    void SetExtraPrimitiveOverestimationSizeEXT(float size) const noexcept {
+        dld->vkCmdSetExtraPrimitiveOverestimationSizeEXT(handle, size);
+    }
+
+    void SetRasterizationStreamEXT(u32 stream) const noexcept {
+        dld->vkCmdSetRasterizationStreamEXT(handle, stream);
     }
 
     void SetBlendConstants(const float blend_constants[4]) const noexcept {

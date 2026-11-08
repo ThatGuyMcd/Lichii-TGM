@@ -1859,6 +1859,8 @@ void PipelineCache::StartMeshWarm(u64 title_id, bool before_start, std::stop_tok
     mesh_warm_thread = std::jthread([this, path, marker, signature, before_start, stop_loading,
                                     callback](std::stop_token stop) {
         Common::SetCurrentThreadName("VkMeshWarm");
+        GraphicsPipelineLibraryCache::SetNoRetainOnThisThread(true);
+        SCOPE_EXIT { GraphicsPipelineLibraryCache::SetNoRetainOnThisThread(false); };
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
         const auto cancelled = [&] { return stop.stop_requested() || stop_loading.stop_requested() ||
                                            VideoCommon::ShaderWarm::SkipWarmRequested(); };

@@ -10,6 +10,7 @@
 namespace Vulkan {
 
 namespace {
+/// Raises `target` to `value` when it is larger, safe against concurrent callers.
 void StoreMax(std::atomic<u64>& target, u64 value) {
     u64 previous = target.load(std::memory_order_relaxed);
     while (previous < value &&
@@ -22,7 +23,13 @@ double Ms(u64 ns) {
 }
 
 constexpr std::array<const char*, 2> PART_NAMES{"pre-rasterization", "fragment"};
+
+thread_local bool no_retain_on_thread = false;
 } // Anonymous namespace
+
+void GraphicsPipelineLibraryCache::SetNoRetainOnThisThread(bool no_retain) noexcept {
+    no_retain_on_thread = no_retain;
+}
 
 bool GplOptimizeEnabled() {
     static const bool enabled = [] {
@@ -95,9 +102,18 @@ std::shared_ptr<const GplLibrary> GraphicsPipelineLibraryCache::GetOrCreate(
         entry->done = true;
     }
     entry->condition.notify_all();
+    if (no_retain_on_thread) {
+        // Threads already waiting on the entry hold it; later lookups build again, which the
+        // driver's disk cache answers in about a millisecond.
+        std::scoped_lock lock{mutex};
+        if (const auto it = entries.find(key); it != entries.end() && it->second == entry) {
+            entries.erase(it);
+        }
+    }
     return library;
 }
 
+/// Counts one link (unoptimized or optimized) and its time for the next report.
 void GraphicsPipelineLibraryCache::RecordLink(bool optimized, std::chrono::nanoseconds time) {
     const size_t index = optimized ? 1 : 0;
     const u64 ns = static_cast<u64>(time.count());

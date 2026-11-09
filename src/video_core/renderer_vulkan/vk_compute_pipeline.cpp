@@ -248,19 +248,13 @@ vk::Pipeline ComputePipeline::MakeComputePipeline(bool fast) {
     };
     const std::array<u64, 1> traced{shader_hash};
     const bool unoptimized = (flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) != 0;
-    const auto trace_begin = std::chrono::steady_clock::now();
-    TracePipelineBuild("BEGIN", "compute", shader_hash, traced, unoptimized);
     // A fast first build's unoptimized pipeline stays out of the pipeline binaries: the
     // optimized build that follows is the one kept under the key.
-    vk::Pipeline result =
-        binaries && !fast
-            ? binaries->CreateComputePipeline(compute_ci, *pipeline_cache, binary_key)
-            : device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
-    TracePipelineBuild("END", "compute", shader_hash, traced, unoptimized,
-                       std::chrono::duration<double, std::milli>(
-                           std::chrono::steady_clock::now() - trace_begin)
-                           .count());
-    return result;
+    return TracePipelineBuild("compute", shader_hash, traced, unoptimized, [&] {
+        return binaries && !fast
+                   ? binaries->CreateComputePipeline(compute_ci, *pipeline_cache, binary_key)
+                   : device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
+    });
 }
 
 namespace {

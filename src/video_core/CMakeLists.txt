@@ -554,8 +554,8 @@ target_link_options(video_core PRIVATE ${FFmpeg_LDFLAGS})
 
 add_dependencies(video_core host_shaders)
 target_include_directories(video_core PRIVATE ${HOST_SHADERS_INCLUDE})
-# AMD's FFX API headers (MIT), for calling an FSR 4 upscaler library (vk_fsr4_upscaler.cpp).
-target_include_directories(video_core PRIVATE ${CMAKE_SOURCE_DIR}/externals/ffx-api)
+# One FFX API version for both the portable upscaler and AMD's complete runtime.
+target_include_directories(video_core PRIVATE ${CMAKE_SOURCE_DIR}/externals/FidelityFX-API)
 
 target_link_libraries(video_core PRIVATE sirit::sirit)
 
@@ -677,7 +677,6 @@ if (WIN32)
         renderer_vulkan/vk_amd_fsr4_upscaler.h
         vulkan_common/amd_ffx_api.h
     )
-    target_include_directories(video_core PRIVATE ${CMAKE_SOURCE_DIR}/externals/FidelityFX-API)
 endif()
 
 create_target_directory_groups(video_core)

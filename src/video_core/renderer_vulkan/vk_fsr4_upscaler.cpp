@@ -18,7 +18,16 @@
 #ifndef _WIN32
 #define __declspec(x)
 #endif
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunknown-pragmas"
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
 #include "upscalers/include/ffx_upscale.h"
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 #ifndef _WIN32
 #undef __declspec
 #endif

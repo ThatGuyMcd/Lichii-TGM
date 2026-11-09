@@ -2190,11 +2190,6 @@ private:
                      "nx2:vi2 present #{} swap interval {} at {} Hz, FPS limit {} (word 12 = {:#x})",
                      m_presents, swap_interval, refresh_rate, fps_limit, timing);
         }
-        const auto vblank_interval =
-            timer_paced ? std::chrono::nanoseconds{0}
-                        : std::chrono::nanoseconds{100'000'000'000LL * swap_interval /
-                                                   refresh_rate /
-                                                   (speed_limited ? Settings::SpeedLimit() : 100)};
         const auto interval = PacedInterval(vblank_interval, fps_limit);
         // The host presents on a steady cadence at this rate (VRR); rounded, 59.94 is 60.
         renderer.SetGuestPresentRate(

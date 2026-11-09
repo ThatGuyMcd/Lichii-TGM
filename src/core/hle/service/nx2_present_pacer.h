@@ -10,6 +10,19 @@
 
 namespace Service {
 
+constexpr std::uint32_t ConsoleVsyncHz = 60;
+
+// The present word paces only at the console's vsync rate; faster events already pace the game.
+[[nodiscard]] inline std::chrono::nanoseconds PresentWordInterval(std::uint32_t swap_interval,
+                                                                 std::uint32_t refresh_rate,
+                                                                 std::uint32_t vsync_hz,
+                                                                 std::uint32_t speed_limit) {
+    if (vsync_hz != ConsoleVsyncHz || speed_limit == 0 || refresh_rate == 0) {
+        return std::chrono::nanoseconds{0};
+    }
+    return std::chrono::nanoseconds{100'000'000'000LL * swap_interval / refresh_rate / speed_limit};
+}
+
 /**
  * Returns the interval between paced presents: the vblank the game asked for, lengthened when an
  * explicit FPS limit is below the rate that vblank allows.

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <fmt/format.h>
 
 #include "common/page_table.h"
@@ -42,6 +43,7 @@
 #include "video_core/shader_cache_v2/cache_format.h"
 #include "video_core/shader_cache_v2/records.h"
 #include "video_core/shader_environment.h"
+#include "video_core/tensor_program_policy.h"
 
 namespace {
 
@@ -51,6 +53,8 @@ using Shader::Ampere::TessellationStage;
 using namespace std::chrono_literals;
 
 constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0}};
+// Synthetic HMMA used by the software-matrix lowering tests; no game shader is embedded.
+constexpr Instruction Hmma{{0x0810723c, 12, 0x8ff, 0}};
 
 struct TempDir {
     std::filesystem::path path;
@@ -145,6 +149,7 @@ std::vector<TestProgram> TestPrograms() {
         {"compute traps", Stage::Compute, TrapProgram, {.native_code_address = 0x5000}},
         {"compute byte fill", Stage::Compute, ByteFill, {.native_code_address = 0x6000}},
         {"compute texture buffer", Stage::Compute, {Txd, Exit}, {.native_code_address = 0x7000}},
+        {"compute matrix", Stage::Compute, {Hmma, Exit}, {.native_code_address = 0x8000}},
     };
 }
 
@@ -170,6 +175,7 @@ void RequireSameCode(const VideoCommon::LoweredNativeCode& actual,
     REQUIRE(actual.code == expected.code);
     REQUIRE(actual.source_size == expected.source_size);
     REQUIRE(actual.texture_bound == expected.texture_bound);
+    REQUIRE(actual.uses_matrix == expected.uses_matrix);
     REQUIRE(actual.trap_prefix.size() == expected.trap_prefix.size());
     REQUIRE(std::memcmp(actual.trap_prefix.data(), expected.trap_prefix.data(),
                         expected.trap_prefix.size() * sizeof(Instruction)) == 0);
@@ -514,4 +520,181 @@ TEST_CASE("Shader cache v2: compute environments take recorded programs with eve
     REQUIRE_FALSE(VideoCore::Nx2Debug::AnyRejected());
     REQUIRE(fixture.Environment(texture.inputs.native_code_address, &cache).LoweredNative() ==
             texture_code);
+}
+
+namespace {
+
+/// Exercise the real GenericEnvironment adoption/capture gates without a Vulkan device or
+/// process-wide settings. The programs below contain no texture, cbuf or viewport reads.
+class TensorTestEnvironment final : public VideoCommon::GenericEnvironment {
+public:
+    TensorTestEnvironment(std::shared_ptr<const VideoCommon::LoweredNativeCode> lowered,
+                          bool emulates) {
+        Initialize(std::move(lowered), emulates, nullptr);
+    }
+
+    TensorTestEnvironment(Tegra::MemoryManager& memory, GPUVAddr address, bool emulates,
+                          V2::Cache* cache = nullptr)
+        : GenericEnvironment{memory, address, 0} {
+        Initialize({}, emulates, cache);
+    }
+
+    u32 ReadCbufValue(u32, u32) override {
+        return 0;
+    }
+    Shader::TextureType ReadTextureType(u32) override {
+        return Shader::TextureType::Color2D;
+    }
+    Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override {
+        return Shader::TexturePixelFormat::A8B8G8R8_UNORM;
+    }
+    bool IsTexturePixelFormatInteger(u32) override {
+        return false;
+    }
+    u32 ReadViewportTransformState() override {
+        return 1;
+    }
+    std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override {
+        return std::nullopt;
+    }
+
+private:
+    void Initialize(std::shared_ptr<const VideoCommon::LoweredNativeCode> lowered,
+                    bool emulates, V2::Cache* cache) {
+        stage = Shader::Stage::Compute;
+        initial_offset = sizeof(sph);
+        is_proprietary_driver = true;
+        reject_native_matrix = !emulates;
+        InitializeNativeCode(std::move(lowered), 0, false, cache);
+        start_address = sizeof(sph);
+    }
+};
+
+} // Anonymous namespace
+
+TEST_CASE("Tensor policy preserves native overrides, hardware auto selection and Bananza",
+          "[video_core][tensor][shader_cache_v2]") {
+    using Mode = Settings::TensorPrograms;
+    struct PolicyCase {
+        Mode mode;
+        bool cooperative;
+        bool other_titles_emulate;
+    };
+    constexpr std::array cases{
+        PolicyCase{Mode::Auto, false, false},
+        PolicyCase{Mode::Auto, true, true},
+        PolicyCase{Mode::Native, false, true},
+        PolicyCase{Mode::Native, true, true},
+        PolicyCase{Mode::Standin, false, false},
+        PolicyCase{Mode::Standin, true, false},
+    };
+    for (const auto& test : cases) {
+        INFO("mode " << static_cast<u32>(test.mode) << ", cooperative " << test.cooperative);
+        // Ocarina and other titles follow the same capability/override contract. Bananza's
+        // matrix programs produce required non-upscaler data and must never be replaced.
+        REQUIRE(VideoCommon::EmulatesNativeTensorPrograms(test.mode, 0x0400486024DEC000ULL,
+                                                          test.cooperative) ==
+                test.other_titles_emulate);
+        REQUIRE(VideoCommon::EmulatesNativeTensorPrograms(test.mode, 0x1234,
+                                                          test.cooperative) ==
+                test.other_titles_emulate);
+        REQUIRE(VideoCommon::EmulatesNativeTensorPrograms(test.mode, 0x040074A01BF12000ULL,
+                                                          test.cooperative));
+    }
+}
+
+TEST_CASE("Shader cache v2: tensor source provenance survives every code restoration path",
+          "[video_core][tensor][shader_cache_v2]") {
+    using Shader::Stage;
+    const std::array programs{
+        TestProgram{"ordinary compute", Stage::Compute, {Exit}, {}},
+        TestProgram{"matrix compute", Stage::Compute, {Hmma, Exit}, {}},
+    };
+    for (size_t index = 0; index < programs.size(); ++index) {
+        const auto& program = programs[index];
+        const bool matrix = index == 1;
+        INFO(program.name);
+        REQUIRE(VideoCommon::HasNativeMatrix(program.native) == matrix);
+        auto fresh = LowerFresh(program);
+        REQUIRE(fresh->uses_matrix == matrix);
+
+        // Decode a real record rather than manually assigning uses_matrix: older caches do
+        // not serialize that flag, so TakeProgramCode must derive it from the saved source.
+        const auto record = RecordOf(program, *fresh);
+        auto decoded = V2::DecodeProgram(V2::EncodeProgram(record));
+        REQUIRE(decoded.has_value());
+        auto restored = V2::TakeProgramCode(*decoded);
+        REQUIRE(restored != nullptr);
+        REQUIRE(restored->uses_matrix == matrix);
+        RequireSameCode(*restored, *fresh);
+
+        // A lowering-stamp change rebuilds from source. It must retain the same provenance
+        // before an environment adopts the rebuilt code, including after reserialization.
+        auto relowered = V2::RelowerProgram(record);
+        REQUIRE(relowered != nullptr);
+        REQUIRE(relowered->uses_matrix == matrix);
+        auto relowered_record = V2::RelowerProgramRecord(record);
+        REQUIRE(relowered_record.has_value());
+        auto relowered_restored = V2::TakeProgramCode(*relowered_record);
+        REQUIRE(relowered_restored != nullptr);
+        REQUIRE(relowered_restored->uses_matrix == matrix);
+
+        const std::array<std::shared_ptr<const VideoCommon::LoweredNativeCode>, 4> paths{
+            fresh, restored, relowered, relowered_restored};
+        for (size_t path = 0; path < paths.size(); ++path) {
+            INFO("restoration path " << path);
+            const auto adopt = [&](bool emulates) {
+                return TensorTestEnvironment{paths[path], emulates};
+            };
+            // A cached native lowering stays usable after changing back to Native.
+            REQUIRE_NOTHROW(adopt(true));
+            if (matrix) {
+                // The message is part of the dispatch contract: KeplerCompute recognizes
+                // matrix rejection and draws the upscale stand-in on every frame.
+                REQUIRE_THROWS_MATCHES(adopt(false), Shader::RuntimeError,
+                                       Catch::Matchers::ContainsSubstring("matrix multiply"));
+            } else {
+                REQUIRE_NOTHROW(adopt(false));
+            }
+        }
+    }
+}
+
+TEST_CASE("Shader cache v2: live tensor policy also rejects fresh and cached captures",
+          "[video_core][tensor][shader_cache_v2]") {
+    NativeComputeFixture fixture;
+    TestProgram matrix{"matrix compute", Shader::Stage::Compute, {Hmma, Exit}, {}};
+    matrix.inputs.native_code_address = fixture.Place(0x8000, matrix.native);
+    TestProgram ordinary{"ordinary compute", Shader::Stage::Compute, {Exit}, {}};
+    ordinary.inputs.native_code_address = fixture.Place(0x9000, ordinary.native);
+
+    const auto capture = [&](const TestProgram& program, bool emulates, V2::Cache* cache) {
+        return TensorTestEnvironment{*fixture.memory, program.inputs.native_code_address,
+                                      emulates, cache};
+    };
+    REQUIRE_THROWS_MATCHES(capture(matrix, false, nullptr), Shader::RuntimeError,
+                           Catch::Matchers::ContainsSubstring("matrix multiply"));
+    REQUIRE_NOTHROW(capture(ordinary, false, nullptr));
+    auto native = capture(matrix, true, nullptr);
+    REQUIRE(native.LoweredNative()->uses_matrix);
+
+    TempDir temp;
+    const auto file = temp.path / "tensor-cache.bin";
+    const std::array records{RecordOf(matrix, *native.LoweredNative())};
+    WriteLog(file, records);
+    const auto log = V2::ReadLogFile(file);
+    V2::Cache cache{file};
+    cache.LoadPrograms(log.parsed.live);
+    const auto sph = matrix.Header();
+    const auto traps = matrix.Traps();
+    const auto found = cache.FindProgram(KeyInputs(matrix, sph, traps));
+    REQUIRE(found.lookup == V2::ProgramLookup::Hit);
+    REQUIRE(found.code != nullptr);
+    REQUIRE(found.code->uses_matrix);
+
+    // This must use the recorded lowering (pointer identity), not hide the cache-policy bug
+    // by lowering again. Changing policy still rejects that same cached native program.
+    REQUIRE(capture(matrix, true, &cache).LoweredNative() == found.code);
+    REQUIRE_THROWS_MATCHES(capture(matrix, false, &cache), Shader::RuntimeError,
+                           Catch::Matchers::ContainsSubstring("matrix multiply"));
 }

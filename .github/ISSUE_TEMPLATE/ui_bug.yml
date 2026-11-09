@@ -1,7 +1,7 @@
 name: UI Bug
 description: UI Doesnt works as expected
 title: "[UIBug] "
-labels: ["bug", "Lichii-UI"]
+labels: ["bug"]
 body:
   - type: checkboxes
     id: checks
@@ -18,7 +18,7 @@ body:
     attributes:
       label: Emulator build
       description: Version or commit hash (shown in Help > About)
-      placeholder: "e.g. build 107 or a1b2c3d"
+      placeholder: "e.g. Lichii-tgm-v1.0 or a1b2c3d"
     validations:
       required: true
 

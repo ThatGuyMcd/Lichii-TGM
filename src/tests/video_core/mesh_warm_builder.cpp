@@ -328,6 +328,12 @@ TEST_CASE("Mesh warm prompts respect empty files and the per-game opt-in", "[mes
     constexpr u64 Title = 123;
     const auto mesh = MeshWarmPath(Title);
     std::filesystem::create_directories(mesh.parent_path());
+    const auto compute = ComputeWarmPath(Title);
+    std::filesystem::copy_file(fixture.path, compute);
+    {
+        std::ofstream marker(WarmMarkerPath(compute));
+        marker << "done";
+    }
     std::filesystem::copy_file(fixture.path, mesh);
     REQUIRE_FALSE(WarmPending(Title));
     {
@@ -341,10 +347,12 @@ TEST_CASE("Mesh warm prompts respect empty files and the per-game opt-in", "[mes
     REQUIRE_FALSE(WarmPending(Title));
     REQUIRE(std::filesystem::exists(mesh));
     // Other warm-up stages still prompt when mesh prediction is disabled.
-    const auto compute = ComputeWarmPath(Title);
-    std::filesystem::copy_file(mesh, compute);
+    std::filesystem::remove(WarmMarkerPath(compute));
     REQUIRE(WarmPending(Title));
-    std::filesystem::remove(compute);
+    {
+        std::ofstream marker(WarmMarkerPath(compute));
+        marker << "done";
+    }
     enabled.SetGlobal(true);
     REQUIRE(WarmPending(Title));
     {

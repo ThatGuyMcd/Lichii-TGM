@@ -7,6 +7,8 @@
 #pragma once
 
 #include <deque>
+#include <functional>
+#include <optional>
 #include <span>
 
 #include "video_core/engines/fermi_2d.h"
@@ -80,7 +82,10 @@ public:
 
     void BlitColor(const Framebuffer* dst_framebuffer, VkImageView src_image_view,
                    VkImage src_image, VkSampler src_sampler, const Region2D& dst_region,
-                   const Region2D& src_region, const Extent3D& src_size);
+                   const Region2D& src_region, const Extent3D& src_size,
+                   std::function<bool()> should_draw = {},
+                   std::optional<VkImageSubresourceRange> source_range = {},
+                   bool restore_source = false);
 
     /// Temporal upscale (temporal_upscale.frag) into dst_framebuffer: the jittered input colour,
     /// accumulated with the history image reprojected along the motion vectors. The result is also
@@ -96,7 +101,8 @@ public:
     /// RCAS (temporal_sharpen.frag) of source into dst_framebuffer; sharpness in stops as
     /// FsrRcasCon takes it (0 is the strongest).
     void TemporalSharpen(const Framebuffer* dst_framebuffer, VkImageView source,
-                         const Region2D& dst_region, f32 sharpness);
+                         const Region2D& dst_region, f32 sharpness,
+                         std::function<bool()> should_draw = {});
 
     void BlitColorMSAA(const Framebuffer* dst_framebuffer, const ImageView& src_image_view,
                        const Region2D& dst_region, const Region2D& src_region);

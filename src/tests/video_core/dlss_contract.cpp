@@ -5,8 +5,58 @@
 #include <catch2/catch_test_macros.hpp>
 #include "video_core/dlss_contract.h"
 #include "video_core/dlss_evaluation.h"
+#include "video_core/nvidia_dlss_policy.h"
 
 namespace DC = VideoCommon::DlssContract;
+
+TEST_CASE("NVIDIA backend activity disables frame effects after failure and resets per session",
+          "[dlss_contract]") {
+    VideoCommon::NvidiaDlssActivity activity;
+    REQUIRE_FALSE(activity.Active());
+    activity.Reset(false);
+    activity.BeginFrame();
+    REQUIRE_FALSE(activity.Active());
+    activity.Reset(true);
+    REQUIRE(activity.Active());
+    activity.Fail();
+    REQUIRE(activity.Active()); // The current frame keeps its jitter convention.
+    activity.BeginFrame();
+    REQUIRE_FALSE(activity.Active());
+    activity.BeginFrame();
+    REQUIRE_FALSE(activity.Active());
+    activity.Reset(true);
+    REQUIRE(activity.Active());
+}
+
+TEST_CASE("Explicit OOT modes retain ownership independently of runtime availability",
+          "[dlss_contract]") {
+    using Mode = Settings::OotAntiAliasing;
+    for (const auto mode : {Mode::Game, Mode::NoSharpening, Mode::NvidiaDlss, Mode::NvidiaDlaa}) {
+        REQUIRE(VideoCommon::NvidiaOotDlssRequested(mode) ==
+                (mode == Mode::NvidiaDlss || mode == Mode::NvidiaDlaa));
+        REQUIRE(VideoCommon::NvidiaOotDlssRequested(mode, true));
+        REQUIRE_FALSE(VideoCommon::NvidiaOotDlssRequested(mode, false));
+    }
+}
+
+TEST_CASE("NVIDIA backends share explicit HDR and preset precedence", "[dlss_contract]") {
+    using Preset = Settings::DlssPreset;
+    for (const bool environment : {false, true}) {
+        REQUIRE(VideoCommon::NvidiaDlssHdr(-1, environment) == environment);
+        REQUIRE_FALSE(VideoCommon::NvidiaDlssHdr(0, environment));
+        REQUIRE(VideoCommon::NvidiaDlssHdr(1, environment));
+    }
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::Auto, -1) == 11);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::Auto, 10) == 10);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::K, 13) == 11);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::L, 11) == 12);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::M, 11) == 13);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::K, 11, "M") == 13);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::K, 11, "E") == 5);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::K, 11, "F") == 6);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::K, 11, "default") == 0);
+    REQUIRE(VideoCommon::NvidiaDlssPreset(Preset::M, 13, "invalid") == 11);
+}
 
 TEST_CASE("Spatial cutscene replacement decodes sRGB into float without temporal history",
           "[dlss_contract]") {

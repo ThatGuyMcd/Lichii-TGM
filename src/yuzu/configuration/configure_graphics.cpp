@@ -222,6 +222,7 @@ ConfigureGraphics::~ConfigureGraphics() = default;
 
 void ConfigureGraphics::SetConfiguration() {}
 
+/// Build graphics controls and connect dependent DLSS quality and neural rendering settings.
 void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     QLayout* api_layout = ui->api_widget->layout();
     QWidget* api_grid_widget = new QWidget(this);
@@ -238,7 +239,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     QCheckBox* frame_gen_checkbox = nullptr;
     QComboBox* frame_gen_type_combobox = nullptr;
     QComboBox* frame_gen_motion_combobox = nullptr;
-#ifdef EGLANTINE_STREAMLINE
+#ifdef EGLANTINE_NVIDIA_DLSS
     QCheckBox* builtin_dlss_checkbox = nullptr;
     QCheckBox* nvidia_dlss_checkbox = nullptr;
     QLabel* upscaling_hint = nullptr;
@@ -250,9 +251,10 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 #endif
-#ifndef EGLANTINE_STREAMLINE
-        // Only builds with NVIDIA Streamline (Windows) can use it.
+#ifndef EGLANTINE_NVIDIA_DLSS
+        // Only builds with a platform NVIDIA runtime can use it.
         if (setting->Id() == Settings::values.nvidia_dlss.Id() ||
+            setting->Id() == Settings::values.nvidia_dlss_quality.Id() ||
             setting->Id() == Settings::values.ocarina_dlss_mode.Id() ||
             setting->Id() == Settings::values.dlss_sharpening.Id() ||
             setting->Id() == Settings::values.dlss_preset.Id()) {
@@ -262,6 +264,12 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 #ifndef _WIN32
         // AMD's FSR 4 runtime is Windows-only.
         if (setting->Id() == Settings::values.amd_fsr4.Id()) {
+            continue;
+        }
+#endif
+#ifndef EGLANTINE_NGX
+        if (setting->Id() == Settings::values.neural_rendering.Id() ||
+            setting->Id() == Settings::values.neural_rendering_strength.Id()) {
             continue;
         }
 #endif
@@ -383,7 +391,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 #endif
         } else if (setting->Id() == Settings::values.game_dlss_network.Id()) {
             upscaling_layout->insertWidget(0, widget);
-#ifdef EGLANTINE_STREAMLINE
+#ifdef EGLANTINE_NVIDIA_DLSS
             builtin_dlss_checkbox = widget->checkbox;
         } else if (setting->Id() == Settings::values.nvidia_dlss.Id()) {
             nvidia_dlss_checkbox = widget->checkbox;
@@ -435,7 +443,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     // Hide rather than disable, a disabled widget would read as using the global value. Each
     // frame generation setting shows only while it applies: the flow scale to LSFG, the motion
     // source to the built-in type, and the optical flow quality to its hardware.
-#ifdef EGLANTINE_STREAMLINE
+#ifdef EGLANTINE_NVIDIA_DLSS
     if (builtin_dlss_checkbox && nvidia_dlss_checkbox) {
         const auto update_hint = [builtin_dlss_checkbox, nvidia_dlss_checkbox, upscaling_hint] {
             upscaling_hint->setVisible(builtin_dlss_checkbox->isChecked() &&

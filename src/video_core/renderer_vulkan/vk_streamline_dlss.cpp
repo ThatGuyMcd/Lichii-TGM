@@ -13,9 +13,11 @@
 
 #include "common/logging.h"
 #include "common/settings.h"
+#include "video_core/nvidia_dlss_policy.h"
+#include "video_core/oot_dlss.h"
 #include "video_core/dlss_evaluation.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
-#include "video_core/renderer_vulkan/vk_streamline_dlss.h"
+#include "video_core/renderer_vulkan/vk_nvidia_dlss.h"
 #include "video_core/vulkan_common/streamline.h"
 #include "video_core/vulkan_common/streamline_api.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -60,21 +62,6 @@ sl::DLSSMode ModeFor(VkExtent2D render, VkExtent2D upscale) {
         return sl::DLSSMode::eMaxPerformance;
     }
     return sl::DLSSMode::eUltraPerformance;
-}
-
-// Preset K for every mode: NVIDIA's defaults for Performance/Ultra Performance (M, L) draw thin
-// horizontal lines in Fire Emblem at 2x resolution scale. EDEN_NX2_DLSS_PRESET=E|F (the CNN
-// models) or J|K|L|M picks another model, EDEN_NX2_DLSS_PRESET=default leaves the choice to
-// NVIDIA.
-sl::DLSSPreset Preset() {
-    const char* const value = std::getenv("EDEN_NX2_DLSS_PRESET");
-    if (value && (value[0] == 'E' || value[0] == 'F' || (value[0] >= 'J' && value[0] <= 'M'))) {
-        return static_cast<sl::DLSSPreset>(value[0] - 'A' + 1);
-    }
-    if (value && std::string_view{value} == "default") {
-        return sl::DLSSPreset::eDefault;
-    }
-    return sl::DLSSPreset::ePresetK;
 }
 
 sl::float4x4 Identity() {
@@ -159,7 +146,7 @@ sl::float4x4 ToStreamline(const Matrix& m) {
 /// as the image rows go, upward only with flip_y. Returns false when the matrices don't look
 /// like a perspective camera (the constants then keep their identities).
 bool SetCameraConstants(sl::Constants& constants,
-                        const StreamlineDlssUpscaler::Inputs::Camera& camera, f32 aspect) {
+                        const NvidiaDlssUpscaler::Inputs::Camera& camera, f32 aspect) {
     const f32 y = camera.flip_y ? 1.0f : -1.0f;
     const Matrix to_game{1, 0, 0, 0, 0, y, 0, 0, 0, 0, 2, -1, 0, 0, 0, 1};
     const Matrix from_game{1, 0, 0, 0, 0, y, 0, 0, 0, 0, 0.5f, 0.5f, 0, 0, 0, 1};
@@ -227,7 +214,7 @@ bool SetCameraConstants(sl::Constants& constants,
     return true;
 }
 
-VkImageMemoryBarrier Barrier(const StreamlineDlssUpscaler::Image& image, VkAccessFlags src_access,
+VkImageMemoryBarrier Barrier(const NvidiaDlssUpscaler::Image& image, VkAccessFlags src_access,
                              VkAccessFlags dst_access, VkImageLayout old_layout,
                              VkImageLayout new_layout) {
     VkImageSubresourceRange range = image.range;
@@ -262,7 +249,7 @@ sl::Resource Resource(VkImage image, VkImageView view, VkFormat format, VkImageL
 
 } // Anonymous namespace
 
-StreamlineDlssUpscaler::StreamlineDlssUpscaler(const Device& device_, Scheduler& scheduler_,
+NvidiaDlssUpscaler::NvidiaDlssUpscaler(const Device& device_, Scheduler& scheduler_,
                                                MemoryAllocator& memory_allocator_)
     : device{device_}, scheduler{scheduler_}, memory_allocator{memory_allocator_} {
     if (!Streamline::IsDlssAvailable()) {
@@ -276,29 +263,10 @@ StreamlineDlssUpscaler::StreamlineDlssUpscaler(const Device& device_, Scheduler&
         throw vk::Exception(VK_ERROR_FEATURE_NOT_PRESENT);
     }
     Streamline::GetApi().get_feature_function(sl::kFeatureDLSS, "slDLSSGetState", get_state);
-    point_sampler = device.GetLogical().CreateSampler(VkSamplerCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .magFilter = VK_FILTER_NEAREST,
-        .minFilter = VK_FILTER_NEAREST,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .mipLodBias = 0.0f,
-        .anisotropyEnable = VK_FALSE,
-        .maxAnisotropy = 1.0f,
-        .compareEnable = VK_FALSE,
-        .compareOp = VK_COMPARE_OP_NEVER,
-        .minLod = 0.0f,
-        .maxLod = VK_LOD_CLAMP_NONE,
-        .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
-        .unnormalizedCoordinates = VK_FALSE,
-    });
+    CreateSampler();
 }
 
-StreamlineDlssUpscaler::~StreamlineDlssUpscaler() {
+NvidiaDlssUpscaler::~NvidiaDlssUpscaler() {
     // Not scheduler.Finish(): this runs when the renderer goes away, after the game's channels are
     // released, and a submit would touch their state. Nothing more gets recorded by then.
     void(device.GetLogical().WaitIdle());
@@ -307,142 +275,7 @@ StreamlineDlssUpscaler::~StreamlineDlssUpscaler() {
     }
 }
 
-void StreamlineDlssUpscaler::CreateExposure() {
-    exposure_image = memory_allocator.CreateImage(VkImageCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = EXPOSURE_FORMAT,
-        .extent = {1, 1, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = EXPOSURE_USAGE,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = 0,
-        .pQueueFamilyIndices = nullptr,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    });
-    exposure_view = device.GetLogical().CreateImageView(VkImageViewCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .image = *exposure_image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = EXPOSURE_FORMAT,
-        .components{},
-        .subresourceRange{
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    });
-}
-
-void StreamlineDlssUpscaler::ClearExposure(vk::CommandBuffer cmdbuf, VkImage image, f32 value) {
-    const VkImageSubresourceRange range{
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .baseMipLevel = 0,
-        .levelCount = 1,
-        .baseArrayLayer = 0,
-        .layerCount = 1,
-    };
-    // Its old contents are not needed: from undefined (the last evaluation's reads done) to
-    // GENERAL, cleared, then readable by DLSS.
-    const auto barrier = [&](VkAccessFlags src, VkAccessFlags dst, VkImageLayout old_layout) {
-        return VkImageMemoryBarrier{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = src,
-            .dstAccessMask = dst,
-            .oldLayout = old_layout,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange = range,
-        };
-    };
-    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                           barrier(VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                                   VK_IMAGE_LAYOUT_UNDEFINED));
-    cmdbuf.ClearColorImage(image, VK_IMAGE_LAYOUT_GENERAL, VkClearColorValue{.float32{value, value, value, value}},
-                           range);
-    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
-                           barrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                                   VK_IMAGE_LAYOUT_GENERAL));
-}
-
-void StreamlineDlssUpscaler::CreateOutput(VkExtent2D upscale_size) {
-    if (output_image) {
-        scheduler.Finish(); // the old output may still be in use
-    }
-    const auto create = [&](vk::Image& output_image, vk::ImageView& output_view) {
-    output_image = memory_allocator.CreateImage(VkImageCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = OUTPUT_FORMAT,
-        .extent = {upscale_size.width, upscale_size.height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = OUTPUT_USAGE,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = 0,
-        .pQueueFamilyIndices = nullptr,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    });
-    output_view = device.GetLogical().CreateImageView(VkImageViewCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .image = *output_image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = OUTPUT_FORMAT,
-        .components{},
-        .subresourceRange{
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    });
-    scheduler.RequestOutsideRenderPassOperationContext();
-    scheduler.Record([image = *output_image](vk::CommandBuffer cmdbuf) {
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                               VkImageMemoryBarrier{
-                                   .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                   .pNext = nullptr,
-                                   .srcAccessMask = 0,
-                                   .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                                   .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                                   .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-                                   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                   .image = image,
-                                   .subresourceRange{
-                                       .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                       .baseMipLevel = 0,
-                                       .levelCount = 1,
-                                       .baseArrayLayer = 0,
-                                       .layerCount = 1,
-                                   },
-                               });
-    });
-    };
-    create(output_image, output_view);
-}
-
-bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
+bool NvidiaDlssUpscaler::Upscale(const Inputs& in) {
     if (failed) {
         return false;
     }
@@ -468,14 +301,14 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
     options.outputWidth = in.upscale_size.width;
     options.outputHeight = in.upscale_size.height;
     options.colorBuffersHDR =
-        (in.color_hdr >= 0 ? in.color_hdr : EnvInt("EDEN_NX2_DLSS_HDR", 1)) != 0 ? sl::eTrue
+        VideoCommon::NvidiaDlssHdr(in.color_hdr, EnvInt("EDEN_NX2_DLSS_HDR", 1) != 0) ? sl::eTrue
                                                                                  : sl::eFalse;
     if (const bool hdr = options.colorBuffersHDR == sl::eTrue; hdr != applied_hdr_input) {
         applied_hdr_input = hdr;
         options_changed = true;
         reset = true;
     }
-    options.useAutoExposure = in.color_hdr != 0 && !in.exposure &&
+    options.useAutoExposure = options.colorBuffersHDR == sl::eTrue && !in.exposure &&
                                       EnvInt("EDEN_NX2_DLSS_AUTO_EXPOSURE", 1) != 0
                                   ? sl::eTrue
                                   : sl::eFalse;
@@ -488,24 +321,10 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
     if (in.exposure && !exposure_image) {
         CreateExposure();
     }
-    // The DLSS preset setting, else the caller's choice, else Preset() (EDEN_NX2_DLSS_PRESET).
-    int chosen = in.preset;
-    switch (Settings::values.dlss_preset.GetValue()) {
-    case Settings::DlssPreset::K:
-        chosen = static_cast<int>(sl::DLSSPreset::ePresetK);
-        break;
-    case Settings::DlssPreset::L:
-        chosen = static_cast<int>(sl::DLSSPreset::ePresetL);
-        break;
-    case Settings::DlssPreset::M:
-        chosen = static_cast<int>(sl::DLSSPreset::ePresetM);
-        break;
-    default:
-        break;
-    }
-    const sl::DLSSPreset preset = chosen >= 0 && std::getenv("EDEN_NX2_DLSS_PRESET") == nullptr
-                                      ? static_cast<sl::DLSSPreset>(chosen)
-                                      : Preset();
+    const char* preset_env = std::getenv("EDEN_NX2_DLSS_PRESET");
+    const auto preset = static_cast<sl::DLSSPreset>(VideoCommon::NvidiaDlssPreset(
+        Settings::values.dlss_preset.GetValue(), in.preset,
+        preset_env ? std::optional{std::string_view{preset_env}} : std::nullopt));
     if (static_cast<u32>(preset) != applied_preset_value) {
         applied_preset_value = static_cast<u32>(preset);
         options_changed = true;
@@ -533,8 +352,8 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
                          vk::CommandBuffer cmdbuf) {
         const Streamline::Api& api = Streamline::GetApi();
         const sl::ViewportHandle viewport{0u};
-        // The caller draws the output this frame even when DLSS writes nothing to it: clear it
-        // then, rather than show undefined contents (FSR 3.1 takes over from the next frame).
+        // Direct SDK callers get defined contents on failure. The compositor selects the
+        // original scene instead of this cleared output once it sees Failed().
         const auto clear_output = [&] {
             const VkImageSubresourceRange range{
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -725,6 +544,7 @@ bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
                       static_cast<int>(result), static_cast<int>(api_result));
         }
         if (result != VideoCommon::DlssEvaluationResult::Succeeded) {
+            VideoCommon::OotDlss::NoteBackendFailure();
             clear_output();
             return;
         }

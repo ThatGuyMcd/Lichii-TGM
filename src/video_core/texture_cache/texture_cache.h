@@ -44,6 +44,7 @@
 #include "video_core/texture_cache/conversion.h"
 #include "video_core/texture_cache/host_mip_limits.h"
 #include "video_core/texture_cache/image_view_base.h"
+#include "video_core/texture_cache/initial_contents.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/texture_cache/util.h"
@@ -459,7 +460,15 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     const u64 budget_expected = expected_memory;
     u64 max_critical = MaxCriticalMemory;
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
-        max_critical = (std::max)(max_critical, runtime.GetDeviceMemoryBudget() / 8 * 5);
+        const u64 budget = runtime.GetDeviceMemoryBudget();
+        max_critical = (std::max)(max_critical, budget / 8 * 5);
+        // Cards with 10 GiB or more of budget: 5/8 left ~7.3 GiB on a 12 GB RX 6700 XT, under what
+        // Ocarina's Kokiri Forest keeps alive, so every aggressive pass evicted its CostlyLoad ASTC
+        // textures (a 6144x6144 5x5 one, 31 MiB) and the game re-created them ~128 frames later:
+        // a 24 ms texture stall every ~3 s. Keep 2.5 GiB of the budget for everything else instead.
+        if (budget >= 10_GiB) {
+            max_critical = (std::max)(max_critical, budget - 2560_MiB);
+        }
     }
     critical_memory = (std::min)(critical_memory, max_critical);
     expected_memory =
@@ -743,11 +752,10 @@ void TextureCache<P>::TickFrame() {
         LOG_INFO(HW_GPU, "Texture cache last 600 frames: {} uploads from guest memory, {} MiB (largest {} MiB, {} by layer)",
                  images_uploaded, uploaded_bytes >> 20, largest_upload >> 20, layer_uploads);
         LOG_INFO(HW_GPU,
-                 "Texture cache last 600 frames: stale uploads skipped {} ({} MiB), {} uploaded "
-                 "for buffer-written pages; {} MiB of pages marked stale",
-                 tc_stale_skips, tc_stale_skip_bytes >> 20, tc_stale_gpu_written,
-                 (stale_pages.Count() << StalePages::PAGE_BITS) >> 20);
-        tc_stale_skips = tc_stale_skip_bytes = tc_stale_gpu_written = 0;
+                 "Texture cache last 600 frames: {} new images on stale pages left to their first "
+                 "use; {} MiB of pages marked stale",
+                 tc_stale_deferred, (stale_pages.Count() << StalePages::PAGE_BITS) >> 20);
+        tc_stale_deferred = 0;
         images_uploaded = uploaded_bytes = largest_upload = layer_uploads = 0;
         astc_opaque_images = astc_alpha_images = 0;
         std::vector<std::pair<u32, u64>> shapes;
@@ -2513,21 +2521,6 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         TrackImage(image, image_id);
     }
 
-    // Made where a dropped GPU-written image left stale bytes (MarkStale): nothing to upload.
-    // Pages the buffer cache wrote on the GPU may hold data written back since: upload those.
-    if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) && image.dirty_layers.empty() &&
-        False(image.flags & (ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
-                             ImageFlagBits::SparseTiles | ImageFlagBits::Unbacked)) &&
-        stale_pages.IsAll(image.cpu_addr, image.guest_size_bytes)) {
-        if (!Tegra::Nx2MayBeGpuWritten(image.cpu_addr, image.guest_size_bytes)) {
-            ++tc_stale_skips;
-            tc_stale_skip_bytes += image.guest_size_bytes;
-            runtime.TransitionImageLayout(image);
-            return;
-        }
-        ++tc_stale_gpu_written;
-    }
-
     if (True(image.flags & ImageFlagBits::SparseLayers)) {
         RefreshSparseLayers(image);
         return;
@@ -3414,11 +3407,27 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                  gpu_addr, info.size.width, info.size.height, info.size.depth, info.resources.levels,
                  static_cast<u32>(info.format), info.block.width, info.block.height, info.block.depth);
     }
+    // EDEN_NX2_TC_TRACE=1: log every image the cache creates (time, format, size, joins) and deletes
+    static const bool tc_trace = [] {
+        const char* const v = std::getenv("EDEN_NX2_TC_TRACE");
+        return v != nullptr && v[0] == '1';
+    }();
+    const auto tc_t0 = tc_trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
     if (!image_id) {
         return image_id;
     }
     const Image& image = slot_images[image_id];
+    if (tc_trace) {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc_t0).count();
+        LOG_WARNING(HW_GPU,
+                    "TCTRACE create id={} gpu={:#x} type={} fmt={} {}x{}x{} lv={} ly={} guest={}KiB "
+                    "joined={} found={} ms={:.2f} frame={}",
+                    image_id.index, image.gpu_addr, static_cast<u32>(info.type), static_cast<u32>(info.format),
+                    info.size.width, info.size.height, info.size.depth, info.resources.levels,
+                    info.resources.layers, CalculateGuestSizeInBytes(info) / 1024, join_overlap_ids.size(),
+                    join_overlaps_found.size(), ms, frame_tick);
+    }
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
     const auto [it, is_new] = image_allocs_table.try_emplace(image.gpu_addr);
     if (is_new) {
@@ -3738,11 +3747,29 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
         copied_whole = std::ranges::all_of(written, [](u8 whole) { return whole != 0; });
     }
-    if (overwritten_by_clear()) {
-        // Stays CpuModified: UpdateRenderTargets' PrepareImage drops the upload only when
-        // IsFullClear agrees the clear covers the whole image, and uploads it otherwise.
+    // Made where a dropped GPU-written image left stale bytes (MarkStale). Pages the buffer cache
+    // wrote on the GPU may hold data written back since.
+    const bool stale_guest_memory =
+        Tegra::g_nx2_ampere.load(std::memory_order_relaxed) && new_image.dirty_layers.empty() &&
+        False(new_image.flags & (ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
+                                 ImageFlagBits::SparseTiles | ImageFlagBits::Unbacked)) &&
+        stale_pages.IsAll(new_image.cpu_addr, new_image.guest_size_bytes) &&
+        !Tegra::Nx2MayBeGpuWritten(new_image.cpu_addr, new_image.guest_size_bytes);
+    const InitialUpload upload = ChooseInitialUpload({
+        .copy_writes_whole = copied_whole,
+        .binding_clear_covers = overwritten_by_clear(),
+        .has_join_copies = !join_copies_to_do.empty(),
+        .stale_guest_memory = stale_guest_memory,
+    });
+    if (upload == InitialUpload::AtFirstUse) {
+        // Stays CpuModified: the first PrepareImage drops the upload only when it is a clear
+        // that covers the whole image (UpdateRenderTargets with IsFullClear), and uploads it
+        // otherwise, so the image is never read with texels nothing wrote.
+        if (stale_guest_memory) {
+            ++tc_stale_deferred;
+        }
         runtime.TransitionImageLayout(new_image);
-    } else if (copied_whole) {
+    } else if (upload == InitialUpload::Never) {
         // What RefreshContents does, without the upload.
         new_image.flags &= ~ImageFlagBits::CpuModified;
         if (False(new_image.flags & ImageFlagBits::Tracked)) {
@@ -4476,6 +4503,18 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     const StutterTrace::SiteScope site{StutterTrace::Site::ImageDelete};
     ImageBase& image = slot_images[image_id];
     ++images_deleted;
+    {
+        static const bool tc_trace = [] {
+            const char* const v = std::getenv("EDEN_NX2_TC_TRACE");
+            return v != nullptr && v[0] == '1';
+        }();
+        if (tc_trace) {
+            LOG_WARNING(HW_GPU, "TCTRACE delete id={} gpu={:#x} fmt={} {}x{}x{} guest={}KiB immediate={} frame={}",
+                        image_id.index, image.gpu_addr, static_cast<u32>(image.info.format),
+                        image.info.size.width, image.info.size.height, image.info.size.depth,
+                        image.guest_size_bytes / 1024, immediate_delete, frame_tick);
+        }
+    }
     VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);
     // Drop every decode still queued for it, whatever IsDecoding says: an image re-decoded while
     // a decode was in flight has two, and the first to finish clears the flag. A decode left

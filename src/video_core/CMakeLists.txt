@@ -138,6 +138,7 @@ add_library(video_core STATIC
     nx2_list_stats.h
     oot_dlss.h
     nvidia_dlss_policy.h
+    host_logic_op.h
     nx2_profile.h
     nx2_stutter_trace.cpp
     nx2_stutter_trace.h
@@ -372,6 +373,7 @@ add_library(video_core STATIC
     texture_cache/format_lookup_table.h
     texture_cache/image_base.cpp
     texture_cache/image_base.h
+    texture_cache/initial_contents.h
     texture_cache/host_mip_limits.h
     texture_cache/image_info.cpp
     texture_cache/image_info.h

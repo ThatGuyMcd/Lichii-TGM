@@ -7,6 +7,7 @@
 add_executable(tests
     video_core/neural_rendering_model.cpp
     common/addon_config.cpp
+    common/thread_worker.cpp
     video_core/vulkan_overlay_filter.cpp
     video_core/buffer_cache_ports.cpp
     video_core/unswizzle_workers.cpp
@@ -15,13 +16,16 @@ add_executable(tests
     video_core/frame_dump_schedule.cpp
     video_core/spirv_inline_control.cpp
     video_core/nx2_stutter_trace.cpp
+    video_core/pipeline_build_trace.cpp
     video_core/host_mip_limits.cpp
     video_core/gpu_timestamp.cpp
     video_core/semaphore_waiters.cpp
     video_core/unbacked_image_policy.cpp
+    video_core/host_logic_op.cpp
     core/nx2_streamplay.cpp
     core/nx2_video_ready.cpp
     core/nx2_debug_server.cpp
+    core/general_channel.cpp
     core/nx2_auto_resolution.cpp
     core/nx2_present_pacer.cpp
     common/dkb_cpu_trace.cpp
@@ -42,6 +46,8 @@ add_executable(tests
     core/gpu_dirty_memory.cpp
     core/memory_acquire.cpp
     core/builtin_patches.cpp
+    core/oot_ultrawide.cpp
+    video_core/oot_ultrawide.cpp
     core/builtin_font_glyphs.cpp
     core/system_test_context.h
     video_core/ampere_branch_modifiers.cpp
@@ -105,6 +111,7 @@ add_executable(tests
     video_core/command_snapshot_suspensions.cpp
     video_core/pending_maps.cpp
     video_core/maxwell_fast_method.cpp
+    video_core/maxwell_dma_const_a.cpp
     hid_core/sensor_info.cpp
     common/paged_scalar.cpp
     common/queue_lifetime.cpp
@@ -161,6 +168,7 @@ add_executable(tests
     common/host_memory_test_access.h
     core/host_memory_failure.cpp
     common/multi_level_page_table.cpp
+    common/mapped_file.cpp
     common/page_table.cpp
     common/param_package.cpp
     common/range_map.cpp
@@ -209,6 +217,7 @@ add_executable(tests
     video_core/usage_tracker.cpp
     video_core/shader_invalidation.cpp
     video_core/descriptor_table.cpp
+    video_core/initial_contents.cpp
     video_core/descriptor_payload_growth.cpp
     video_core/global_address_tracking.cpp
     video_core/global_atomic_routing.cpp

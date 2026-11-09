@@ -38,6 +38,7 @@
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/gpu_wait_stats.h"
+#include "video_core/host_logic_op.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/native_query_trace.h"
 #include "video_core/native_indirect_reset.h"
@@ -4169,20 +4170,6 @@ void RasterizerVulkan::UpdateDynamicStates(const GraphicsPipeline* pipeline) {
     }
 
     if (device.IsExtExtendedDynamicState3EnablesSupported()) {
-        using namespace Tegra::Engines;
-        // AMD Workaround: LogicOp incompatible with float render targets
-        if (device.GetDriverID() == VkDriverIdKHR::VK_DRIVER_ID_AMD_OPEN_SOURCE ||
-            device.GetDriverID() == VkDriverIdKHR::VK_DRIVER_ID_AMD_PROPRIETARY) {
-            const auto has_float = std::any_of(
-                regs.vertex_attrib_format.begin(), regs.vertex_attrib_format.end(),
-                [](const auto& attrib) {
-                    return attrib.type == Maxwell3D::Regs::VertexAttribute::Type::Float;
-                }
-            );
-            if (regs.logic_op.enable) {
-                regs.logic_op.enable = static_cast<u32>(!has_float);
-            }
-        }
         UpdateLogicOpEnable(regs);
         UpdateDepthClampEnable(regs);
         UpdateLineRasterizationMode(regs);
@@ -5352,15 +5339,23 @@ void RasterizerVulkan::UpdateDepthBiasEnable(Tegra::Engines::Maxwell3D::Regs& re
 }
 
 void RasterizerVulkan::UpdateLogicOpEnable(Tegra::Engines::Maxwell3D::Regs& regs) {
-    if (!state_tracker.TouchLogicOpEnable()) {
-        return;
-    }
+    const bool dirty = state_tracker.TouchLogicOpEnable();
     if (!device.SupportsDynamicState3LogicOpEnable()) {
         return;
     }
-    scheduler.Record([enable = regs.logic_op.enable](vk::CommandBuffer cmdbuf) {
-        cmdbuf.SetLogicOpEnableEXT(enable != 0);
-    });
+    const auto driver = device.GetDriverID();
+    const bool amd = driver == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
+                     driver == VK_DRIVER_ID_AMD_PROPRIETARY;
+    if (!dirty && !amd) {
+        return;
+    }
+    const bool enable = VideoCommon::HostLogicOpEnable(regs, amd);
+    if (!dirty && last_logic_op_enable == enable) {
+        return;
+    }
+    last_logic_op_enable = enable;
+    scheduler.Record(
+        [enable](vk::CommandBuffer cmdbuf) { cmdbuf.SetLogicOpEnableEXT(enable); });
 }
 
 void RasterizerVulkan::UpdateDepthClampEnable(Tegra::Engines::Maxwell3D::Regs& regs) {

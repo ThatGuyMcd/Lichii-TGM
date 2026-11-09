@@ -40,9 +40,9 @@ if (NOT TARGET enet::enet)
     add_library(enet::enet ALIAS enet)
 endif()
 
-# nxformat reader, header-only (see nxformat/README.md)
+# nxformat reader, from the hash-verified release selected by NxFormat.cmake.
 add_library(nxformat_reader INTERFACE)
-target_include_directories(nxformat_reader SYSTEM INTERFACE ./nxformat)
+target_include_directories(nxformat_reader SYSTEM INTERFACE "${LICHII_NXFORMAT_READER_INCLUDE_DIR}")
 target_compile_features(nxformat_reader INTERFACE cxx_std_17)
 
 # stb

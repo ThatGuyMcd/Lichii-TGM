@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <array>
 #include <bitset>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
@@ -52,6 +54,23 @@
 namespace Vulkan {
 using namespace Common::Literals;
 namespace {
+// Matches Mesa's boolean parsing of its environment options.
+bool EnvFlagSet(const char* name) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return false;
+    }
+    const std::string_view v{value};
+    for (const std::string_view truthy : {"1", "true", "t", "yes", "y"}) {
+        if (std::ranges::equal(v, truthy, [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) == b;
+            })) {
+            return true;
+        }
+    }
+    return false;
+}
+
 namespace Alternatives {
 constexpr std::array STENCIL8_UINT{
     VK_FORMAT_D16_UNORM_S8_UINT,
@@ -1332,6 +1351,19 @@ void Device::SaveShader(std::span<const u32> spirv) const {
     }
 }
 
+bool Device::DriverCachesPipelines() const noexcept {
+    switch (properties.driver.driverID) {
+    case VK_DRIVER_ID_NVIDIA_PROPRIETARY:
+    case VK_DRIVER_ID_AMD_PROPRIETARY:
+        return true;
+    case VK_DRIVER_ID_MESA_RADV:
+        // RADV uses Mesa's on-disk shader cache unless the user turns it off.
+        return !EnvFlagSet("MESA_SHADER_CACHE_DISABLE") && !EnvFlagSet("MESA_GLSL_CACHE_DISABLE");
+    default:
+        return false;
+    }
+}
+
 bool Device::ComputeIsOptimalAstcSupported() const {
     static constexpr std::array<VkFormat, 28> astc_formats = {
         VK_FORMAT_ASTC_4x4_UNORM_BLOCK,   VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
@@ -1886,6 +1918,13 @@ void Device::RemoveUnsuitableExtensions() {
     extensions.depth_clip_control = features.depth_clip_control.depthClipControl;
     RemoveExtensionFeatureIfUnsuitable(extensions.depth_clip_control, features.depth_clip_control,
                                        VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
+
+    // Buffer device addresses: core since Vulkan 1.2, where the extension list doesn't name it
+    // (FEATURE_EXTENSION sets the flag below 1.2 only), so the queried feature says it.
+    extensions.buffer_device_address = features.buffer_device_address.bufferDeviceAddress;
+    RemoveExtensionFeatureIfUnsuitable(extensions.buffer_device_address,
+                                       features.buffer_device_address,
+                                       VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
 
     // VK_EXT_descriptor_buffer
     extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer;

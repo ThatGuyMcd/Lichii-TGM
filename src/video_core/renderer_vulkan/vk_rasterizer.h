@@ -308,6 +308,7 @@ private:
     void UpdateLineRasterizationMode(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateDepthBiasEnable(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateLogicOpEnable(Tegra::Engines::Maxwell3D::Regs& regs);
+    std::optional<bool> last_logic_op_enable;
     void UpdateDepthClampEnable(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateAlphaToCoverageEnable(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateAlphaToOneEnable(Tegra::Engines::Maxwell3D::Regs& regs);

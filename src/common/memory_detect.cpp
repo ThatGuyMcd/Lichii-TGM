@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #endif
+#include <cstdio>
 
 #include "common/memory_detect.h"
 
@@ -111,6 +112,36 @@ ProcessMemoryUsage GetProcessMemoryUsage() {
     }
 #endif
     return usage;
+}
+
+u64 GetAvailablePhysicalMemory() {
+#ifdef _WIN32
+    MEMORYSTATUSEX memorystatus;
+    memorystatus.dwLength = sizeof(memorystatus);
+    if (!GlobalMemoryStatusEx(&memorystatus)) {
+        return 0;
+    }
+    return memorystatus.ullAvailPhys;
+#elif defined(__linux__)
+    // MemAvailable counts the page cache the kernel can drop, which sysinfo's freeram doesn't.
+    std::FILE* const file = std::fopen("/proc/meminfo", "r");
+    if (file == nullptr) {
+        return 0;
+    }
+    u64 available_kib = 0;
+    char line[128];
+    while (std::fgets(line, sizeof(line), file) != nullptr) {
+        unsigned long long value = 0;
+        if (std::sscanf(line, "MemAvailable: %llu kB", &value) == 1) {
+            available_kib = value;
+            break;
+        }
+    }
+    std::fclose(file);
+    return available_kib * 1024;
+#else
+    return 0;
+#endif
 }
 
 } // namespace Common

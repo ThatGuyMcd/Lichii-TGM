@@ -22,6 +22,7 @@
 #include "video_core/nx2_list_indirect_stats.h"
 #include "video_core/nx2_list_stats.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_present_sync.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2_read_trace.h"
 #include "video_core/nx2_stutter_trace.h"
@@ -73,6 +74,7 @@ void CreateGPU(std::optional<Tegra::GPU>& gpu, Core::Frontend::EmuWindow& emu_wi
     Tegra::Nx2ListIndirect::ReadSwitch();
     Tegra::Nx2ListIndirect::Stats::ReadSwitch();
     VideoCommon::ReadUniformStreamReuseSwitch();
+    Tegra::Nx2ResetUiSnapshot();
 
     const auto nvdec_value = Settings::values.nvdec_emulation.GetValue();
     const bool use_nvdec = nvdec_value != Settings::NvdecEmulation::Off;

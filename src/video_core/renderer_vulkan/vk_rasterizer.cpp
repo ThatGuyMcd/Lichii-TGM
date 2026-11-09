@@ -80,6 +80,7 @@
 #include "video_core/nx2_drain_check.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_list_stats.h"
+#include "video_core/nx2_present_sync.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -1046,6 +1047,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         }
     }
     setup_scope.reset();
+    if (Tegra::Nx2UiSnapshotEnabled()) {
+        const auto& hashes = pipeline->ShaderHashes();
+        Tegra::t_nx2_ui_draw = Tegra::Nx2IsUiProgram(hashes[1], hashes[5]);
+    }
+    SCOPE_EXIT {
+        Tegra::t_nx2_ui_draw = false;
+    };
     const bool delta_holds =
         delta_pipeline != nullptr && DeltaStillHolds(draw_serial, draw_map_serial);
     const bool verify_views =

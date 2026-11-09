@@ -493,10 +493,14 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     const bool has_shader_warm = ShaderWarmFilesExist(program_id);
     QAction* prepare_shaders = context_menu.addAction(
         has_shader_warm ? tr("Rebuild Shader Precache") : tr("Build Shader Precache"));
+    QAction* prepare_shaders_recipe =
+        context_menu.addAction(tr("Build Shader Precache from Recipe..."));
     QAction* delete_shader_warm = nullptr;
     if (has_shader_warm) {
         delete_shader_warm = context_menu.addAction(tr("Delete Shader Precache"));
     }
+    QAction* prepare_from_recipe =
+        context_menu.addAction(tr("Prepare Precompiled Shaders from Recipe..."));
     QAction* ryujinx = context_menu.addAction(tr("Link to Ryujinx"));
     context_menu.addSeparator();
     QMenu* remove_menu = context_menu.addMenu(tr("Remove"));
@@ -597,10 +601,16 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
             [this, program_id]() { emit OpenTransferableShaderCacheRequested(program_id); });
     connect(prepare_shaders, &QAction::triggered, this,
             [this, program_id, path]() { emit PrepareShaderWarmRequested(program_id, path); });
+    connect(prepare_shaders_recipe, &QAction::triggered, this, [this, program_id, path]() {
+        emit PrepareShaderWarmFromRecipeRequested(program_id, path);
+    });
     if (delete_shader_warm) {
         connect(delete_shader_warm, &QAction::triggered, this,
                 [this, program_id]() { emit DeleteShaderWarmRequested(program_id); });
     }
+    connect(prepare_from_recipe, &QAction::triggered, this, [this, program_id, path]() {
+        emit PrepareShadersFromRecipeRequested(program_id, path);
+    });
     connect(remove_all_content, &QAction::triggered, this, [this, program_id]() {
         emit RemoveInstalledEntryRequested(program_id, QtCommon::Game::InstalledEntryType::Game);
     });

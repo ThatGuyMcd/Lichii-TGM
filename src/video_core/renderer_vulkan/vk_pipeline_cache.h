@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -20,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include "common/container/unordered_map.h"
 #include <vector>
@@ -61,6 +63,10 @@ namespace VideoCommon::ShaderCacheV2 {
 struct LogFile;
 struct ProgramRecord;
 } // namespace VideoCommon::ShaderCacheV2
+
+namespace VideoCommon::ShaderWarm {
+class PreparedStore;
+}
 
 namespace Vulkan {
 
@@ -196,6 +202,17 @@ private:
         size_t count{};
     };
 
+    struct GraphicsStages;
+    /// Translates a graphics pipeline's programs and works out each stage's runtime info (the
+    /// work before SPIR-V emission); false when the pipeline is skipped, its draws dropped. With
+    /// `parallel` and `stage_pools`, the stages translate at once on shader_jobs, each in IR pools
+    /// added to `stage_pools`, which must outlive `out`.
+    bool TranslateGraphicsStages(ShaderPools& pools, const GraphicsPipelineCacheKey& key,
+                                 std::span<Shader::Environment* const> envs, GraphicsStages& out,
+                                 bool reference_spirv, ParallelTranslation* parallel = nullptr,
+                                 std::vector<std::shared_ptr<ShaderPools>>* stage_pools = nullptr,
+                                 bool allow_libraries = true);
+
     /// Builds the pipeline as a job of shader_jobs with build_in_parallel, else leaves it for the
     /// caller's Build() (see BuildQueue). With `parallel` the stages translate at once on
     /// shader_jobs, each in IR pools of its own; their environments must be safe to read from those
@@ -205,7 +222,8 @@ private:
         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
         bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools = nullptr,
         ParallelTranslation* parallel = nullptr, bool libraries_only = false,
-        bool notify_runtime_build = true, DescriptorPool* transient_descriptors = nullptr);
+        bool notify_runtime_build = true, DescriptorPool* transient_descriptors = nullptr,
+        std::array<std::vector<u32>, 5>* spirv_out = nullptr);
 
     /// Released IR pools for a build, or new ones
     [[nodiscard]] std::shared_ptr<ShaderPools> TakeSparePools();
@@ -228,7 +246,8 @@ private:
                                                      Shader::Environment& env,
                                                      PipelineStatistics* statistics,
                                                      bool build_in_parallel,
-                                                     std::shared_ptr<ShaderPools> emit_pools = nullptr);
+                                                     std::shared_ptr<ShaderPools> emit_pools = nullptr,
+                                                     std::vector<u32>* spirv_out = nullptr);
 
     /// Where CreateGraphicsPipeline and CreateComputePipeline build; `cpu_bytes` estimates the
     /// IR a deferred emission holds
@@ -257,6 +276,14 @@ private:
 
     /// Cancels the v2 prebuild and waits for its running stages
     void StopBackgroundJobs();
+    struct PrecompiledRecord;
+
+    /// The compute counterpart of CreatePrecompiledGraphicsPipeline: an entry without a
+    /// pipeline when the key is not precompiled or its answers differ. A key may have several
+    /// records (storage pointer states): the first whose answers hold is used (set to `matched`).
+    ComputePipelineCacheEntry CreatePrecompiledComputePipeline(
+        const ComputePipelineCacheKey& key, VideoCommon::ComputeEnvironment& env,
+        const PrecompiledRecord** matched = nullptr);
 
     bool SerializeVulkanPipelineCache(const std::filesystem::path& filename,
                                       const vk::PipelineCache& pipeline_cache, u32 cache_version);
@@ -311,6 +338,115 @@ private:
                                 size_t total_before, std::stop_token stop_loading,
                                 const VideoCore::DiskResourceLoadCallback& callback,
                                 bool& skipped);
+    /// Includes game content, dirty translator sources, complete host profile and translation policy.
+    std::string NativePreparationStamp(const std::filesystem::path& path) const;
+    void PreparePrecompiled(const std::filesystem::path& base_dir, bool prepare,
+                            std::stop_token stop_loading,
+                            const VideoCore::DiskResourceLoadCallback& callback);
+    void RunNativePreparation(const std::filesystem::path& path,
+                              VideoCommon::ShaderWarm::PreparedStore& store,
+                              std::stop_token stop_loading,
+                              const VideoCore::DiskResourceLoadCallback& callback);
+    /// CPU translation returns the driver build; no IR survives into the driver stage.
+    Common::UniqueFunction<bool> PrepareNativeRecord(
+        const std::filesystem::path& path, std::span<const std::pair<u64, u64>> env_index,
+        VideoCommon::ShaderWarm::PreparedStore& store, u32 index, bool compute,
+        const PrecompiledRecord& record, const GraphicsPipelineCacheKey& graphics,
+        const ComputePipelineCacheKey& compute_key, VideoCommon::ShaderJobContext& context);
+    bool LoadPrecompiledInfos(const std::filesystem::path& precompiled,
+                              const std::filesystem::path& infos,
+                              const VideoCommon::ShaderWarm::PreparedStore& store);
+
+    /// A precompiled pipeline for the current key, drawn with the shader infos the preparation
+    /// step kept while a worker builds it from the SPIR-V it kept (or, without it, translates
+    /// the recorded environments): the GPU thread checks that the game's state now answers the
+    /// recorded environments' questions as they were answered (FileEnvironment::AnswersHoldFor),
+    /// so the kept translation is the one the game's state would give, instead of translating.
+    /// A key that was not precompiled, or whose answers differ, is looked up per stage
+    /// (CreatePerStageGraphicsPipeline). Null when neither gives one. `matched` is set to the
+    /// record the pipeline was made from.
+    std::unique_ptr<GraphicsPipeline> CreatePrecompiledGraphicsPipeline(
+        GraphicsEnvironments& environments,
+        std::optional<PrecompiledRecord>* matched = nullptr);
+
+    /// A pipeline whose key was not precompiled, from each stage's kept info: the first of the
+    /// program's recorded environments (from any precompiled pipeline) whose answers the game's
+    /// state gives. A stage's translation depends only on its program and environment (stages
+    /// whose legacy attribute loads follow the previous stage are not kept per stage), so the
+    /// infos hold; a worker translates the recorded environments with this key (the SPIR-V
+    /// depends on the key), and a translation that gives other infos fails the build, which is
+    /// then replaced (ReplaceFailedPrecompiled). Null unless every stage is found, with `reason`
+    /// set to why (empty when found).
+    std::unique_ptr<GraphicsPipeline> CreatePerStageGraphicsPipeline(
+        GraphicsEnvironments& environments, std::optional<PrecompiledRecord>* matched,
+        std::string_view& reason);
+
+    /// The pipeline drawn with `infos`, built by a worker from the kept SPIR-V blobs or, without
+    /// them, by translating the recorded environments.
+    std::unique_ptr<GraphicsPipeline> MakePrecompiledGraphicsPipeline(
+        std::shared_ptr<std::vector<VideoCommon::FileEnvironment>> recorded,
+        const std::array<Shader::Info, 5>& infos, const std::array<bool, 5>& present,
+        const std::optional<std::array<std::pair<u64, u32>, 5>>& spirv_blobs);
+
+    /// Opens the precompiled file and the kept infos for reading, on the GPU thread.
+    void OpenPrecompiledFiles();
+
+    /// EDEN_NX2_PRECOMPILED_AUDIT=1: a precompiled pipeline just created is also translated from
+    /// the game's state, on the GPU thread, and its SPIR-V and infos compared with the kept ones
+    /// (counted in the 10 s report, the first differences logged). Slow: a check of the
+    /// relational answers (FileEnvironment::AnswersHoldFor), not for play. A compute pipeline
+    /// passes the record it was made from.
+    void AuditPrecompiled(std::span<Shader::Environment* const> envs, bool compute,
+                          u64 key_hash, const PrecompiledRecord* record = nullptr);
+
+    /// The current pipeline was precompiled and its build failed (its translation did not give
+    /// the infos it was drawn with): replaced by one translated from the game's state.
+    GraphicsPipeline* ReplaceFailedPrecompiled();
+
+    struct PrecompiledRecord {
+        std::vector<u8> key; ///< Exact key bytes, never a hash-only match.
+        std::array<u32, 5> envs{};  ///< The precompiled file's environments, in stage order
+        u8 env_count{};
+        std::array<u32, 5> infos{}; ///< Per pipeline stage: an info blob, ~0U for none
+        std::array<u32, 5> spirv{}; ///< Per pipeline stage: a SPIR-V blob (zstd), ~0U for none
+    };
+    std::unordered_map<u64, PrecompiledRecord> precompiled_records; ///< By key hash
+    struct PrecompiledStage {
+        u8 stage{};  ///< Pipeline stage
+        u32 env{};   ///< The precompiled file's environment
+        u32 info{};  ///< An info blob
+    };
+    /// Graphics stages by program hash, one for each recorded environment the program was kept in
+    std::unordered_multimap<u64, PrecompiledStage> precompiled_stages;
+    /// By key hash; a compute key has a record for each storage pointer state it was prepared in
+    std::unordered_multimap<u64, PrecompiledRecord> precompiled_compute_records;
+    std::vector<std::pair<u64, u64>> precompiled_env_index;         ///< Offset, size
+    std::vector<std::pair<u64, u32>> precompiled_info_blobs;        ///< Offset, size (all blobs)
+    std::unordered_set<u32> precompiled_record_ids;
+    std::string precompiled_translation_policy;
+    std::filesystem::path precompiled_path;
+    std::filesystem::path precompiled_infos_path;
+    std::ifstream precompiled_file;       ///< GPU thread only
+    std::ifstream precompiled_infos_file; ///< GPU thread only
+    std::unordered_set<u64> precompiled_rejected; ///< Keys whose precompiled build failed
+
+    /// Native pipelines: the key without state that cannot change the pipeline (see
+    /// FixedPipelineState::CanonicalizeNative).
+    void CanonicalizeNativeKey(GraphicsPipelineCacheKey& key,
+                               std::span<const Shader::Environment* const> envs) const noexcept;
+
+    /// Native vertex programs found to load attributes their header does not list: their keys
+    /// keep every attribute type.
+    bool IsUnmaskedVertexProgram(u64 hash) const {
+        if (!any_unmasked_vertex_program.load(std::memory_order_acquire)) {
+            return false;
+        }
+        std::scoped_lock lock{unmasked_mutex};
+        return unmasked_vertex_programs.contains(hash);
+    }
+    mutable std::mutex unmasked_mutex;
+    std::unordered_set<u64> unmasked_vertex_programs;
+    std::atomic<bool> any_unmasked_vertex_program{};
 
     const Device& device;
     Scheduler& scheduler;
@@ -335,6 +471,9 @@ private:
     std::optional<DriverBuildJournal> build_journal;
 
     GraphicsPipelineCacheKey graphics_key{};
+    /// Native titles: the state as the registers give it. FixedPipelineState refreshes some fields
+    /// only when they are dirty, so graphics_key.state is a canonical copy made for each draw.
+    FixedPipelineState native_state{};
     GraphicsPipeline* current_pipeline{};
 
     /// EDEN_NX2_GPL: shader libraries shared by the graphics pipelines. Declared before the

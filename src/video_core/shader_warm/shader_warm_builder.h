@@ -32,6 +32,14 @@ std::filesystem::path ComputeWarmPath(u64 title_id);
 /// support.
 std::filesystem::path GraphicsWarmPath(u64 title_id);
 std::filesystem::path MeshWarmPath(u64 title_id);
+/// The title's precompile recipe (tools/nx2-precompile), kept once a build used it, and the
+/// pipeline file assembled from it with the player's game files, which the loading screen prepares.
+std::filesystem::path NativeRecipePath(u64 title_id);
+std::filesystem::path NativePreparationPath(u64 title_id);
+
+/// The recipe for this title: the kept one, else the first <exe dir>/recipes/*.nx2recipe whose
+/// header names this title and this build's cache version (as Fritchii ships them). Empty: none.
+std::filesystem::path FindNativeRecipe(u64 title_id);
 
 /// "Already precached" marker of a precache file (same folder, extension .done), written by the
 /// emulator after the precache ran to the end. A matching marker skips the precache at boot.
@@ -86,8 +94,8 @@ std::optional<WarmStamp> ReadWarmMarker(const std::filesystem::path& warm_file);
 bool WriteWarmMarker(const std::filesystem::path& warm_file, const WarmStamp& stamp);
 
 /// True when the title's precache has never finished: no precache file yet, or no marker next
-/// to it. A marker that no longer matches (new driver) is not seen here: the emulator checks that
-/// at boot.
+/// to it, or a recipe (FindNativeRecipe) not assembled yet. A marker that no longer matches (new
+/// driver) is not seen here: the emulator checks that at boot.
 bool WarmPending(u64 title_id);
 
 /// Whether this boot precaches before the game starts: Always, or Ask when the frontend asked and
@@ -107,6 +115,9 @@ bool TakeWarmBeforeStart();
 /// game starts. Taken (and cleared) by the renderer.
 void RequestSkipWarm();
 bool TakeSkipWarm();
+/// Whether Skip was pressed, without clearing it (the native preparation runs before the
+/// precache, and one Skip stops both).
+bool SkipWarmRequested();
 
 /// The GPU driver, device and pipeline cache version pipelines were precached for.
 struct DriverStamp {
@@ -149,6 +160,10 @@ struct Result {
     size_t vertex_programs{};    ///< Vertex entries written to the graphics file
     size_t fragment_programs{};  ///< Fragment entries written to the graphics file
     size_t mesh_pipelines{};     ///< Speculative paired task/mesh/fragment entries
+    size_t native_pipelines{};   ///< Pipelines assembled from the recipe
+    size_t native_dropped{};     ///< Recipe pipelines whose programs this copy lacks
+    size_t native_programs{};    ///< Native programs found in the game files
+    size_t native_combinations{}; ///< Program combinations (variations) found
     size_t skipped{};            ///< Programs that failed to extract or convert
 };
 
@@ -168,6 +183,8 @@ struct BuildOptions {
     /// Pipeline caches used for the draw state guesses. Unset: the title's own pipeline cache
     /// when it exists, else the built-in defaults. Set but empty: always the built-in defaults.
     std::optional<std::vector<std::filesystem::path>> runtime_caches;
+    /// Recipe to assemble; empty: the one kept from an earlier build, if any.
+    std::filesystem::path recipe_path;
     /// Conversion threads, 0: a quarter of the CPU threads, 2 to 6.
     size_t threads{};
     /// Bound speculative mesh combinations; 0 disables generation. Requires runtime templates.

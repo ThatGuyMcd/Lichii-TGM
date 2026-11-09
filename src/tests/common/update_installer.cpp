@@ -19,7 +19,7 @@ namespace {
 struct TempDir {
     TempDir() {
         path = fs::temp_directory_path() /
-               ("lichii-update-installer-" + std::to_string(std::rand()) + "-" +
+               ("lichii-tgm-update-installer-" + std::to_string(std::rand()) + "-" +
                 std::to_string(counter++));
         fs::create_directories(path);
     }
@@ -43,14 +43,14 @@ std::string Read(const fs::path& file) {
 } // namespace
 
 TEST_CASE("Staged and previous files sit beside the target", "[updater]") {
-    const fs::path target = "/opt/lichii/lichii-linux-x86_64.AppImage";
-    CHECK(UpdateInstaller::StagedPath(target) == "/opt/lichii/lichii-linux-x86_64.AppImage.new");
-    CHECK(UpdateInstaller::PreviousPath(target) == "/opt/lichii/lichii-linux-x86_64.AppImage.prev");
+    const fs::path target = "/opt/lichii-tgm/Lichii-tgm-v1.0-linux-x86_64.AppImage";
+    CHECK(UpdateInstaller::StagedPath(target) == "/opt/lichii-tgm/Lichii-tgm-v1.0-linux-x86_64.AppImage.new");
+    CHECK(UpdateInstaller::PreviousPath(target) == "/opt/lichii-tgm/Lichii-tgm-v1.0-linux-x86_64.AppImage.prev");
 }
 
 TEST_CASE("Swap replaces the target and keeps one previous copy", "[updater]") {
     TempDir dir;
-    const auto target = dir.path / "lichii.AppImage";
+    const auto target = dir.path / "lichii-tgm.AppImage";
     const auto staged = UpdateInstaller::StagedPath(target);
     const auto previous = UpdateInstaller::PreviousPath(target);
     Write(target, "old");
@@ -72,7 +72,7 @@ TEST_CASE("Swap replaces the target and keeps one previous copy", "[updater]") {
 
 TEST_CASE("Swap leaves the target untouched when the staged file is missing", "[updater]") {
     TempDir dir;
-    const auto target = dir.path / "lichii.AppImage";
+    const auto target = dir.path / "lichii-tgm.AppImage";
     Write(target, "old");
 
     std::error_code ec;
@@ -84,7 +84,7 @@ TEST_CASE("Swap leaves the target untouched when the staged file is missing", "[
 
 TEST_CASE("Rollback exchanges the target with its previous copy", "[updater]") {
     TempDir dir;
-    const auto target = dir.path / "lichii.AppImage";
+    const auto target = dir.path / "lichii-tgm.AppImage";
     const auto previous = UpdateInstaller::PreviousPath(target);
     Write(target, "new");
     Write(previous, "old");
@@ -101,7 +101,7 @@ TEST_CASE("Rollback exchanges the target with its previous copy", "[updater]") {
 
 TEST_CASE("Rollback without a previous copy fails and changes nothing", "[updater]") {
     TempDir dir;
-    const auto target = dir.path / "lichii.AppImage";
+    const auto target = dir.path / "lichii-tgm.AppImage";
     Write(target, "current");
 
     std::error_code ec;
@@ -112,13 +112,13 @@ TEST_CASE("Rollback without a previous copy fails and changes nothing", "[update
 
 TEST_CASE("Only an existing file in a writable folder can be replaced", "[updater]") {
     TempDir dir;
-    const auto target = dir.path / "lichii.AppImage";
+    const auto target = dir.path / "lichii-tgm.AppImage";
     CHECK_FALSE(UpdateInstaller::CanReplace(target));
     CHECK_FALSE(UpdateInstaller::CanReplace(dir.path));
     Write(target, "x");
-    Write(dir.path / ".lichii-update-write-test", "kept");
+    Write(dir.path / ".lichii-tgm-update-write-test", "kept");
     CHECK(UpdateInstaller::CanReplace(target));
-    CHECK(Read(dir.path / ".lichii-update-write-test") == "kept");
+    CHECK(Read(dir.path / ".lichii-tgm-update-write-test") == "kept");
     std::size_t count = 0;
     for ([[maybe_unused]] const auto& entry : fs::directory_iterator{dir.path}) {
         ++count;
@@ -128,8 +128,8 @@ TEST_CASE("Only an existing file in a writable folder can be replaced", "[update
 
 TEST_CASE("Only one holder at a time gets the lock", "[updater]") {
     TempDir dir;
-    const auto path = UpdateInstaller::LockPath(dir.path / "lichii.AppImage");
-    CHECK(path == dir.path / "lichii.AppImage.lock");
+    const auto path = UpdateInstaller::LockPath(dir.path / "lichii-tgm.AppImage");
+    CHECK(path == dir.path / "lichii-tgm.AppImage.lock");
     {
         const UpdateInstaller::Lock first{path};
         CHECK(first.Held());
@@ -163,11 +163,11 @@ TEST_CASE("Install replaces files, adds new ones and keeps the old ones as a bac
     TempDir dir;
     const auto install = dir.path / "app";
     const auto staging = install / ".update-staging";
-    Put(install, "lichii.exe", "old exe");
+    Put(install, "lichii-tgm.exe", "old exe");
     Put(install, "Qt6Core.dll", "old qt");
     Put(install, "plugins/a.dll", "old plugin");
     Put(install, "user/config/qt-config.ini", "my settings");
-    Put(staging, "lichii.exe", "new exe");
+    Put(staging, "lichii-tgm.exe", "new exe");
     Put(staging, "Qt6Core.dll", "new qt");
     Put(staging, "plugins/b.dll", "new plugin");
     Put(staging, "user/config/qt-config.ini", "must not be installed");
@@ -175,73 +175,73 @@ TEST_CASE("Install replaces files, adds new ones and keeps the old ones as a bac
     std::error_code ec;
     REQUIRE(UpdateInstaller::Install(staging, install, ec));
 
-    CHECK(Read(install / "lichii.exe") == "new exe");
+    CHECK(Read(install / "lichii-tgm.exe") == "new exe");
     CHECK(Read(install / "Qt6Core.dll") == "new qt");
     CHECK(Read(install / "plugins/b.dll") == "new plugin");
     CHECK(Read(install / "plugins/a.dll") == "old plugin");
     CHECK(Read(install / "user/config/qt-config.ini") == "my settings");
     CHECK_FALSE(fs::exists(staging));
     const auto backup = install / ".update-backup";
-    CHECK(Read(backup / "lichii.exe") == "old exe");
+    CHECK(Read(backup / "lichii-tgm.exe") == "old exe");
     CHECK(Read(backup / "Qt6Core.dll") == "old qt");
     CHECK_FALSE(fs::exists(backup / "user"));
     CHECK(Files(install / "user") == std::set<std::string>{"config/qt-config.ini"});
     CHECK(Read(install / "install-manifest.txt") ==
-          "Qt6Core.dll\nlichii.exe\nplugins/b.dll\n");
+          "Qt6Core.dll\nlichii-tgm.exe\nplugins/b.dll\n");
     CHECK_FALSE(fs::exists(install / ".update-backup.tmp"));
 }
 
 TEST_CASE("A later update removes the files the new version dropped", "[updater]") {
     TempDir dir;
     const auto install = dir.path / "app";
-    Put(install, "lichii.exe", "v1");
+    Put(install, "lichii-tgm.exe", "v1");
     Put(install, "old.dll", "v1 only");
     Put(install, "keep.dll", "v1");
     Put(install, "user/data.bin", "mine");
     std::error_code ec;
 
-    Put(install, ".update-staging/lichii.exe", "v2");
+    Put(install, ".update-staging/lichii-tgm.exe", "v2");
     Put(install, ".update-staging/old.dll", "v2");
     Put(install, ".update-staging/keep.dll", "v2");
     REQUIRE(UpdateInstaller::Install(install / ".update-staging", install, ec));
 
-    Put(install, ".update-staging/lichii.exe", "v3");
+    Put(install, ".update-staging/lichii-tgm.exe", "v3");
     Put(install, ".update-staging/keep.dll", "v3");
     REQUIRE(UpdateInstaller::Install(install / ".update-staging", install, ec));
 
     CHECK(Files(install) ==
-          std::set<std::string>{"lichii.exe", "keep.dll", "install-manifest.txt",
-                                ".update-backup/lichii.exe", ".update-backup/keep.dll",
+          std::set<std::string>{"lichii-tgm.exe", "keep.dll", "install-manifest.txt",
+                                ".update-backup/lichii-tgm.exe", ".update-backup/keep.dll",
                                 ".update-backup/old.dll", ".update-backup/install-manifest.txt",
                                 "user/data.bin"});
-    CHECK(Read(install / "lichii.exe") == "v3");
+    CHECK(Read(install / "lichii-tgm.exe") == "v3");
     CHECK(Read(install / ".update-backup/old.dll") == "v2");
-    CHECK(Read(install / ".update-backup/lichii.exe") == "v2");
+    CHECK(Read(install / ".update-backup/lichii-tgm.exe") == "v2");
 }
 
 TEST_CASE("Restoring the backup brings back the previous version and can be undone", "[updater]") {
     TempDir dir;
     const auto install = dir.path / "app";
-    Put(install, "lichii.exe", "v1");
+    Put(install, "lichii-tgm.exe", "v1");
     Put(install, "gone.dll", "v1 only");
     Put(install, "user/data.bin", "mine");
     std::error_code ec;
 
-    Put(install, ".update-staging/lichii.exe", "v2");
+    Put(install, ".update-staging/lichii-tgm.exe", "v2");
     Put(install, ".update-staging/new.dll", "v2 only");
     REQUIRE(UpdateInstaller::Install(install / ".update-staging", install, ec));
     REQUIRE(fs::exists(install / "new.dll"));
 
     REQUIRE(UpdateInstaller::Install(install / ".update-backup", install, ec));
-    CHECK(Read(install / "lichii.exe") == "v1");
+    CHECK(Read(install / "lichii-tgm.exe") == "v1");
     CHECK(Read(install / "gone.dll") == "v1 only");
     CHECK_FALSE(fs::exists(install / "new.dll"));
     CHECK(Read(install / "user/data.bin") == "mine");
-    CHECK(Read(install / ".update-backup/lichii.exe") == "v2");
+    CHECK(Read(install / ".update-backup/lichii-tgm.exe") == "v2");
     CHECK(Read(install / ".update-backup/new.dll") == "v2 only");
 
     REQUIRE(UpdateInstaller::Install(install / ".update-backup", install, ec));
-    CHECK(Read(install / "lichii.exe") == "v2");
+    CHECK(Read(install / "lichii-tgm.exe") == "v2");
     CHECK(Read(install / "new.dll") == "v2 only");
     CHECK_FALSE(fs::exists(install / "gone.dll"));
     CHECK(Read(install / "user/data.bin") == "mine");
@@ -298,18 +298,18 @@ TEST_CASE("The user folder is protected whatever its letter case", "[updater]") 
     TempDir dir;
     const auto install = dir.path / "app";
     const auto staging = install / ".update-staging";
-    Put(install, "lichii.exe", "old exe");
+    Put(install, "lichii-tgm.exe", "old exe");
     Put(install, "USER/data.bin", "mine");
-    Put(staging, "lichii.exe", "new exe");
+    Put(staging, "lichii-tgm.exe", "new exe");
     Put(staging, "User/config.ini", "must not be installed");
 
     std::error_code ec;
     REQUIRE(UpdateInstaller::Install(staging, install, ec));
     CHECK(Read(install / "USER/data.bin") == "mine");
     CHECK_FALSE(fs::exists(install / "User/config.ini"));
-    CHECK(Read(install / "install-manifest.txt") == "lichii.exe\n");
+    CHECK(Read(install / "install-manifest.txt") == "lichii-tgm.exe\n");
     CHECK(Files(install / ".update-backup") ==
-          std::set<std::string>{"lichii.exe", "install-manifest.txt"});
+          std::set<std::string>{"lichii-tgm.exe", "install-manifest.txt"});
 }
 
 TEST_CASE("Path list entries inside a folder are removed", "[updater]") {

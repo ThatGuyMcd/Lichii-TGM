@@ -5,6 +5,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <array>
 #include <charconv>
 #include "common/logging.h"
 #include "common/scm_rev.h"
@@ -28,6 +29,42 @@ std::optional<u64> ParseBuildNumber(std::string_view tag) {
     return number;
 }
 
+enum class Channel { Legacy, Fork };
+
+struct Version {
+    Channel channel;
+    std::array<u64, 3> numbers{};
+};
+
+std::optional<Version> ParseVersion(std::string_view tag) {
+    if (const auto build = ParseBuildNumber(tag)) {
+        return Version{Channel::Legacy, {*build, 0, 0}};
+    }
+    constexpr std::string_view prefix = "Lichii-tgm-v";
+    if (!tag.starts_with(prefix)) {
+        return std::nullopt;
+    }
+    tag.remove_prefix(prefix.size());
+    Version version{Channel::Fork};
+    for (size_t index = 0; index < version.numbers.size(); ++index) {
+        const auto separator = tag.find('.');
+        const auto part = tag.substr(0, separator);
+        if (part.empty() || (part.size() > 1 && part.front() == '0')) {
+            return std::nullopt;
+        }
+        const auto [end, error] =
+            std::from_chars(part.data(), part.data() + part.size(), version.numbers[index]);
+        if (error != std::errc{} || end != part.data() + part.size()) {
+            return std::nullopt;
+        }
+        if (separator == std::string_view::npos) {
+            return index >= 1 ? std::make_optional(version) : std::nullopt;
+        }
+        tag.remove_prefix(separator + 1);
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 Failure ClassifyFailure(int status) {
@@ -41,16 +78,18 @@ std::optional<Common::Net::Release> SelectUpdate(std::span<const Common::Net::Re
                                                  std::string_view build_tag,
                                                  std::string_view platform,
                                                  Common::Net::LinuxPackage package) {
-    auto newest = ParseBuildNumber(build_tag);
+    auto newest = ParseVersion(build_tag);
     if (!newest) {
         return std::nullopt;
     }
 
     const Common::Net::Release* selected = nullptr;
     for (const auto& release : releases) {
-        const auto number = ParseBuildNumber(release.tag);
-        if (number && *number > *newest && !release.GetPlatformAssets(platform, package).empty()) {
-            newest = number;
+        const auto version = ParseVersion(release.tag);
+        if (version && version->channel == newest->channel && version->numbers > newest->numbers &&
+            (version->channel == Channel::Legacy || !release.prerelease) &&
+            !release.GetPlatformAssets(platform, package).empty()) {
+            newest = version;
             selected = &release;
         }
     }
@@ -58,7 +97,7 @@ std::optional<Common::Net::Release> SelectUpdate(std::span<const Common::Net::Re
 }
 
 CheckResult Check() {
-    if (!ParseBuildNumber(Common::g_build_release_tag) ||
+    if (!ParseVersion(Common::g_build_release_tag) ||
         std::string_view{Common::g_build_release_platform}.empty()) {
         return {};
     }
@@ -70,9 +109,9 @@ CheckResult Check() {
         return {.failure = failure, .status = list.status};
     }
 
-    auto update = SelectUpdate(list.releases, Common::g_build_release_tag,
-                               Common::g_build_release_platform,
-                               Common::Net::CurrentLinuxPackage());
+    auto update =
+        SelectUpdate(list.releases, Common::g_build_release_tag, Common::g_build_release_platform,
+                     Common::Net::CurrentLinuxPackage());
     if (update) {
         LOG_INFO(Frontend, "Received update {}", update->title);
     }

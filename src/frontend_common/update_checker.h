@@ -35,6 +35,8 @@ Failure ClassifyFailure(int status);
 
 CheckResult Check();
 std::optional<Common::Net::Release> GetUpdate();
+// Fork tags use Lichii-tgm-vMAJOR.MINOR[.PATCH] and stable releases. Legacy build-N tags
+// stay in their own channel, including its prereleases. Only a matching package can update.
 std::optional<Common::Net::Release> SelectUpdate(
     std::span<const Common::Net::Release> releases, std::string_view build_tag,
     std::string_view platform, Common::Net::LinuxPackage package = Common::Net::LinuxPackage::Any);

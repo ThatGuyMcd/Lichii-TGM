@@ -136,7 +136,7 @@ bool CanReplace(const fs::path& target) {
     }
     const auto probe =
         target.parent_path() /
-        (".lichii-update-write-test-" +
+        (".lichii-tgm-update-write-test-" +
          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     if (fs::symlink_status(probe, ec).type() != fs::file_type::not_found) {
         return false;

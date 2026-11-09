@@ -2017,6 +2017,10 @@ void PipelineCache::TickFrame() {
     }
 }
 
+/// Destroys graphics pipelines unused for EvictAfterFrames frames, once the GPU is done with
+/// them. Never-used pipelines built by the boot prebuild survive the sweep up to a budget of
+/// one pipeline per 3 MiB of device-local memory, clamped to [2000, 10000], so a large cache
+/// keeps its prebuild on cards with the memory for it.
 void PipelineCache::EvictUnusedPipelines() {
     // Building a pipeline again on MoltenVK means a Metal compile mid-game, far dearer than the
     // rebuild cost below, so none are evicted there.
@@ -2033,14 +2037,37 @@ void PipelineCache::EvictUnusedPipelines() {
     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
     // this long is destroyed; rebuilding it later requires a full GPU-thread shader translation
     // (~8.5 ms each) plus a driver pipeline cache hit.
-    constexpr u64 EvictAfterFrames = 9000;
+    // The idle age has to outlast a trip through neighbouring areas and back: at 9000 frames
+    // (~2.5 min at 60 fps) Ocarina of Time evicted on nearly every revisit (measured on a
+    // 12 GB RTX 3080: 282 eviction sweeps in a 70-minute session, single frames up to 1.36 s
+    // while evicted pipelines were translated again). 27000 frames is ~7.5 min at 60 fps.
+    constexpr u64 EvictAfterFrames = 27000;
     if (frame_count <= EvictAfterFrames) {
         return;
     }
     const u64 cutoff = frame_count - EvictAfterFrames;
     const u64 tick = scheduler.CurrentTick();
-    // ~0.9 GB of driver memory at ~0.45 MB each.
-    constexpr size_t MaxUnusedPrebuiltPipelines = 2000;
+    // The budget of never-used prebuilt pipelines scales with the device's memory: one pipeline
+    // per 3 MiB of video memory (~15% of it at ~0.45 MB each), between the old flat floor of
+    // 2000 (~0.9 GB) and 10000. The flat budget discarded most of what the boot precache had
+    // built for a title whose cache holds tens of thousands of pipelines (Ocarina of Time:
+    // 3868 evicted 170 s after the precache finished; 22510 of 24285 across the session that
+    // motivated the preload check above), and the rebuilds played as the stutters the precache
+    // exists to prevent. An 8 GB card keeps ~2700, a 12 GB card ~4000, a 24 GB card ~8000.
+    constexpr size_t MinUnusedPrebuiltPipelines = 2000;
+    constexpr size_t MaxUnusedPrebuiltPipelines = 10000;
+    const size_t unused_prebuilt_budget =
+        std::clamp<size_t>(device.GetDeviceLocalMemory() / (size_t{3} << 20),
+                           MinUnusedPrebuiltPipelines, MaxUnusedPrebuiltPipelines);
+    static size_t logged_budget = 0;
+    if (logged_budget != unused_prebuilt_budget) {
+        LOG_INFO(Render_Vulkan,
+                 "Pipeline eviction: keeping up to {} unused prebuilt pipelines (~{:.1} GiB of "
+                 "driver memory), evicting pipelines unused for {} frames",
+                 unused_prebuilt_budget,
+                 static_cast<double>(unused_prebuilt_budget) * 0.45 / 1024.0, EvictAfterFrames);
+        logged_budget = unused_prebuilt_budget;
+    }
     size_t kept_prebuilt = 0;
     size_t evicted = 0;
     for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
@@ -2055,7 +2082,7 @@ void PipelineCache::EvictUnusedPipelines() {
         // GPU thread when it reaches that content (OoT: 1174 of 1346 evicted on the title screen,
         // 684 rebuilt in 10 s on entering the field). Past the budget they go like the rest, so a
         // large cache can't hold their driver memory for the whole session.
-        if (!pipeline->WasUsed() && kept_prebuilt < MaxUnusedPrebuiltPipelines) {
+        if (!pipeline->WasUsed() && kept_prebuilt < unused_prebuilt_budget) {
             ++kept_prebuilt;
             ++it;
             continue;

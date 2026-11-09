@@ -272,7 +272,10 @@ private:
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
 
-    /// Destroys graphics pipelines unused for a while, once the GPU is done with them.
+    /// Destroys graphics pipelines unused for EvictAfterFrames frames, once the GPU is done
+    /// with them. Never-used pipelines built by the boot prebuild survive the sweep up to a
+    /// budget of one pipeline per 3 MiB of device-local memory, clamped to [2000, 10000], so a
+    /// large cache keeps its prebuild on cards with the memory for it.
     void EvictUnusedPipelines();
     u64 frame_count{};
     /// Wait budget of native draws for unbuilt pipelines left in this frame, in microseconds

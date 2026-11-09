@@ -556,6 +556,7 @@ Shader::HostTranslateInfo OfflineHost() {
     host.support_conditional_barrier = true;
     host.support_viewport_index_layer = true;
     host.support_geometry_shader_passthrough = true;
+    host.support_handle_table_arrays = true;
     host.ApplyDescriptorLimitPolicy();
     return host;
 }
@@ -577,6 +578,7 @@ Shader::Profile OfflineProfile(const Shader::HostTranslateInfo& host) {
     profile.max_user_clip_distances = 8;
     profile.max_subgroup_size = 32;
     profile.support_typeless_image_loads = true;
+    profile.support_sampled_image_array_nonuniform_indexing = true;
     return profile;
 }
 

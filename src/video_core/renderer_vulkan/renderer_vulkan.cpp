@@ -301,38 +301,62 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     const auto acquired = trace ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
 
+#ifdef __ANDROID__
+    VkFormat output_format = VK_FORMAT_R8G8B8A8_UNORM;
+#else
+    VkFormat output_format = VK_FORMAT_B8G8R8A8_UNORM;
+#endif
+    const bool hdr_output =
+        Settings::values.hdr.GetValue() && framebuffers.size() == 1 &&
+        framebuffers.front().color_space != Tegra::ColorSpace::RGB709;
+    if (hdr_output) {
+        // The guest sees HDR availability, not individual encodings. Presentation must reject an
+        // unavailable pair rather than reinterpret an already-rendered HDR frame as SDR.
+        switch (framebuffers.front().color_space) {
+        case Tegra::ColorSpace::RGB2020_PQ:
+            output_format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+            frame->color_space = VK_COLOR_SPACE_HDR10_ST2084_EXT;
+            break;
+        case Tegra::ColorSpace::RGB709_Linear:
+            output_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            frame->color_space = VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+            break;
+        default:
+            break;
+        }
+    }
+
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
-                               render_window.GetFramebufferLayout(),
-                               present_manager.SwapchainImageCount(),
-                               swapchain.GetImageViewFormat());
+                              render_window.GetFramebufferLayout(),
+                              present_manager.SwapchainImageCount(), output_format, hdr_output);
 
     VkSemaphore flow_wait = VK_NULL_HANDLE;
 #ifdef HAS_LSFG
-    void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
+    if (hdr_output) {
+        frame_gen.Pause();
+    } else {
+        void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
 
-    frame_gen.Process(device, frame, present_manager.SwapchainImageFormat(),
-                      GuestExtent(framebuffers));
+        frame_gen.Process(device, frame, frame->image_format, GuestExtent(framebuffers));
 
-    const size_t generated_frames = frame_gen.GeneratedFrameCount();
-    // Each generated frame keeps the screen for an equal share of the real frame interval. Sent
-    // back to back, a high refresh rate display shows it for one refresh only.
-    const auto spacing = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<f32>(std::min(frame_gen.FrameInterval(), 0.1f) /
-                                   static_cast<f32>(generated_frames + 1)));
-    // The first submission after the optical flow waits for it.
-    flow_wait = frame_gen.TakeFlowWait();
-    for (size_t generation = 0; generation < generated_frames; ++generation) {
-        Frame* generated = present_manager.GetRenderFrame();
-        generated->present_spacing = spacing;
-        blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
-        frame_gen.GenerateInto(device, generated, generation);
-        if (!generated->generated_async) {
-            // Generated on the graphics queue (or not at all): this submission signals it.
-            scheduler.Flush(*generated->render_ready, std::exchange(flow_wait, VK_NULL_HANDLE));
+        const size_t generated_frames = frame_gen.GeneratedFrameCount();
+        // Each generated frame keeps the screen for an equal share of the real frame interval.
+        const auto spacing = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<f32>(std::min(frame_gen.FrameInterval(), 0.1f) /
+                                       static_cast<f32>(generated_frames + 1)));
+        flow_wait = frame_gen.TakeFlowWait();
+        for (size_t generation = 0; generation < generated_frames; ++generation) {
+            Frame* generated = present_manager.GetRenderFrame();
+            generated->present_spacing = spacing;
+            blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
+            frame_gen.GenerateInto(device, generated, generation);
+            if (!generated->generated_async) {
+                scheduler.Flush(*generated->render_ready, std::exchange(flow_wait, VK_NULL_HANDLE));
+            }
+            frame_gen.DumpInterpolation(generated);
+            present_manager.Present(generated);
         }
-        frame_gen.DumpInterpolation(generated);
-        present_manager.Present(generated);
     }
 #endif
 
@@ -415,7 +439,7 @@ vk::Buffer RendererVulkan::RenderToBuffer(std::span<const Tegra::FramebufferConf
     }();
 
     auto dst_buffer = CreateWrappedBuffer(memory_allocator, buffer_size, MemoryUsage::Download);
-    blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format);
+    blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format, false);
 
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([&](vk::CommandBuffer cmdbuf) {
@@ -494,7 +518,7 @@ void RendererVulkan::RenderAppletCaptureLayer(
 
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_applet.DrawToFrame(device, rasterizer, &applet_frame, capture_layers, VideoCore::Capture::Layout, 1,
-                            CaptureFormat);
+                            CaptureFormat, false);
 }
 
 } // namespace Vulkan

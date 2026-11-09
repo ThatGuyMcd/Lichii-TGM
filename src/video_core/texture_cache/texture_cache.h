@@ -504,10 +504,41 @@ void TextureCache<P>::TickFrame() {
                                            ? slack
                                            : slack_margin - (std::min)(slack_margin - slack, 16_MiB);
                     }
-                    critical_memory =
-                        budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
+                    const u64 reserved = margin + pressure_margin + slack_margin;
+                    critical_memory = budget - (std::min)(reserved, budget / 2);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
+                    u64 other_memory = 0;
+                    if constexpr (requires { runtime.GetDeviceHeapMemoryBudget(); }) {
+                        // An integrated GPU's budget is the share of system memory it is capped
+                        // to (4 or 6 GiB) so that textures don't fill RAM, but the usage compared
+                        // with the thresholds is everything in device memory. Ocarina's ~4 GB of
+                        // other allocations kept a Radeon 860M past critical with 1.3 GB of
+                        // images: deleting them all could not get under it, and the collector
+                        // recreated ~480 images a second, downloading ~70 with a GPU wait (#739).
+                        // There the share bounds the images: what isn't images is added to the
+                        // thresholds, up to the heap's own budget.
+                        const u64 heap_budget = runtime.GetDeviceHeapMemoryBudget();
+                        if (heap_budget > budget) {
+                            u64 image_bytes = 0;
+                            for (const auto [image_id, image] : slot_images) {
+                                image_bytes += ImageMemoryBytes(*image);
+                                if (image->HasScaled()) {
+                                    image_bytes += GetScaledImageSizeBytes(*image);
+                                }
+                            }
+                            other_memory =
+                                total_used_memory - (std::min)(total_used_memory, image_bytes);
+                            const u64 heap_critical =
+                                heap_budget - (std::min)(reserved, heap_budget / 2);
+                            const u64 gap = critical_memory - expected_memory;
+                            const u64 raised =
+                                (std::min)(critical_memory + other_memory, heap_critical);
+                            critical_memory = (std::max)(critical_memory, raised);
+                            expected_memory =
+                                critical_memory - (std::min)(gap, critical_memory / 2);
+                        }
+                    }
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time). Compared after the cap: before it, every check differed from
                     // the capped value by more than 256 MiB and logged twice a second.
@@ -518,8 +549,15 @@ void TextureCache<P>::TickFrame() {
                     if (log) {
                         LogThresholds();
                         LOG_INFO(HW_GPU,
-                                 "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
-                                 margin >> 20, pressure_margin >> 20, slack_margin >> 20);
+                                 "Texture cache thresholds: expected {} MiB, critical {} MiB, "
+                                 "minimum {} MiB",
+                                 expected_memory >> 20, critical_memory >> 20,
+                                 minimum_memory >> 20);
+                        LOG_INFO(HW_GPU,
+                                 "Memory margins: base {} MiB, out of memory {} MiB, block slack "
+                                 "{} MiB, not textures {} MiB",
+                                 margin >> 20, pressure_margin >> 20, slack_margin >> 20,
+                                 other_memory >> 20);
                     }
                 }
             }

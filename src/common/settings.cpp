@@ -6,6 +6,7 @@
 
 #include <version>
 #if __cpp_lib_chrono >= 201907L
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <stdexcept>
@@ -248,6 +249,20 @@ void SetAstcRecompressionOverride(std::optional<AstcRecompression> recompression
 
 bool IsDockedMode() {
     return values.use_docked_mode.GetValue() == Settings::ConsoleMode::Docked;
+}
+
+static std::atomic_bool game_handheld_override{false};
+
+bool IsDockedForGame() {
+    return IsDockedMode() && !game_handheld_override.load(std::memory_order_relaxed);
+}
+
+bool GameHandheldOverride() {
+    return game_handheld_override.load(std::memory_order_relaxed);
+}
+
+void SetGameHandheldOverride(bool handheld) {
+    game_handheld_override.store(handheld, std::memory_order_relaxed);
 }
 
 float Volume() {

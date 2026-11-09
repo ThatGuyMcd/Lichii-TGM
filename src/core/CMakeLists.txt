@@ -1197,6 +1197,9 @@ add_library(core STATIC
     memory/dmnt_cheat_vm.h
     oot_zstd_hook.cpp
     oot_zstd_hook.h
+    ocarina_igcs.cpp
+    ocarina_photo_mode.cpp
+    ocarina_photo_mode.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp

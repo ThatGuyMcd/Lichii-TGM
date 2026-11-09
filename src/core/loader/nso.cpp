@@ -343,6 +343,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     Core::OotZstd::PatchModule(process.GetProgramId(), nso_header.build_id, name, codeset.memory,
                                load_base);
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
+    if (nso_file.GetName() == "main") {
+        system.SetApplicationMainBase(load_base);
+    }
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
     if (name == "main" && process.GetProgramId() == Settings::MarioKartWorldProgramId) {
         process.SetMkwDynamicFpsPatchApplied(mkw_dynamic_fps_patch_applied);

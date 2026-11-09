@@ -269,6 +269,9 @@ public:
     bool BypassOotNetwork(u64 program_id, u64 native_key);
     /// Draws a plain upscale of a rejected tensor program's input in its place.
     [[nodiscard]] bool UpscaleInsteadOfNativeProgram();
+    /// Ocarina of Time's photo mode: notes the image the anti-aliasing output pass writes (the
+    /// HUD's target) and returns true to drop the haze pass while photo mode hides it.
+    bool ProcessOcarinaPhotoPass(u64 program_id, u64 shader_hash);
     void TraceDlssContract(u64 native_key, bool warn_unvalidated = true);
     /// EDEN_NX2_COMPUTE_HANDLE_TRACE=1: logs a compute program's launch and the texture handles
     /// in its constant buffer 0, at its 1st, 61st and 62nd dispatch.

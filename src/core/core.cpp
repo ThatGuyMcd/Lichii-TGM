@@ -67,6 +67,7 @@
 #include "core/loader/nx.h"
 #include "core/memory.h"
 #include "core/memory/cheat_engine.h"
+#include "core/ocarina_photo_mode.h"
 #include "core/perf_stats.h"
 #include "core/reporter.h"
 #include "core/tools/freezer.h"
@@ -570,6 +571,8 @@ struct System::Impl {
         kernel.SuspendEmulation(true);
         kernel.CloseServices();
         kernel.ShutdownCores();
+        OcarinaPhotoMode::Reset();
+        application_main_base = 0;
         services.reset();
         service_manager.reset();
         fs_controller.Reset();
@@ -648,6 +651,7 @@ struct System::Impl {
     std::optional<Core::DeviceMemory> device_memory;
     std::optional<AudioCore::AudioCore> audio_core;
     std::optional<Memory::CheatEngine> cheat_engine;
+    u64 application_main_base{};
     std::optional<Tools::Freezer> memory_freezer;
     std::optional<Tools::RenderdocAPI> renderdoc_api;
     std::optional<Tegra::GPU> gpu_core;
@@ -946,6 +950,14 @@ void System::SetFilesystem(FileSys::VirtualFilesystem vfs) {
 
 FileSys::VirtualFilesystem System::GetFilesystem() const {
     return impl->virtual_filesystem;
+}
+
+void System::SetApplicationMainBase(u64 base) {
+    impl->application_main_base = base;
+}
+
+u64 System::GetApplicationMainBase() const {
+    return impl->application_main_base;
 }
 
 void System::RegisterCheatList(const std::vector<Memory::CheatEntry>& list,

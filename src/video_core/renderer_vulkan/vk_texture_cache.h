@@ -825,6 +825,9 @@ private:
     vk::ImageView stencil_view;
     vk::ImageView color_view;
     vk::Image null_image;
+    vk::Image null_image_2d;
+    vk::Image null_image_3d;
+    vk::Image null_image_cube;
     VkImage image_handle = VK_NULL_HANDLE;
     VkImageView render_target = VK_NULL_HANDLE;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;

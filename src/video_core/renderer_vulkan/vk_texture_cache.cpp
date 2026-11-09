@@ -5,9 +5,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <array>
-#include <atomic>
 #include <cstdlib>
 #include <optional>
 #include <set>
@@ -192,12 +192,16 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     return usage;
 }
 
+// False when the driver could not build the GPU ASTC decoder (Apple's shader compiler crashes on
+// it for AMD GPUs under MoltenVK). Every ASTC image then decodes on the CPU.
+std::atomic_bool gpu_astc_decoder_available{true};
+
 // An ASTC 2D array whose RGBA8 decode exceeds 1 GiB (title 1's 8192x8192x68 terrain textures).
 // These stay on the GPU decoder as RGBA8 with trimmed levels (TrimmedHostInfo) even when other
 // ASTC images are re-compressed to BC1/BC3 on the CPU: re-compressing them would not fit either.
 [[nodiscard]] bool IsHugeAstcArray(const Device& device, const ImageInfo& info) {
     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
-        info.type != ImageType::e2D || info.size.depth != 1) {
+        !gpu_astc_decoder_available || info.type != ImageType::e2D || info.size.depth != 1) {
         return false;
     }
     u64 bytes = 0;
@@ -231,6 +235,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 // arrays.
 [[nodiscard]] bool IsUnevenMipRgba8Astc(const Device& device, const ImageInfo& info) {
     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
+        !gpu_astc_decoder_available ||
         info.type != ImageType::e2D || info.size.depth != 1 || info.resources.levels <= 1 ||
         Settings::values.accelerate_astc.GetValue() != Settings::AstcDecodeMode::Gpu ||
         Settings::GetAstcRecompression() == Settings::AstcRecompression::Uncompressed) {
@@ -396,7 +401,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 // decode, so streamed textures are ready the frame they are first used instead of seconds later.
 [[nodiscard]] bool WillUseGpuBcnTranscode(const Device& device, const ImageInfo& info) {
     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
-        IsHugeAstcArray(device, info) || IsUnevenMipRgba8Astc(device, info) ||
+        !gpu_astc_decoder_available || IsHugeAstcArray(device, info) ||
+        IsUnevenMipRgba8Astc(device, info) ||
         info.type != ImageType::e2D || info.size.depth != 1) {
         return false;
     }
@@ -405,7 +411,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 }
 
 [[nodiscard]] bool WillUseAcceleratedAstcDecode(const Device& device, const ImageInfo& info) {
-    if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported()) {
+    if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
+        !gpu_astc_decoder_available) {
         return false;
     }
     if (IsHugeAstcArray(device, info) || IsUnevenMipRgba8Astc(device, info)) {
@@ -1324,13 +1331,24 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     // Before anything below reads astc_recompression (passes, view formats).
     UseBc3ForSwitch2OnSmallCards(device);
     // Huge ASTC arrays always decode on the GPU (IsHugeAstcArray), whatever the decode setting.
+    gpu_astc_decoder_available = true;
     if (Settings::values.accelerate_astc.GetValue() == Settings::AstcDecodeMode::Gpu ||
         !device.IsOptimalAstcSupported()) {
-        astc_decoder_pass.emplace(device, scheduler, descriptor_pool, staging_buffer_pool,
-                                  compute_pass_descriptor_queue, memory_allocator);
-        if (Settings::GetAstcRecompression() != Settings::AstcRecompression::Uncompressed) {
-            bc_encoder_pass.emplace(device, scheduler, descriptor_pool,
-                                    compute_pass_descriptor_queue);
+        try {
+            astc_decoder_pass.emplace(device, scheduler, descriptor_pool, staging_buffer_pool,
+                                      compute_pass_descriptor_queue, memory_allocator);
+            if (Settings::GetAstcRecompression() != Settings::AstcRecompression::Uncompressed) {
+                bc_encoder_pass.emplace(device, scheduler, descriptor_pool,
+                                        compute_pass_descriptor_queue);
+            }
+        } catch (const vk::Exception& exception) {
+            LOG_WARNING(Render_Vulkan,
+                        "The driver could not build the GPU ASTC decoder ({}): ASTC textures "
+                        "decode on the CPU",
+                        exception.what());
+            astc_decoder_pass.reset();
+            bc_encoder_pass.reset();
+            gpu_astc_decoder_available = false;
         }
     }
     if (!device.IsKhrImageFormatListSupported()) {
@@ -3302,6 +3320,9 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
             if (WillUseAcceleratedAstcDecode(runtime->device, info) ||
                 WillUseGpuBcnTranscode(runtime->device, info)) {
                 flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
+            } else if (!gpu_astc_decoder_available) {
+                // Without the GPU decoder, decode off the GPU thread as CpuAsynchronous does.
+                flags |= VideoCommon::ImageFlagBits::AsynchronousDecode;
             }
             if (IsUnevenMipRgba8Astc(runtime->device, info)) {
                 static std::atomic<u32> uneven_images{0};
@@ -4758,6 +4779,83 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::NullImageV
     for (u32 i = 0; i < Shader::NUM_TEXTURE_TYPES; i++) {
         image_views[i] = MakeView(VK_FORMAT_A8B8G8R8_UNORM_PACK32, VK_IMAGE_ASPECT_COLOR_BIT);
     }
+
+    // A 2D view bound where the shader declares a 3D or cube texture is invalid: Metal samples it
+    // as the declared type and can read outside the image, which loses the device. Those slots
+    // get views of the matching type on their own null images.
+    const auto make_view = [&](VkImage image, VkImageViewType view_type, u32 layers) {
+        return device->GetLogical().CreateImageView({
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = image,
+            .viewType = view_type,
+            .format = VK_FORMAT_A8B8G8R8_UNORM_PACK32,
+            .components{},
+            .subresourceRange{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = layers,
+            },
+        });
+    };
+    image_views[static_cast<size_t>(Shader::TextureType::ColorArray1D)] =
+        make_view(*null_image, VK_IMAGE_VIEW_TYPE_1D_ARRAY, 1);
+    ImageInfo info_2d = info;
+    info_2d.type = ImageType::e2D;
+    null_image_2d = MakeImage(*device, runtime.memory_allocator, info_2d, {});
+    image_views[static_cast<size_t>(Shader::TextureType::Color2D)] =
+        make_view(*null_image_2d, VK_IMAGE_VIEW_TYPE_2D, 1);
+    image_views[static_cast<size_t>(Shader::TextureType::Color2DRect)] =
+        make_view(*null_image_2d, VK_IMAGE_VIEW_TYPE_2D, 1);
+    image_views[static_cast<size_t>(Shader::TextureType::ColorArray2D)] =
+        make_view(*null_image_2d, VK_IMAGE_VIEW_TYPE_2D_ARRAY, 1);
+    ImageInfo info_3d = info;
+    info_3d.type = ImageType::e3D;
+    null_image_3d = MakeImage(*device, runtime.memory_allocator, info_3d, {});
+    image_views[static_cast<size_t>(Shader::TextureType::Color3D)] =
+        make_view(*null_image_3d, VK_IMAGE_VIEW_TYPE_3D, 1);
+
+    ImageInfo info_cube = info;
+    info_cube.type = ImageType::e2D;
+    info_cube.resources.layers = 6;
+    null_image_cube = MakeImage(*device, runtime.memory_allocator, info_cube, {});
+    image_views[static_cast<size_t>(Shader::TextureType::ColorCube)] =
+        make_view(*null_image_cube, VK_IMAGE_VIEW_TYPE_CUBE, 6);
+    image_views[static_cast<size_t>(Shader::TextureType::ColorArrayCube)] =
+        make_view(*null_image_cube, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, 6);
+
+    runtime.scheduler.RequestOutsideRenderPassOperationContext();
+    runtime.scheduler.Record([images = std::array{*null_image, *null_image_2d, *null_image_3d,
+                                                 *null_image_cube}](vk::CommandBuffer cmdbuf) {
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                           VK_REMAINING_MIP_LEVELS, 0,
+                                           VK_REMAINING_ARRAY_LAYERS};
+        for (VkImage image : images) {
+            VkImageMemoryBarrier barrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image,
+                .subresourceRange = range,
+            };
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                   0, barrier);
+            cmdbuf.ClearColorImage(image, VK_IMAGE_LAYOUT_GENERAL, VkClearColorValue{}, range);
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                   0, barrier);
+        }
+    });
 }
 
 ImageView::~ImageView() = default;

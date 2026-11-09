@@ -142,6 +142,23 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            "other race conditions."));
 
     // Renderer
+    INSERT(Settings, hdr, tr("HDR"),
+           tr("Enables HDR output. Requires Vulkan and an HDR-enabled display.\n"
+              "Supports native HDR10 and scRGB output; SDR content is not converted to HDR.\n"
+              "HDR uses bilinear presentation without post-processing or frame generation.\n"
+              "Takes effect when a game starts."));
+    INSERT(Settings, hdr_reference_white, tr("HDR Reference White"),
+           tr("Reference white in nits reported to the game. Default: 200 nits, matching the "
+              "observed Switch 2 HDR applet's starting value without matching saved display "
+              "calibration. Set to 0 to follow Switch 2 calibration: HDR Peak Luminance divided "
+              "by 1.5, rounded up and clamped to 50-300 nits.\n"
+              "Set a nonzero value to override calibration.\n"
+              "Does not rescale the final image. Takes effect when a game starts."));
+    INSERT(Settings, hdr_peak_luminance, tr("HDR Peak Luminance"),
+           tr("Peak luminance in nits reported to the game. Default: 300 nits, matching the "
+              "observed Switch 2 HDR applet's starting value without matching saved display "
+              "calibration.\n"
+              "Does not rescale the final image. Takes effect when a game starts."));
     INSERT(Settings, renderer_backend, tr("API:"),
            tr("Changes the output graphics API.\nVulkan is recommended."));
     INSERT(Settings, vulkan_device, tr("Device:"),
@@ -151,7 +168,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "Higher resolutions require more VRAM and bandwidth.\n"
               "Options lower than 1X can cause artifacts."));
     INSERT(Settings, scaling_filter, tr("Window Adapting Filter:"), QString());
-    INSERT(Settings, game_dlss_network, tr("Use the game's own DLSS"),
+    INSERT(Settings, game_dlss_network, tr("Use the game's built-in DLSS"),
            tr("Runs a Switch 2 game's own DLSS (its upscaling network, translated for this GPU) "
               "instead of AMD FSR 3.1 in its place.\nAMD FSR 3.1 still draws while the network is "
               "checked, when it can't run on this GPU, with resolution scaling, and for the rest "
@@ -184,7 +201,7 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Sharpens NVIDIA DLSS's upscaled output with AMD FidelityFX RCAS (DLSS has had no "
               "sharpening of its own since DLSS 3.1). Not applied in DLAA. 0% leaves it "
               "unsharpened."));
-    INSERT(Settings, nvidia_dlss, tr("Use NVIDIA DLSS in place of a game's DLSS (experimental)"),
+    INSERT(Settings, nvidia_dlss, tr("NVIDIA DLSS Super Resolution (experimental)"),
            tr("Uses NVIDIA DLSS on GeForce RTX cards in place of a Switch 2 game's own DLSS, "
               "instead of AMD FSR 3.1.\nRequires NVIDIA's runtime files. Use the setup controls "
               "below to download or locate them. Windows uses Streamline; Linux uses native NGX.\n"
@@ -345,7 +362,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Automatic resolution (Switch 2 games, docked)"),
            tr("While the game runs well below its frame rate, it renders at its handheld "
               "resolution (Ocarina of Time: 1080p instead of 1440p), and goes back to the full "
-              "resolution once it keeps up.\nControllers and the output stay in docked mode."));
+              "resolution once it keeps up.\n"
+              "Controllers and the output stay in docked mode."));
     INSERT(Settings, gpu_clock, tr("GPU Clocks"),
            tr("Makes the game believe GPU work finishes faster than it does, so it stops lowering "
               "resolution and render distance to fit the Switch's clocks."));
@@ -378,8 +396,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "files internally."));
     INSERT(Settings, precache_shaders, tr("Precache shaders before game start:"),
            tr("Builds shaders on the loading screen, on every CPU thread, so they don't stutter "
-              "the first time the game uses them: the compute shaders found in the game files, "
-              "and the shaders saved by earlier play sessions that the normal shader loading "
+              "the first time the game uses them: the compute shaders found in the game files "
+              "(and their graphics shaders with Shader libraries on), and the shaders saved by "
+              "earlier play sessions that the normal shader loading "
               "leaves for later. The first launch reads the game files and takes a few minutes; "
               "later launches only build what is new, until the GPU driver changes. The loading "
               "screen has a Skip button.\nAsk asks at launch while the game has never been "
@@ -404,6 +423,31 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Used by the Bounded mode: the most time per frame that Switch 2 draws may wait in "
               "total for pipelines that are still building. Once spent, the remaining unbuilt "
               "draws of that frame are skipped."));
+
+    INSERT(Settings, use_graphics_pipeline_library,
+           tr("Shader libraries (faster first-time shader builds)"),
+           tr("Builds each shader stage once and links them into pipelines, so new shaders "
+              "cause shorter stutters.\nAlso lets Precache shaders before game start build the "
+              "graphics shaders found in the game files.\nTakes effect after restarting the "
+              "game."));
+    INSERT(Settings, shader_calls_not_inlined,
+           tr("Faster shader compiles (shared functions as calls)"),
+           tr("Builds large functions that a shader uses in several places once, as calls, "
+              "instead of copying them into every place. Driver compiles of such shaders get "
+              "several times faster (compute precache about 3x); the game may run slightly "
+              "slower.\nApplies to shaders built after the change."));
+    INSERT(Settings, use_mesh_shader_warmup,
+           tr("Prewarm predicted mesh shaders (experimental)"),
+           tr("Prepares predicted mesh shaders to reduce first-visit stutters. Benefits vary by "
+              "game and GPU; it can add startup time.\n"
+              "Uses the 'Precache shaders before game start' timing setting and requires "
+              "prepared shader data. Uses mesh shader libraries when shader libraries are "
+              "enabled and supported. Does not skip draws or effects.\n"
+              "Takes effect after restarting the game. Turning it off stops future mesh "
+              "prewarming and mesh shader libraries; existing caches are kept."));
+    INSERT(Settings, shader_warm_threads, tr("Shader precache threads:"),
+           tr("CPU threads the shader precache uses on the loading screen. 0 uses every CPU "
+              "thread.\nTakes effect at the next game start."));
     INSERT(Settings, enable_compute_pipelines, tr("Enable Compute Pipelines (Intel Vulkan Only)"),
            tr("Required by some games.\nThis setting only exists for Intel "
               "proprietary drivers and may crash if enabled.\nCompute pipelines are always enabled "

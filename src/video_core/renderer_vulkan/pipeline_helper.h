@@ -8,6 +8,8 @@
 
 #include <cstddef>
 #include <optional>
+#include <span>
+#include <string>
 
 #include <boost/container/small_vector.hpp>
 
@@ -150,7 +152,7 @@ public:
 
     bool CanUsePushDescriptor() const noexcept {
         if (!device->IsKhrPushDescriptorSupported() ||
-            num_descriptors > device->MaxPushDescriptors()) {
+            num_descriptors > device->MaxPushDescriptors() || exceeds_metal_slots) {
             return false;
         }
         return !device->IsExtDescriptorBufferSupported() ||
@@ -243,14 +245,16 @@ public:
         });
     }
 
-    vk::PipelineLayout CreatePipelineLayout(VkDescriptorSetLayout descriptor_set_layout) const {
+    /// The push constant range every pipeline layout uses (rescaling and render area data) and the
+    /// stages that see it. Compute leaves out the down factor.
+    VkPushConstantRange PushConstantRange() const {
         using Shader::Backend::SPIRV::RenderAreaLayout;
         using Shader::Backend::SPIRV::RescalingLayout;
         const u32 size_offset = is_compute ? sizeof(RescalingLayout::down_factor) : 0u;
         // Every graphics layout covers the OoT object motion words, so push constants stay
         // compatible across pipelines (the down factor is only pushed when it changes).
         const u32 graphics_size = Shader::Backend::SPIRV::OOT_MOTION_PUSH_END;
-        const VkPushConstantRange range{
+        return VkPushConstantRange{
             .stageFlags = static_cast<VkShaderStageFlags>(
                 is_compute ? VK_SHADER_STAGE_COMPUTE_BIT
                 : mesh_emulation
@@ -263,6 +267,52 @@ public:
                                      static_cast<u32>(sizeof(RenderAreaLayout))
                                : graphics_size,
         };
+    }
+
+    /// Graphics pipeline libraries (EDEN_NX2_GPL): one set per stage, set index = stage index,
+    /// null where the stage has no descriptors or is not part of the library.
+    vk::PipelineLayout CreateIndependentPipelineLayout(
+        std::span<const VkDescriptorSetLayout> set_layouts, bool independent_sets) const {
+        const VkPushConstantRange range{PushConstantRange()};
+        return device->GetLogical().CreatePipelineLayout({
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = independent_sets ? static_cast<VkPipelineLayoutCreateFlags>(
+                                            VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT)
+                                      : VkPipelineLayoutCreateFlags{},
+            .setLayoutCount = static_cast<u32>(set_layouts.size()),
+            .pSetLayouts = set_layouts.data(),
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &range,
+        });
+    }
+
+    /// What CreateDescriptorSetLayout(false) is made of: two layouts with the same signature are
+    /// identically defined (a library's set layout and the linked pipeline's one).
+    std::string SetLayoutSignature() const {
+        std::string signature;
+        const auto add = [&signature](u32 value) {
+            signature.append(reinterpret_cast<const char*>(&value), sizeof(value));
+        };
+        add(device->IsDescriptorBindingPartiallyBoundSupported() ? 1u : 0u);
+        add(static_cast<u32>(bindings.size()));
+        for (const VkDescriptorSetLayoutBinding& entry : bindings) {
+            add(entry.binding);
+            add(static_cast<u32>(entry.descriptorType));
+            add(entry.descriptorCount);
+            add(static_cast<u32>(entry.stageFlags));
+        }
+        return signature;
+    }
+
+    [[nodiscard]] bool Empty() const noexcept {
+        return bindings.empty();
+    }
+
+    /// Pipeline layout with `descriptor_set_layout` as its only set (no set when it is null) and
+    /// the shared push constant range.
+    vk::PipelineLayout CreatePipelineLayout(VkDescriptorSetLayout descriptor_set_layout) const {
+        const VkPushConstantRange range{PushConstantRange()};
         return device->GetLogical().CreatePipelineLayout({
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .pNext = nullptr,
@@ -272,6 +322,12 @@ public:
             .pushConstantRangeCount = 1,
             .pPushConstantRanges = &range,
         });
+    }
+
+    /// A layout without the task or mesh program's bindings whose push constant range still
+    /// reaches those stages (the shared layouts of a task/mesh pipeline's libraries).
+    void EnableMesh() noexcept {
+        uses_mesh = true;
     }
 
     /// Mesh emulation: a graphics pipeline layout whose mesh program runs as a compute shader
@@ -316,6 +372,23 @@ public:
         if (info.oot_motion.history || info.oot_motion.image) {
             AddSingle(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage);
         }
+
+        // MoltenVK can't put push descriptors in Metal argument buffers, so each one takes a
+        // direct slot: 31 buffers and 16 samplers per stage, shared with MoltenVK's own auxiliary
+        // buffers and, in vertex shaders, the vertex buffers. Past that the shader fails to
+        // compile or reads unbound buffers, which loses the device.
+        if (device->IsMoltenVK()) {
+            const u32 buffers = Shader::NumDescriptors(info.constant_buffer_descriptors) +
+                                Shader::NumDescriptors(info.storage_buffers_descriptors) +
+                                (info.oot_motion.history || info.oot_motion.image ? 1U : 0U);
+            const u32 samplers = Shader::NumDescriptors(info.texture_descriptors);
+            const u32 textures = samplers +
+                                 Shader::NumDescriptors(info.texture_buffer_descriptors) +
+                                 Shader::NumDescriptors(info.image_buffer_descriptors) +
+                                 Shader::NumDescriptors(info.image_descriptors);
+            const u32 buffer_slots = (stage & VK_SHADER_STAGE_VERTEX_BIT) != 0 ? 10 : 24;
+            exceeds_metal_slots |= buffers > buffer_slots || samplers > 16 || textures > 31;
+        }
     }
 
 private:
@@ -356,6 +429,7 @@ private:
     bool is_compute{};
     bool uses_mesh{};
     bool mesh_emulation{};
+    bool exceeds_metal_slots{};
     boost::container::small_vector<VkDescriptorSetLayoutBinding, 32> bindings;
     boost::container::small_vector<VkDescriptorUpdateTemplateEntry, 32> entries;
     u32 binding{};
@@ -383,6 +457,16 @@ public:
             image_bit = 1u;
             ++image_ptr;
         }
+    }
+
+    /// Graphics pipeline libraries: the next texture and image bits are these (the fragment stage
+    /// starts at fixed ones, GPL_FRAGMENT_*_SCALING_BASE).
+    void Seek(u32 texture_index, u32 image_index) noexcept {
+        texture_ptr = words.data() + texture_index / 32;
+        texture_bit = 1u << (texture_index % 32);
+        image_ptr = words.data() + Shader::Backend::SPIRV::NUM_TEXTURE_SCALING_WORDS +
+                    image_index / 32;
+        image_bit = 1u << (image_index % 32);
     }
 
     const std::array<u32, NUM_TEXTURE_AND_IMAGE_SCALING_WORDS>& Data() const noexcept {

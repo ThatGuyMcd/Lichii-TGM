@@ -343,6 +343,11 @@ struct Values {
                                                                 linkage, true, "cpuopt_unsafe_ignore_global_monitor", Category::CpuUnsafe};
 
     // Renderer
+    SwitchableSetting<bool> hdr{linkage, false, "hdr", Category::Renderer};
+    SwitchableSetting<u16, true> hdr_reference_white{linkage, 200, 0, 1000, "hdr_reference_white",
+                                                  Category::Renderer, Specialization::Scalar};
+    SwitchableSetting<u16, true> hdr_peak_luminance{linkage, 300, 80, 10000, "hdr_peak_luminance",
+                                                 Category::Renderer, Specialization::Scalar};
     SwitchableSetting<RendererBackend, true> renderer_backend{linkage,
 #if defined(__sun__) || defined(__managarm__)
         RendererBackend::OpenGL_GLSL,
@@ -736,6 +741,32 @@ struct Values {
                                                          true,
                                                          true};
 
+    // Graphics pipeline libraries (VK_EXT_graphics_pipeline_library): pipelines linked from
+    // per-stage shader libraries. EDEN_NX2_GPL=1 also turns it on.
+    SwitchableSetting<bool> use_graphics_pipeline_library{
+        linkage, false, "use_graphics_pipeline_library", Category::RendererAdvanced};
+
+    // Large shader functions called from several places are built as calls instead of being
+    // copied into every caller (much faster driver compiles). EDEN_NX2_COMPUTE_NOINLINE=0 and
+    // EDEN_NX2_GRAPHICS_NOINLINE=0 still override.
+    SwitchableSetting<bool> shader_calls_not_inlined{linkage, true, "shader_calls_not_inlined",
+                                                     Category::RendererAdvanced};
+
+    SwitchableSetting<bool> use_mesh_shader_warmup{
+        linkage, false, "use_mesh_shader_warmup", Category::RendererAdvanced};
+
+    // Threads of the shader precache on the loading screen, 0 for every CPU thread that fits
+    // the free commit memory (Windows).
+    // EDEN_NX2_WARM_THREADS overrides.
+    SwitchableSetting<u32, true> shader_warm_threads{linkage,
+                                                     0,
+                                                     0,
+                                                     64,
+                                                     "shader_warm_threads",
+                                                     Category::RendererAdvanced,
+                                                     Specialization::Countable,
+                                                     true,
+                                                     true};
     // Precache shaders before the game starts: the compute programs in the game files and the
     // cached graphics pipelines the boot leaves for later are built on the loading screen, so the
     // driver's cache holds them before the game first uses them.

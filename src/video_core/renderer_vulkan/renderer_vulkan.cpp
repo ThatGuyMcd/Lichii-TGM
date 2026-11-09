@@ -30,6 +30,7 @@
 #include "video_core/post_processing/fx_chain.h"
 #endif
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
+#include "video_core/photo_mode_state.h"
 #include "video_core/renderer_vulkan/vk_blit_screen.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -229,6 +230,60 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     RenderAppletCaptureLayer(framebuffers);
 
+    // Ocarina of Time's photo mode, hotsampling: only the centred crop of the game's largest layer
+    // at the picture ratio, so the window (sized to it by the frontend) and screenshots get it
+    // pixel for pixel.
+    std::vector<Tegra::FramebufferConfig> cropped_layers;
+    if (const u64 crop = VideoCore::PhotoMode::PresentCrop(); crop != 0 && !framebuffers.empty()) {
+        cropped_layers.assign(framebuffers.begin(), framebuffers.end());
+        auto largest = cropped_layers.begin();
+        for (auto it = cropped_layers.begin(); it != cropped_layers.end(); ++it) {
+            if (u64{it->width} * it->height > u64{largest->width} * largest->height) {
+                largest = it;
+            }
+        }
+        const auto& old_crop = largest->crop_rect;
+        const int left = old_crop.IsEmpty() ? 0 : old_crop.left;
+        const int top = old_crop.IsEmpty() ? 0 : old_crop.top;
+        const u64 width = old_crop.IsEmpty() ? largest->width : old_crop.GetWidth();
+        const u64 height = old_crop.IsEmpty() ? largest->height : old_crop.GetHeight();
+        const u64 ratio_width = crop & 0xffffffff;
+        const u64 ratio_height = crop >> 32;
+        u64 crop_width = width;
+        u64 crop_height = height;
+        if (width * ratio_height > height * ratio_width) {
+            crop_width = height * ratio_width / ratio_height;
+        } else {
+            crop_height = width * ratio_height / ratio_width;
+        }
+        const int x = left + static_cast<int>((width - crop_width) / 2);
+        const int y = top + static_cast<int>((height - crop_height) / 2);
+        largest->crop_rect = Common::Rectangle<int>{x, y, x + static_cast<int>(crop_width),
+                                                    y + static_cast<int>(crop_height)};
+        framebuffers = cropped_layers;
+    }
+    {
+        // The game's own frame size (its largest layer, after any crop), for full-size screenshots.
+        u64 best_area = 0;
+        u32 best_width = 0;
+        u32 best_height = 0;
+        for (const auto& framebuffer : framebuffers) {
+            const auto& crop = framebuffer.crop_rect;
+            const u32 width =
+                crop.GetWidth() > 0 ? static_cast<u32>(crop.GetWidth()) : framebuffer.width;
+            const u32 height =
+                crop.GetHeight() > 0 ? static_cast<u32>(crop.GetHeight()) : framebuffer.height;
+            if (u64{width} * height > best_area) {
+                best_area = u64{width} * height;
+                best_width = width;
+                best_height = height;
+            }
+        }
+        if (best_area != 0) {
+            VideoCore::PhotoMode::SetPresentedFrameSize(best_width, best_height);
+        }
+    }
+
     if (!render_window.IsShown()) {
         return;
     }
@@ -246,38 +301,62 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     const auto acquired = trace ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
 
+#ifdef __ANDROID__
+    VkFormat output_format = VK_FORMAT_R8G8B8A8_UNORM;
+#else
+    VkFormat output_format = VK_FORMAT_B8G8R8A8_UNORM;
+#endif
+    const bool hdr_output =
+        Settings::values.hdr.GetValue() && framebuffers.size() == 1 &&
+        framebuffers.front().color_space != Tegra::ColorSpace::RGB709;
+    if (hdr_output) {
+        // The guest sees HDR availability, not individual encodings. Presentation must reject an
+        // unavailable pair rather than reinterpret an already-rendered HDR frame as SDR.
+        switch (framebuffers.front().color_space) {
+        case Tegra::ColorSpace::RGB2020_PQ:
+            output_format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+            frame->color_space = VK_COLOR_SPACE_HDR10_ST2084_EXT;
+            break;
+        case Tegra::ColorSpace::RGB709_Linear:
+            output_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            frame->color_space = VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+            break;
+        default:
+            break;
+        }
+    }
+
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
-                               render_window.GetFramebufferLayout(),
-                               present_manager.SwapchainImageCount(),
-                               swapchain.GetImageViewFormat());
+                              render_window.GetFramebufferLayout(),
+                              present_manager.SwapchainImageCount(), output_format, hdr_output);
 
     VkSemaphore flow_wait = VK_NULL_HANDLE;
 #ifdef HAS_LSFG
-    void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
+    if (hdr_output) {
+        frame_gen.Pause();
+    } else {
+        void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
 
-    frame_gen.Process(device, frame, present_manager.SwapchainImageFormat(),
-                      GuestExtent(framebuffers));
+        frame_gen.Process(device, frame, frame->image_format, GuestExtent(framebuffers));
 
-    const size_t generated_frames = frame_gen.GeneratedFrameCount();
-    // Each generated frame keeps the screen for an equal share of the real frame interval. Sent
-    // back to back, a high refresh rate display shows it for one refresh only.
-    const auto spacing = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<f32>(std::min(frame_gen.FrameInterval(), 0.1f) /
-                                   static_cast<f32>(generated_frames + 1)));
-    // The first submission after the optical flow waits for it.
-    flow_wait = frame_gen.TakeFlowWait();
-    for (size_t generation = 0; generation < generated_frames; ++generation) {
-        Frame* generated = present_manager.GetRenderFrame();
-        generated->present_spacing = spacing;
-        blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
-        frame_gen.GenerateInto(device, generated, generation);
-        if (!generated->generated_async) {
-            // Generated on the graphics queue (or not at all): this submission signals it.
-            scheduler.Flush(*generated->render_ready, std::exchange(flow_wait, VK_NULL_HANDLE));
+        const size_t generated_frames = frame_gen.GeneratedFrameCount();
+        // Each generated frame keeps the screen for an equal share of the real frame interval.
+        const auto spacing = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<f32>(std::min(frame_gen.FrameInterval(), 0.1f) /
+                                       static_cast<f32>(generated_frames + 1)));
+        flow_wait = frame_gen.TakeFlowWait();
+        for (size_t generation = 0; generation < generated_frames; ++generation) {
+            Frame* generated = present_manager.GetRenderFrame();
+            generated->present_spacing = spacing;
+            blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
+            frame_gen.GenerateInto(device, generated, generation);
+            if (!generated->generated_async) {
+                scheduler.Flush(*generated->render_ready, std::exchange(flow_wait, VK_NULL_HANDLE));
+            }
+            frame_gen.DumpInterpolation(generated);
+            present_manager.Present(generated);
         }
-        frame_gen.DumpInterpolation(generated);
-        present_manager.Present(generated);
     }
 #endif
 
@@ -350,17 +429,9 @@ void RendererVulkan::Report() const {
 vk::Buffer RendererVulkan::RenderToBuffer(std::span<const Tegra::FramebufferConfig> framebuffers,
                                           const Layout::FramebufferLayout& layout, VkFormat format,
                                           VkDeviceSize buffer_size) {
-    auto frame = [&]() {
-        Frame f{};
-        f.image =
-            CreateWrappedImage(memory_allocator, VkExtent2D{layout.width, layout.height}, format);
-        f.image_view = CreateWrappedImageView(device, f.image, format);
-        f.framebuffer = blit_capture.CreateFramebuffer(device, layout, *f.image_view, format);
-        return f;
-    }();
-
+    auto& frame = screenshot_frame;
     auto dst_buffer = CreateWrappedBuffer(memory_allocator, buffer_size, MemoryUsage::Download);
-    blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format);
+    blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format, false);
 
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([&](vk::CommandBuffer cmdbuf) {
@@ -439,7 +510,7 @@ void RendererVulkan::RenderAppletCaptureLayer(
 
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_applet.DrawToFrame(device, rasterizer, &applet_frame, capture_layers, VideoCore::Capture::Layout, 1,
-                            CaptureFormat);
+                            CaptureFormat, false);
 }
 
 } // namespace Vulkan

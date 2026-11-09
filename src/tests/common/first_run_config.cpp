@@ -89,6 +89,7 @@ void CheckFreshProfile() {
     CHECK(values.nvdec_emulation.GetValue() == Settings::NvdecEmulation::Gpu);
     CHECK(values.async_presentation.GetValue());
     CHECK(values.use_asynchronous_shaders.GetValue());
+    CHECK_FALSE(values.use_mesh_shader_warmup.GetValue());
 }
 
 void CheckLegacyProfile() {
@@ -327,6 +328,34 @@ TEST_CASE("Neural controls retain defaults, persist, and publish per-game overri
     Settings::RefreshNvidiaDlssRuntimeSettings();
     CHECK(Settings::GetNvidiaDlssRuntimeSettings().strength == 37);
     CHECK(Settings::GetNvidiaDlssRuntimeSettings().tone == 82);
+}
+
+TEST_CASE("Mesh prewarming opt-in and per-game opt-out persist", "[config]") {
+    ConfigDirectory directory;
+    FileConfig global{std::string{"qt-config"}};
+    auto& enabled = Settings::values.use_mesh_shader_warmup;
+    REQUIRE_FALSE(enabled.GetValue());
+    enabled.SetValue(true);
+    global.SaveValues();
+    global.Reload();
+    REQUIRE(enabled.GetValue());
+    {
+        FileConfig game{std::string{"game"}, Config::ConfigType::PerGameConfig};
+        REQUIRE(enabled.UsingGlobal());
+        REQUIRE(enabled.GetValue());
+        enabled.SetGlobal(false);
+        enabled.SetValue(false);
+        game.SaveValues();
+    }
+    FileConfig game{std::string{"game"}, Config::ConfigType::PerGameConfig};
+    REQUIRE_FALSE(enabled.UsingGlobal());
+    REQUIRE_FALSE(enabled.GetValue());
+    REQUIRE(enabled.GetValue(true));
+    enabled.SetGlobal(true);
+    game.SaveValues();
+    game.Reload();
+    REQUIRE(enabled.UsingGlobal());
+    REQUIRE(enabled.GetValue());
 }
 
 TEST_CASE("Missing per-game and input profiles are not seeded", "[config]") {

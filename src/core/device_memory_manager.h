@@ -51,6 +51,9 @@ public:
     ~DeviceMemoryManager();
 
     static constexpr bool HAS_FLUSH_INVALIDATION = true;
+    /// The CPU-side memory manager has no GPU split to route a flush to; see the video memory
+    /// manager's FlushRegionForRead.
+    static constexpr bool HAS_SPLIT_AWARE_FLUSH = false;
     static constexpr size_t AS_BITS = Traits::device_virtual_bits;
 
     void BindInterface(DeviceInterface* device_inter);
@@ -90,7 +93,7 @@ public:
     void ApplyOpOnPAddr(PAddr address, Common::ScratchBuffer<u32>& buffer, Func&& operation) {
         DAddr subbits = DAddr(address & page_mask);
         const u32 base = compressed_device_addr[(address >> page_bits)];
-        if ((base >> MULTI_FLAG_BITS) == 0) [[likely]] {
+        if ((base >> MULTI_FLAG_BITS) == 0) {
             const DAddr d_address = (DAddr(base) << page_bits) + subbits;
             operation(d_address);
             return;
@@ -147,6 +150,31 @@ public:
 
     /// Traps the next guest CPU read of these pages, to learn which GPU writes the CPU reads.
     void ArmReadTraps(DAddr addr, size_t size);
+
+    /// False only when ArmReadTraps never covered a page of [addr, addr + size). The bits are
+    /// set before the traps (and the read area generation) change, and never cleared, so a
+    /// guest read that finds them clear needs no flush (EDEN_NX2_READ_FASTPATH).
+    [[nodiscard]] bool MayHaveArmedReadTraps(DAddr addr, size_t size) const {
+        if (size == 0) {
+            return false;
+        }
+        const u64 first = addr >> page_bits;
+        const u64 last = (addr + size - 1) >> page_bits;
+        if (last < first || last >= armed_page_count) {
+            return true;
+        }
+        for (u64 page = first; page <= last; ++page) {
+            if ((armed_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Changes whenever Map or Unmap changed a translation.
+    [[nodiscard]] u64 MappingGeneration() const {
+        return translation_generation.load(std::memory_order_acquire);
+    }
 
 private:
     struct TranslationEntry {
@@ -251,11 +279,19 @@ private:
         tracked_entries.GetUnchecked(page_index).cpu_backing_address = address | (asid.id << asid_start_bit);
     }
 
-    /// Starts past every earlier manager's: one built where a destroyed one was must not match
-    /// the translations a thread kept for that one (Translations compares owner and generation).
-    static inline std::atomic<u64> next_generation_base{1};
-    /// Bumped by Map and Unmap
-    std::atomic<u64> translation_generation{next_generation_base.fetch_add(1ULL << 32)};
+    /// Generations come from one counter shared by every manager. A thread's translations name
+    /// their manager by address, and a manager made where a destroyed one was (a test fixture
+    /// on the stack, a System made again in the same process) would otherwise start with the
+    /// same generation and take the old manager's host pointers for its own.
+    static u64 NextTranslationGeneration() {
+        static std::atomic<u64> next{1};
+        return next.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::atomic<u64> translation_generation{NextTranslationGeneration()}; ///< New at Map and Unmap
+    static constexpr u64 armed_page_count = device_as_size >> page_bits;
+    /// Pages ArmReadTraps ever covered, one bit each (MayHaveArmedReadTraps).
+    std::unique_ptr<std::atomic<u64>[]> armed_pages{
+        std::make_unique<std::atomic<u64>[]>(armed_page_count / 64)};
     using CounterType = u8;
     using CounterAtomicType = std::atomic_uint8_t;
     static constexpr size_t subentries = 8 / sizeof(CounterType);

@@ -92,6 +92,103 @@ inline void Nx2MarkCommandListPage(u64 device_address) {
     return (g_nx2_command_list_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
 }
 
+// Query results written when their host work completes (counter reports): per 16-byte slot
+// hash, how many were issued and how many completed. Equal counts mean the words in memory
+// are final.
+inline constexpr u64 Nx2AsyncReportSlots = u64{1} << 16;
+inline std::array<std::atomic<u32>, Nx2AsyncReportSlots> g_nx2_async_reports_issued{};
+inline std::array<std::atomic<u32>, Nx2AsyncReportSlots> g_nx2_async_reports_completed{};
+
+[[nodiscard]] inline u64 Nx2AsyncReportSlot(u64 device_address) {
+    return (device_address >> 4) % Nx2AsyncReportSlots;
+}
+
+[[nodiscard]] inline bool Nx2AsyncReportsSettled(u64 device_address, u64 size) {
+    if (size == 0) {
+        return true;
+    }
+    for (u64 slot = device_address >> 4; slot <= (device_address + size - 1) >> 4; ++slot) {
+        const u64 index = slot % Nx2AsyncReportSlots;
+        if (g_nx2_async_reports_completed[index].load(std::memory_order_acquire) !=
+            g_nx2_async_reports_issued[index].load(std::memory_order_acquire)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Bumped after every completed report; threads in Nx2WaitAsyncReportsSettled wait on it.
+inline std::atomic<u32> g_nx2_async_reports_generation{};
+inline std::atomic<u32> g_nx2_async_reports_waiters{};
+
+/// A report was issued to device_address (the thread that owns the query cache).
+inline void Nx2IssueAsyncReport(u64 device_address) {
+    g_nx2_async_reports_issued[Nx2AsyncReportSlot(device_address)].fetch_add(
+        1, std::memory_order_release);
+}
+
+/// A report's host work completed and its words are in memory (the fencing thread).
+inline void Nx2CompleteAsyncReport(u64 device_address) {
+    g_nx2_async_reports_completed[Nx2AsyncReportSlot(device_address)].fetch_add(
+        1, std::memory_order_release);
+    g_nx2_async_reports_generation.fetch_add(1, std::memory_order_seq_cst);
+    if (g_nx2_async_reports_waiters.load(std::memory_order_seq_cst) != 0) {
+        g_nx2_async_reports_generation.notify_all();
+    }
+}
+
+/// One asynchronous report's issued/completed pair. Complete counts it once, and destruction
+/// does if nothing did: an operation dropped without running (fences discarded when emulation
+/// stops) would otherwise leave its slot unequal for good, and a later wait on that slot would
+/// never end. Owned by the report's operation (shared by its copies); not thread-safe, as the
+/// operation runs or is dropped on one thread at a time.
+class Nx2AsyncReport {
+public:
+    explicit Nx2AsyncReport(u64 device_address_) : device_address{device_address_} {}
+    ~Nx2AsyncReport() {
+        Complete();
+    }
+    Nx2AsyncReport(const Nx2AsyncReport&) = delete;
+    Nx2AsyncReport& operator=(const Nx2AsyncReport&) = delete;
+
+    void Issue() {
+        if (!issued) {
+            issued = true;
+            Nx2IssueAsyncReport(device_address);
+        }
+    }
+    void Complete() {
+        if (issued && !completed) {
+            completed = true;
+            Nx2CompleteAsyncReport(device_address);
+        }
+    }
+
+private:
+    u64 device_address;
+    bool issued{};
+    bool completed{};
+};
+
+/// Blocks until every report issued so far to [device_address, device_address + size) is in
+/// memory. Only for the thread that issues reports, so none can be issued while it waits; the
+/// fences carrying them must already be submitted. A slot shared with another address only
+/// waits for that report too.
+inline void Nx2WaitAsyncReportsSettled(u64 device_address, u64 size) {
+    if (Nx2AsyncReportsSettled(device_address, size)) {
+        return;
+    }
+    g_nx2_async_reports_waiters.fetch_add(1, std::memory_order_seq_cst);
+    for (;;) {
+        const u32 generation = g_nx2_async_reports_generation.load(std::memory_order_seq_cst);
+        if (Nx2AsyncReportsSettled(device_address, size)) {
+            break;
+        }
+        g_nx2_async_reports_generation.wait(generation, std::memory_order_seq_cst);
+    }
+    g_nx2_async_reports_waiters.fetch_sub(1, std::memory_order_relaxed);
+}
+
 /// A new emulation session starts: no page has been written by its GPU yet.
 inline void Nx2ClearGpuWrittenPages() {
     for (auto& word : g_nx2_gpu_written_pages) {
@@ -298,7 +395,7 @@ inline void Nx2AddSparseSpan(u64 gpu_address, u64 size) {
 
 inline void Nx2BackSparseWrite(u64 gpu_address, u64 size, const void* data) {
     if (gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
-        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) {
         return;
     }
     std::scoped_lock lk{g_nx2_sparse_backing_mutex};
@@ -413,7 +510,7 @@ inline std::vector<std::pair<u64, u64>> Nx2SparseDataRanges(u64 gpu_address, u64
 /// True when [gpu_address, +size) lies in one sparse region.
 inline bool Nx2InSparseRegion(u64 gpu_address, u64 size) {
     if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
-        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) {
         return false;
     }
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
@@ -429,7 +526,7 @@ inline bool Nx2InSparseRegion(u64 gpu_address, u64 size) {
 /// later get memory (their contents live in the host image, not in guest memory).
 inline void Nx2SparseMarkWritten(u64 gpu_address, u64 size) {
     if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
-        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) {
         return;
     }
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
@@ -449,7 +546,7 @@ inline void Nx2SparseMarkWritten(u64 gpu_address, u64 size) {
 /// True when [gpu_address, +size) lies in one sparse region and none of it has been written.
 inline bool Nx2SparseUnwritten(u64 gpu_address, u64 size) {
     if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
-        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) {
         return false;
     }
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
@@ -491,6 +588,16 @@ public:
     /// One per channel suspended at once.
     static constexpr size_t MaxWaiters = 64;
 
+    /// TEST (EDEN_NX2_ACQUIRE_STATS): the writer that latched a waiter (OnWrite).
+    enum class Source : u8 {
+        Unknown,
+        PayloadRelease, ///< The query cache's payload releases (puller, 3D, compute, copy, QMD)
+        QueryResult,    ///< A report the query cache wrote once its fence passed
+        QmdReduction,
+        QmdMax,
+        Count,
+    };
+
     static Nx2SemaphoreWaiters& Get() {
         static Nx2SemaphoreWaiters waiters;
         return waiters;
@@ -516,6 +623,7 @@ public:
         free_slot->address = device_address;
         free_slot->value = value;
         free_slot->operation = operation;
+        free_slot->source = Source::Unknown;
         free_slot->latched.store(false, std::memory_order_relaxed);
         free_slot->owner.store(owner, std::memory_order_relaxed);
         count.fetch_add(1, std::memory_order_release);
@@ -548,8 +656,19 @@ public:
         return false;
     }
 
-    /// A GPU write of value to the u32 at device_address.
-    void OnWrite(u64 device_address, u32 value) {
+    /// TEST: what latched `owner`'s waiter.
+    [[nodiscard]] Source LatchSource(const void* owner) {
+        std::scoped_lock lk{mutex};
+        for (const Slot& w : slots) {
+            if (w.owner.load(std::memory_order_relaxed) == owner && w.latched.load(std::memory_order_acquire)) {
+                return w.source;
+            }
+        }
+        return Source::Unknown;
+    }
+
+    /// A GPU write of `value` to the u32 at `device_address` (by `source`, TEST).
+    void OnWrite(u64 device_address, u32 value, Source source = Source::Unknown) {
         if (count.load(std::memory_order_acquire) == 0) {
             return;
         }
@@ -557,6 +676,7 @@ public:
         for (Slot& slot : slots) {
             if (slot.owner.load(std::memory_order_relaxed) != nullptr &&
                 slot.address == device_address && Matches(slot, value)) {
+                slot.source = source;
                 slot.latched.store(true, std::memory_order_release);
             }
         }
@@ -569,6 +689,7 @@ private:
         u32 value{};
         u32 operation{};
         std::atomic<bool> latched{};
+        Source source{};
     };
 
     static bool Matches(const Slot& slot, u32 current) {

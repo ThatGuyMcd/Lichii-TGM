@@ -66,10 +66,17 @@ struct EmitContext {
     }
 
     std::vector<std::function<void()>> deferred_emits;
+    /// Cold deferred code that may go to the far region (memory fault/abort paths, atomic
+    /// fallbacks). Use ColdEmits(); emitted with deferred_emits when there is no far region.
+    std::vector<std::function<void()>> far_deferred_emits;
     RegAlloc& reg_alloc;
     IR::Block& block;
     boost::container::stable_vector<Xbyak::Label>& shared_labels;
 };
+
+/// True when the producer of a U32 value always writes it with a 32-bit instruction, so its
+/// host register is already zero-extended to 64 bits.
+bool IsZeroExtendedU32Producer(const IR::Inst* inst) noexcept;
 
 class EmitX64 {
 public:
@@ -112,8 +119,8 @@ public:
 #ifndef NDEBUG
     void EmitVerboseDebuggingOutput(RegAlloc& reg_alloc);
 #endif
-    virtual bool EmitLeafTerminal(IR::Term::LeafTerminal const& terminal, IR::LocationDescriptor initial_location, bool is_single_step) noexcept = 0;
-    virtual bool EmitTerminal(IR::Term::Terminal const& terminal, IR::LocationDescriptor initial_location, bool is_single_step) noexcept = 0;
+    virtual bool EmitLeafTerminal(IR::Term::LeafTerminal const& terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
+    virtual bool EmitTerminal(IR::Term::Terminal const& terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
 
     // Patching
     enum class PatchKind : u32 { Jg, Jz, Jmp, MovRcx };

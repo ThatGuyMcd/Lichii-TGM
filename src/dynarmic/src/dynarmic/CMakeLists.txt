@@ -133,6 +133,7 @@ add_library(dynarmic STATIC
     frontend/A64/translate/a64_translate.h
     interface/A64/a64.h
     interface/A64/config.h
+    interface/A64/host_function.h
 )
 
 if ("x86_64" IN_LIST ARCHITECTURE)
@@ -198,6 +199,7 @@ if ("x86_64" IN_LIST ARCHITECTURE)
         backend/x64/a64_interface.cpp
         backend/x64/a64_jitstate.cpp
         backend/x64/a64_jitstate.h
+        backend/x64/atomic_fallback.h
     )
 endif()
 

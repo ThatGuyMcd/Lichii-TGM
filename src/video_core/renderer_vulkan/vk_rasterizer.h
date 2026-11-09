@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -101,6 +102,7 @@ public:
 
     void Draw(bool is_indexed, u32 instance_count) override;
     void DrawIndirect() override;
+    bool DrawMeshTasksFromGpu(DAddr count_addr) override;
     void DrawTexture() override;
     void Clear(u32 layer_count) override;
     void DispatchCompute() override;
@@ -112,15 +114,29 @@ public:
     void FlushAll() override;
     void FlushRegion(DAddr addr, u64 size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
+    void FlushRegionForRead(DAddr addr, u64 size) override;
+    void FinishRead(DAddr addr, u64 size) override;
+    bool NoteReportPending(DAddr addr, u64 size) override;
+    void FinishReport(DAddr addr, u64 size) override;
+    void TraceRead(VideoCommon::ReadTrace::Read& read, VideoCommon::ReadTrace::Step step) override;
     GpuWrittenList ReadGpuWrittenCommandList(DAddr addr, std::span<u8> out, bool past_sync,
                                              u64* pending_tick = nullptr) override;
     bool IsGpuTickDone(u64 tick) override;
     void NoteGpuWrittenCommandListSynced(DAddr page) override;
     void FlushGpuWrittenCommandListPages(std::span<const DAddr> pages) override;
+    bool Nx2ListSlotsSupported() const override;
+    std::optional<u32> Nx2AcquireListSlot() override;
+    void Nx2ReleaseListSlot(u32 slot) override;
+    void Nx2SnapshotListWords(DAddr device_addr, u32 count, u32 slot) override;
+    void Nx2NoteOwedListWord(DAddr device_addr, u32 value) override;
+    void Nx2NoteInlineQmdGrid(DAddr device_addr, u32 x, u32 y, u32 z) override;
+    void Nx2ReadListSlots(std::span<const u32> slots, std::span<u32> words) override;
+    void Nx2CheckListSlot(u32 slot, std::span<const u32> words) override; // TEST
     bool MustFlushRegion(DAddr addr, u64 size,
                          VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     VideoCore::RasterizerDownloadArea GetFlushArea(DAddr addr, u64 size) override;
     bool HasPendingQueries(DAddr addr, u64 size) override;
+    bool HoldsQueries(DAddr addr, u64 size) override;
     void InvalidateRegion(DAddr addr, u64 size,
                           VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     void PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) override;
@@ -198,6 +214,11 @@ private:
     static constexpr size_t MAX_IMAGE_VIEWS = MAX_TEXTURES + MAX_IMAGES;
 
     static constexpr VkDeviceSize DEFAULT_BUFFER_SIZE = 4 * sizeof(float);
+
+    /// IsGpuTickDone's rate limits (the GPU thread that polls suspended channels only).
+    u64 poll_submit_requested_tick{};
+    std::chrono::steady_clock::time_point poll_submit_requested_at{};
+    std::chrono::steady_clock::time_point poll_refreshed_at{};
 
     template <typename Func>
     void PrepareDraw(bool is_indexed, Func&&, bool is_indirect = false);
@@ -320,6 +341,7 @@ private:
     const Device& device;
     MemoryAllocator& memory_allocator;
     StateTracker& state_tracker;
+    s32 bound_channel_id = -1;
     Scheduler& scheduler;
 
     StagingBufferPool staging_pool;

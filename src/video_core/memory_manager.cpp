@@ -16,6 +16,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "memory_manager.h"
 #include "video_core/guest_memory.h"
+#include "video_core/gpu_split.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/host1x/host1x.h"
@@ -266,11 +267,11 @@ void MemoryManager::Unmap(GPUVAddr gpu_addr, std::size_t size) {
 }
 
 std::optional<DAddr> MemoryManager::GpuToCpuAddress(GPUVAddr gpu_addr) const {
-    if (!IsWithinGPUAddressRange(gpu_addr)) [[unlikely]] {
+    if (!IsWithinGPUAddressRange(gpu_addr)) {
         return std::nullopt;
     }
     DAddr dev_addr;
-    if (GetEntry(gpu_addr, true) != EntryType::Mapped) [[unlikely]] {
+    if (GetEntry(gpu_addr, true) != EntryType::Mapped) {
         if (GetEntry(gpu_addr, false) != EntryType::Mapped)
             return std::nullopt;
         dev_addr = (DAddr(page_table[PageEntryIndex(gpu_addr, false)]) << cpu_page_bits) +
@@ -328,6 +329,18 @@ T MemoryManager::Read(GPUVAddr addr) const {
 
 template <typename T>
 void MemoryManager::Write(GPUVAddr addr, T data) {
+    // A download for a guest read not yet in guest memory would land over this write later.
+    if (VideoCore::g_read_downloads.load(std::memory_order_relaxed) != 0) {
+        if (const auto address = GpuToCpuAddress(addr);
+            address && rasterizer != nullptr &&
+            VideoCore::ReadDownloadsMayCover(*address, sizeof(T))) {
+            if (VideoCore::ReadCheckWrites::Enabled()) {
+                VideoCore::ReadCheckWrites::Note(*address, sizeof(T),
+                                                 "MemoryManager::Write (a semaphore or report)");
+            }
+            rasterizer->FinishRead(*address, sizeof(T));
+        }
+    }
     if (auto page_pointer{GetPointer(addr)}; page_pointer) {
         // NOTE: Avoid adding any extra logic to this fast-path block
         std::memcpy(page_pointer, &data, sizeof(T));
@@ -409,7 +422,7 @@ inline void MemoryManager::MemoryOperation(GPUVAddr gpu_src_addr, std::size_t si
         const std::size_t copy_amount{
             (std::min)(static_cast<std::size_t>(used_page_size) - page_offset, remaining_size)};
         auto entry = GetEntry(current_address, is_big_page);
-        if (entry == EntryType::Mapped) [[likely]] {
+        if (entry == EntryType::Mapped) {
             if constexpr (BOOL_BREAK_MAPPED) {
                 if (func_mapped(page_index, page_offset, copy_amount)) {
                     return;
@@ -427,7 +440,7 @@ inline void MemoryManager::MemoryOperation(GPUVAddr gpu_src_addr, std::size_t si
                 func_reserved(page_index, page_offset, copy_amount);
             }
 
-        } else [[unlikely]] {
+        } else {
             if constexpr (BOOL_BREAK_UNMAPPED) {
                 if (func_unmapped(page_index, page_offset, copy_amount)) {
                     return;
@@ -459,7 +472,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
             rasterizer->FlushRegion(dev_addr_base, copy_amount, which);
         }
         // A device page without memory (a sparse block nobody wrote yet) reads zero.
-        if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+        if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) {
             std::memcpy(dest_buffer, physical, copy_amount);
         } else {
             std::memset(dest_buffer, 0, copy_amount);
@@ -475,7 +488,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         // written, while its backing is pending): the per-page copy handles that.
         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
                                                              : nullptr;
-        if (physical != nullptr) [[likely]] {
+        if (physical != nullptr) {
             std::memcpy(dest_buffer, physical, copy_amount);
         } else {
             memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount, caller);
@@ -528,12 +541,28 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
     auto just_advance = [&]([[maybe_unused]] std::size_t page_index, [[maybe_unused]] std::size_t offset, std::size_t copy_amount) {
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
     };
+    // A download for a guest read not yet in guest memory would land over this write later.
+    const auto finish_reads = [this, unsafe](DAddr dev_addr, std::size_t amount) {
+        if (VideoCore::g_read_downloads.load(std::memory_order_relaxed) != 0) {
+            if (rasterizer != nullptr && VideoCore::ReadDownloadsMayCover(dev_addr, amount)) {
+                if (VideoCore::ReadCheckWrites::Enabled()) {
+                    VideoCore::ReadCheckWrites::Note(
+                        dev_addr, amount,
+                        unsafe ? "MemoryManager::WriteBlockUnsafe/Cached (inline-to-memory or "
+                                 "constant buffer data)"
+                               : "MemoryManager::WriteBlock");
+                }
+                rasterizer->FinishRead(dev_addr, amount);
+            }
+        }
+    };
     auto mapped_normal = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
         const DAddr dev_addr_base = (DAddr(page_table[page_index]) << cpu_page_bits) + offset;
+        finish_reads(dev_addr_base, copy_amount);
         if (!unsafe) {
             rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
         }
-        if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+        if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) {
             std::memcpy(physical, src_buffer, copy_amount);
         }
         // After the copy: the buffer cache may upload the written bytes from guest memory.
@@ -544,12 +573,13 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
     };
     auto mapped_big = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
         const DAddr dev_addr_base = (DAddr(big_page_table_dev[page_index]) << cpu_page_bits) + offset;
+        finish_reads(dev_addr_base, copy_amount);
         if (!unsafe) {
             rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
         }
         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
                                                              : nullptr;
-        if (physical != nullptr) [[likely]] {
+        if (physical != nullptr) {
             std::memcpy(physical, src_buffer, copy_amount);
         } else {
             memory.WriteBlockUnsafe(dev_addr_base, src_buffer, copy_amount);
@@ -615,6 +645,17 @@ void MemoryManager::FlushRegion(GPUVAddr gpu_addr, size_t size,
         MemoryOperation(base, copy_amount, false, mapped_normal, do_nothing, do_nothing);
     };
     MemoryOperation(gpu_addr, size, true, mapped_big, do_nothing, flush_short_pages);
+}
+
+void MemoryManager::FlushRegionForRead(GPUVAddr gpu_addr, size_t size) const {
+    // A CPU-side (safe) read has to see the writes the GPU has already made. Under the GPU split
+    // those writes sit in the rasterizer's caches, which belong to the back thread, so the flush is
+    // queued there and this call waits for it rather than the front touching back-owned state.
+    // Run() already does exactly the right thing in the other two cases: with no split, and when
+    // the caller is the back thread itself, it just calls the lambda here.
+    VideoCommon::GpuSplit::Get().Run(
+        [this, gpu_addr, size] { FlushRegion(gpu_addr, size); },
+        VideoCommon::DrainSite::SafeReadFlush);
 }
 
 bool MemoryManager::IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
@@ -864,9 +905,9 @@ bool MemoryManager::IsGranularRange(GPUVAddr gpu_addr, std::size_t size) const {
     if (!IsWithinGPUAddressRange(gpu_addr) || size > address_space_size - gpu_addr) {
         return false;
     }
-    if (GetEntry(gpu_addr, true) == EntryType::Mapped) [[likely]] {
+    if (GetEntry(gpu_addr, true) == EntryType::Mapped) {
         size_t page_index = gpu_addr >> big_page_bits;
-        if (IsBigPageContinuous(page_index)) [[likely]] {
+        if (IsBigPageContinuous(page_index)) {
             const std::size_t page{(page_index & big_page_mask) + size};
             return page <= big_page_size;
         }

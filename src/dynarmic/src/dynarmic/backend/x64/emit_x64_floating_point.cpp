@@ -451,7 +451,7 @@ static void EmitFPMinMax(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, bo
 }
 
 template<size_t fsize>
-static inline void EmitFPMinMaxNumeric(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, bool is_max) noexcept {
+static inline void EmitFPMinMaxNumeric(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, bool is_max) {
     using FPT = mcl::unsigned_integer_of_size<fsize>;
     constexpr FPT default_nan = FP::FPInfo<FPT>::DefaultNaN();
 
@@ -1410,8 +1410,9 @@ static Xbyak::Reg64 SetFpscrNzcvFromFlags(BlockOfCode& code, EmitContext& ctx) {
     //   3       0011     0000000100000001 = 0x0101
 
     code.mov(nzcv, 0x0101'4100'8000'0100);
-    code.sete(cl);
-    code.rcl(cl, 5);  // cl = ZF:CF:0000
+    code.sete(cl);     // sete keeps the compare's CF
+    code.adc(cl, cl);  // cl = ZF:CF; rcl would run as microcode
+    code.shl(cl, 4);   // cl = ZF:CF:0000
     code.shr(nzcv, cl);
 
     return nzcv;

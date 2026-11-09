@@ -7,6 +7,9 @@
 add_library(core STATIC
     arm/arm_interface.cpp
     arm/arm_interface.h
+    arm/guest_functions.cpp
+    arm/guest_functions.h
+    arm/spin_wait.h
     arm/debug.cpp
     arm/debug.h
     arm/exclusive_monitor.cpp
@@ -381,6 +384,10 @@ add_library(core STATIC
     hle/kernel/svc/svc_light_ipc.cpp
     hle/kernel/svc/svc_lock.cpp
     hle/kernel/svc/svc_memory.cpp
+    hle/kernel/svc/svc_nx2_zstd.cpp
+    hle/kernel/svc/svc_nx2_zstd.h
+    hle/kernel/svc/svc_nx2_oot_poll.cpp
+    hle/kernel/svc/svc_nx2_oot_poll.h
     hle/kernel/svc/svc_physical_memory.cpp
     hle/kernel/svc/svc_port.cpp
     hle/kernel/svc/svc_power_management.cpp
@@ -1199,6 +1206,8 @@ add_library(core STATIC
     ocarina_igcs.cpp
     ocarina_photo_mode.cpp
     ocarina_photo_mode.h
+    oot_zstd_hook.cpp
+    oot_zstd_hook.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp

@@ -96,6 +96,7 @@ add_executable(tests
     video_core/command_fetch_order.cpp
     video_core/gpu_written_pages.cpp
     video_core/nx2_semaphore_mirror.cpp
+    video_core/async_report_wait.cpp
     video_core/command_writer.cpp
     video_core/split_fence_wait.cpp
     video_core/command_snapshot_suspensions.cpp
@@ -105,6 +106,7 @@ add_executable(tests
     common/paged_scalar.cpp
     common/queue_lifetime.cpp
     common/queue_timed_wait.cpp
+    common/nx2_address_wait.cpp
     common/range_set_move.cpp
     common/range_set_subtract.cpp
     video_core/uniform_cache_history.cpp
@@ -127,6 +129,7 @@ add_executable(tests
     video_core/native_indirect_reset.cpp
     video_core/native_qmd.cpp
     video_core/fast_draw.cpp
+    video_core/gpu_argument_draws.cpp
     video_core/gpu_command_safety.cpp
     video_core/syncpoint_actions.cpp
     video_core/nx2_video_av1.cpp
@@ -163,6 +166,7 @@ add_executable(tests
     common/unique_function.cpp
     common/zstd_compression.cpp
     core/core_timing.cpp
+    core/spin_wait.cpp
     core/thread_startup_policy.cpp
     core/nup_writer.cpp
     core/nup_metadata.cpp
@@ -193,8 +197,10 @@ add_executable(tests
     video_core/ampere_uniform_immediate_shift.cpp
     video_core/ampere_bindless_surfaces.cpp
     video_core/native_macro_fifo.cpp
+    video_core/turing_macro_effects.cpp
     video_core/turing_macro_ram.cpp
     video_core/uniform_stream_reuse.cpp
+    video_core/upload_order.cpp
     video_core/usage_tracker.cpp
     video_core/shader_invalidation.cpp
     video_core/descriptor_table.cpp
@@ -217,7 +223,8 @@ target_link_libraries(tests PRIVATE common core audio_core input_common video_co
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 
 if (TARGET dynarmic::dynarmic)
-    target_sources(tests PRIVATE core/window_trace.cpp)
+    target_sources(tests PRIVATE core/window_trace.cpp core/guest_cpu.cpp
+        core/dynarmic_atomic_fallback.cpp)
     target_link_libraries(tests PRIVATE dynarmic::dynarmic)
 endif()
 

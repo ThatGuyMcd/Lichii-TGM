@@ -4,6 +4,23 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
+#if defined(_M_X64) || defined(__x86_64__)
+#ifdef _MSC_VER
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+#include "common/cpu_features.h"
+#include "common/x64/monitor_wait.h"
+#endif
+
 #include "core/arm/exclusive_monitor.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_address_arbiter.h"
@@ -14,6 +31,7 @@
 #include "core/hle/kernel/k_thread_queue.h"
 #include "core/hle/kernel/k_typed_address.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/physical_core.h"
 #include "core/hle/kernel/svc_results.h"
 #include "core/memory.h"
 
@@ -122,6 +140,105 @@ bool UpdateIfEqual(KernelCore& kernel, s32* out, KProcessAddress address, s32 va
     // We're done.
     *out = current_value;
     return true;
+}
+
+/// EDEN_NX2_ARB_SPIN: microseconds a thread about to wait on an address first watches the word
+/// (default 8; 0 turns it off).
+s64 ArbSpinMicroseconds() {
+    static const s64 microseconds = [] {
+        const char* value = std::getenv("EDEN_NX2_ARB_SPIN");
+        if (value == nullptr || value[0] == '\0') {
+            return s64{8};
+        }
+        return (std::max)(s64{0}, static_cast<s64>(std::strtoll(value, nullptr, 10)));
+    }();
+    return microseconds;
+}
+
+/// Guest job systems hand work between threads through these waits many times a frame, and the
+/// signal often comes a few microseconds later. Before the thread sleeps (scheduler lock, context
+/// switch, then the signaler's EndWait, interrupt and switch back), it watches the word briefly
+/// without any lock. If the word stops satisfying the wait, the wait ends with ResultInvalidState,
+/// exactly what the kernel returns to a thread that entered the SVC that much later. Threads whose
+/// spins rarely pay off stop spinning (m_nx2_arb_spin_credit).
+template <typename StillWaits>
+bool SpinBeforeWait(KernelCore& kernel, KThread* cur_thread, uint64_t addr, bool is_64_bit,
+                    StillWaits&& still_waits) {
+    const s64 spin_us = ArbSpinMicroseconds();
+    if (spin_us == 0 || !kernel.IsMulticore() || (addr & (is_64_bit ? 7 : 3)) != 0) {
+        return false;
+    }
+    u8& credit = cur_thread->m_nx2_arb_spin_credit;
+    if (credit == 0 && (++cur_thread->m_nx2_arb_spin_probe & 15) != 0) {
+        return false;
+    }
+    const u8* const pointer = GetCurrentMemory(kernel).GetPointerSilent(addr);
+    if (pointer == nullptr) {
+        return false;
+    }
+    const auto load_word = [&]() -> s64 {
+        if (is_64_bit) {
+            return *reinterpret_cast<const volatile s64*>(pointer);
+        }
+        return *reinterpret_cast<const volatile s32*>(pointer);
+    };
+    const PhysicalCore& core = kernel.CurrentPhysicalCore();
+#if defined(_M_X64) || defined(__x86_64__)
+    // Past the first 2 us, wait for a write to the word's line with MONITORX/MWAITX instead of
+    // polling (the SMT sibling gets the core), 1 us at a time so an interrupt is still seen.
+    if (Common::g_wall_clock.IsNative() && Common::X64::HasMonitorWait()) {
+        const u64 budget = Common::g_wall_clock.NsToTicks(std::chrono::microseconds{spin_us});
+        const u64 poll = Common::g_wall_clock.NsToTicks(std::chrono::microseconds{2});
+        const u64 slice = Common::g_wall_clock.NsToTicks(std::chrono::microseconds{1});
+        const u64 start = __rdtsc();
+        for (u32 spin = 1;; ++spin) {
+            const s64 word = load_word();
+            if (!still_waits(word)) {
+                credit = static_cast<u8>((std::min)(credit + 2, 16));
+                return !cur_thread->IsTerminationRequested();
+            }
+            const u64 elapsed = __rdtsc() - start;
+            if (elapsed >= budget ||
+                (((spin & 31) == 0 || elapsed >= poll) && core.IsInterrupted())) {
+                break;
+            }
+            if (elapsed < poll) {
+                _mm_pause();
+                continue;
+            }
+            Common::X64::MonitorWait(pointer, static_cast<u64>(word), is_64_bit ? 8 : 4,
+                                     static_cast<u32>((std::min)(slice, budget - elapsed)));
+        }
+        if (credit > 0) {
+            --credit;
+        }
+        return false;
+    }
+#endif
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds{spin_us};
+    for (u32 spin = 1;; ++spin) {
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+        _mm_pause();
+#endif
+        if (!still_waits(load_word())) {
+            credit = static_cast<u8>((std::min)(credit + 2, 16));
+            // A terminating thread takes the normal path, which reports the termination first.
+            return !cur_thread->IsTerminationRequested();
+        }
+        if ((spin & 31) == 0) {
+            // Something else must run on this core: stop watching.
+            if (core.IsInterrupted()) {
+                return false;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                break;
+            }
+        }
+    }
+    if (credit > 0) {
+        --credit;
+    }
+    return false;
 }
 
 class ThreadQueueImplForKAddressArbiter final : public KThreadQueue {
@@ -264,6 +381,10 @@ Result KAddressArbiter::SignalAndModifyByWaitingCountIfEqual(uint64_t addr, s32 
 Result KAddressArbiter::WaitIfLessThan(uint64_t addr, s32 value, bool decrement, s64 timeout) {
     // Prepare to wait.
     KThread* cur_thread = GetCurrentThreadPointer(system.Kernel());
+    if (timeout != 0 && SpinBeforeWait(system.Kernel(), cur_thread, addr, false,
+                                       [value](s64 user_value) { return user_value < value; })) {
+        R_THROW(ResultInvalidState);
+    }
     KHardwareTimer* timer{};
     ThreadQueueImplForKAddressArbiter wait_queue(system.Kernel(), std::addressof(m_tree));
 
@@ -319,6 +440,10 @@ Result KAddressArbiter::WaitIfLessThan(uint64_t addr, s32 value, bool decrement,
 Result KAddressArbiter::WaitIfEqual(uint64_t addr, s64 value, s64 timeout, bool is_64_bit) {
     // Prepare to wait.
     KThread* cur_thread = GetCurrentThreadPointer(system.Kernel());
+    if (timeout != 0 && SpinBeforeWait(system.Kernel(), cur_thread, addr, is_64_bit,
+                                       [value](s64 user_value) { return user_value == value; })) {
+        R_THROW(ResultInvalidState);
+    }
     KHardwareTimer* timer{};
     ThreadQueueImplForKAddressArbiter wait_queue(system.Kernel(), std::addressof(m_tree));
 

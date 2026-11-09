@@ -6,10 +6,15 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
+#include <mutex>
 #include <span>
+#include <string>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/nx2_perf.h"
@@ -18,6 +23,7 @@
 #include "video_core/renderer_vulkan/vertex_repack.h"
 
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
+#include "video_core/renderer_vulkan/vk_gpu_cost.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
@@ -31,6 +37,8 @@ namespace {
 // Zero-filled space after each buffer on MoltenVK. Shaders declare every constant buffer at its
 // full 64 KiB and Metal validates that length from the binding offset.
 constexpr VkDeviceSize MOLTENVK_BUFFER_TAIL = 65536;
+/// TEST (EDEN_NX2_GPU_COST=2): Buffer::MarkUsage notes page ticks, DecideUploadOrder classifies.
+const bool g_trace_uploads = GpuCost::TracesUploads();
 
 void HostReadBarrier(vk::CommandBuffer cmdbuf) {
     const VkMemoryBarrier barrier{
@@ -111,7 +119,7 @@ vk::Buffer CreateBuffer(const Device& device, const MemoryAllocator& memory_allo
 } // Anonymous namespace
 
 Buffer::Buffer(BufferCacheRuntime& runtime, VideoCommon::NullBufferParams null_params)
-    : VideoCommon::BufferBase(null_params), scheduler{&runtime.scheduler}, tracker{4096} {
+    : VideoCommon::BufferBase(null_params), scheduler{&runtime.scheduler} {
     if (runtime.device.HasNullDescriptor()) {
         return;
     }
@@ -128,8 +136,7 @@ Buffer::Buffer(BufferCacheRuntime& runtime, DAddr cpu_addr_, u64 size_bytes_,
     : VideoCommon::BufferBase(cpu_addr_, size_bytes_), device{&runtime.device},
       scheduler{&runtime.scheduler},
       buffer{CreateBuffer(*device, runtime.memory_allocator, SizeBytes(),
-                          runtime.SparseAlignmentFor(sparse_compatible_))},
-      tracker{SizeBytes()} {
+                          runtime.SparseAlignmentFor(sparse_compatible_))} {
     sparse_compatible = sparse_compatible_;
     if (device->IsMoltenVK()) {
         runtime.scheduler.RequestOutsideRenderPassOperationContext();
@@ -154,8 +161,43 @@ Buffer::Buffer(BufferCacheRuntime& runtime, DAddr cpu_addr_, u64 size_bytes_,
 }
 
 void Buffer::MarkUsage(u64 offset, u64 size) noexcept {
-    tracker.Track(offset, size);
-    last_usage_tick = scheduler->CurrentTick();
+    const u64 tick = scheduler->CurrentTick();
+    uses.Track(offset, size, tick);
+    if (UploadReorderCheck* const check = UploadReorderCheck::Active()) {
+        check->NoteUse(*buffer, offset, size, UploadReorderCheck::Source::Marked);
+    }
+    if (g_trace_uploads) {
+        const std::array<u64, 3> use{offset, size, tick};
+        if (std::ranges::find(noted_uses, use) != noted_uses.end() || size == 0) {
+            return;
+        }
+        noted_uses[noted_cursor++ % noted_uses.size()] = use;
+        if (use_ticks.empty()) {
+            use_ticks.resize(static_cast<size_t>(SizeBytes() >> 12) + 1);
+        }
+        const size_t last = (std::min)(static_cast<size_t>((offset + size - 1) >> 12),
+                                       use_ticks.size() - 1);
+        for (size_t page = static_cast<size_t>(offset >> 12); page <= last; ++page) {
+            use_ticks[page] = tick;
+        }
+    }
+}
+
+void Buffer::TrackUploadWrite(u64 offset, u64 size) noexcept {
+    uses.Track(offset, size, scheduler->CurrentTick());
+}
+
+u64 Buffer::NewestUseTick(u64 offset, u64 size) const noexcept {
+    u64 newest = 0;
+    if (size == 0 || use_ticks.empty()) {
+        return newest;
+    }
+    const size_t last =
+        (std::min)(static_cast<size_t>((offset + size - 1) >> 12), use_ticks.size() - 1);
+    for (size_t page = static_cast<size_t>(offset >> 12); page <= last; ++page) {
+        newest = (std::max)(newest, use_ticks[page]);
+    }
+    return newest;
 }
 
 VkBufferView Buffer::View(u32 offset, u32 size, VideoCore::Surface::PixelFormat format) {
@@ -400,7 +442,7 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
       staging_pool{staging_pool_}, guest_descriptor_queue{guest_descriptor_queue_},
       quad_index_pass(device, scheduler, descriptor_pool, staging_pool,
                       compute_pass_descriptor_queue),
-      multi_range_buffers(device_) {
+      multi_range_buffers(device_), reorder_check{UploadReorderCheck::Create(scheduler_)} {
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool enable_vertex_repack = VertexRepackEnabled();
     LOG_INFO(Render_Vulkan, "69-byte vertex layout repacking {} ({})",
@@ -485,13 +527,10 @@ u64 BufferCacheRuntime::GetMaxStorageBufferRange() const {
     return device.GetMaxStorageBufferRange();
 }
 
-void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noexcept {
+void BufferCacheRuntime::TickFrame(
+    [[maybe_unused]] Common::SlotVector<Buffer>& slot_buffers) noexcept {
+    // Buffers' uses need no reset: they are kept by submission (VideoCommon::SubmissionUses).
     multi_range_buffers.TickFrame(scheduler);
-    for (auto it = slot_buffers.begin(); it != slot_buffers.end(); it++) {
-        if (scheduler.IsFree(it->LastUsageTick())) {
-            it->ResetUsageTracking();
-        }
-    }
 }
 
 u64 BufferCacheRuntime::CurrentTick() {
@@ -511,11 +550,17 @@ void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
     if (master.IsFree(tick)) {
         return;
     }
+    // The split's front waits for the GPU: the back runs meanwhile what the front sent, also the
+    // entries since the front's last publish, which it does not see yet (fewer than 256 words).
+    auto& split = VideoCommon::GpuSplit::Get();
+    const bool front = !VideoCommon::GpuSplit::OnBackThread() && split.Active();
+    if (front) {
+        split.Publish();
+    }
     // The copy's submission may be deferred (Scheduler::DeferFlush): the split's front asks the
     // back for it rather than waiting for the back's next submission. If the back has stopped,
     // nothing else uses the scheduler and Wait submits it.
-    if (!scheduler.IsSubmitted(tick) && VideoCommon::GpuSplit::Get().Active() &&
-        !VideoCommon::GpuSplit::OnBackThread()) {
+    if (!scheduler.IsSubmitted(tick) && front) {
         VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::ListSubmitWait};
         if (!scheduler.WaitSubmitted(tick)) {
             scheduler.Wait(tick);
@@ -536,24 +581,137 @@ void BufferCacheRuntime::FinishForHostRead() {
     scheduler.Finish();
 }
 
-bool BufferCacheRuntime::CanReorderUpload(const Buffer& buffer,
-                                          std::span<const VideoCommon::BufferCopy> copies) {
-    if (Settings::values.disable_buffer_reorder) {
+u64 BufferCacheRuntime::SubmitForHostRead() {
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record(HostReadBarrier);
+    return scheduler.Flush();
+}
+
+u64 BufferCacheRuntime::QueueForHostRead() {
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record(HostReadBarrier);
+    const u64 tick = scheduler.CurrentTick();
+    if (!scheduler.DeferFlush()) {
+        scheduler.Flush();
+    }
+    return tick;
+}
+
+void BufferCacheRuntime::WaitForHostRead(u64 tick) {
+    if (scheduler.IsFree(tick)) {
+        return;
+    }
+    // A queued tick may not be submitted yet. Only the split's back submits: other threads ask it
+    // to, as for fences (InnerFence::Wait). On the back, and once it has stopped, Wait submits it.
+    if (!scheduler.IsSubmitted(tick) && VideoCommon::GpuSplit::Get().Active() &&
+        !VideoCommon::GpuSplit::OnBackThread() && scheduler.WaitSubmitted(tick)) {
+        scheduler.GetMasterSemaphore().Wait(tick);
+        return;
+    }
+    scheduler.Wait(tick);
+}
+
+bool BufferCacheRuntime::IsFreeNow(u64 tick) {
+    if (scheduler.IsFree(tick)) {
+        return true;
+    }
+    if (!scheduler.IsSubmitted(tick)) {
         return false;
     }
-    const bool can_use_upload_cmdbuf =
-        std::ranges::all_of(copies, [&](const VideoCommon::BufferCopy& copy) {
-            return !buffer.IsRegionUsed(copy.dst_offset, copy.size);
-        });
-    return can_use_upload_cmdbuf;
+    scheduler.GetMasterSemaphore().Refresh();
+    return scheduler.IsFree(tick);
+}
+
+u64 BufferCacheRuntime::TraceMark() {
+    return scheduler.TraceMark();
+}
+
+VideoCommon::ReadTrace::Counts BufferCacheRuntime::TraceCounts() const {
+    return scheduler.TraceCounts();
+}
+
+void BufferCacheRuntime::TraceCountWork(bool dispatch) {
+    scheduler.TraceCountWork(dispatch);
+}
+
+VideoCommon::UploadOrder BufferCacheRuntime::DecideUploadOrder(
+    Buffer& buffer, std::span<const VideoCommon::BufferCopy> copies) {
+    VideoCommon::UploadOrder order{};
+    if (!Settings::values.disable_buffer_reorder) {
+        order = VideoCommon::DecideUploadOrder(buffer.Uses(), copies, scheduler.CurrentTick());
+    }
+    if (g_trace_uploads) {
+        TraceUpload(buffer, copies, order.reorder);
+    }
+    // An upload of these bytes later in this submission must run after this one: in order.
+    for (const VideoCommon::BufferCopy& copy : copies) {
+        buffer.TrackUploadWrite(copy.dst_offset, copy.size);
+    }
+    return order;
+}
+
+void BufferCacheRuntime::TraceUpload(const Buffer& buffer,
+                                     std::span<const VideoCommon::BufferCopy> copies,
+                                     bool reordered) {
+    // TEST (EDEN_NX2_GPU_COST): where the destination's last use was when an upload has to run
+    // in order (main command buffer, ends the render pass). The usage bits only clear when the
+    // whole buffer is idle at a frame's end (TickFrame).
+    enum Class : size_t { Reordered, LastUseDone, InFlight, ThisCommandBuffer, NoTick, Count };
+    static constexpr std::array<const char*, Count> names{
+        "reorderable (upload command buffer)", "in order, last use of its pages done",
+        "in order, last use submitted, not done", "in order, used in this command buffer",
+        "in order, no use noted"};
+    struct Totals {
+        std::array<u64, Count> count{};
+        std::array<u64, Count> bytes{};
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    };
+    static std::mutex mutex;
+    static Totals totals;
+    u64 newest = 0;
+    u64 bytes = 0;
+    for (const VideoCommon::BufferCopy& copy : copies) {
+        newest = (std::max)(newest, buffer.NewestUseTick(copy.dst_offset, copy.size));
+        bytes += copy.size;
+    }
+    const auto done = [&] {
+        if (scheduler.IsFree(newest)) {
+            return true;
+        }
+        scheduler.GetMasterSemaphore().Refresh();
+        return scheduler.IsFree(newest);
+    };
+    const Class kind = reordered                           ? Reordered
+                       : newest == 0                       ? NoTick
+                       : newest >= scheduler.CurrentTick() ? ThisCommandBuffer
+                       : !done()                           ? InFlight
+                                                           : LastUseDone;
+    std::scoped_lock lock{mutex};
+    ++totals.count[kind];
+    totals.bytes[kind] += bytes;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - totals.start < std::chrono::seconds{10}) {
+        return;
+    }
+    const double seconds = std::chrono::duration<double>(now - totals.start).count();
+    std::string line;
+    for (size_t i = 0; i < Count; ++i) {
+        line += fmt::format("{}{}: {:.0f}/s {:.0f} KiB/s", i == 0 ? "" : ", ", names[i],
+                            static_cast<double>(totals.count[i]) / seconds,
+                            static_cast<double>(totals.bytes[i]) / 1024.0 / seconds);
+    }
+    LOG_INFO(Render_Vulkan, "Uploads in {:.1f} s: {}", seconds, line);
+    totals = {};
 }
 
 void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
                                     std::span<const VideoCommon::BufferCopy> copies, bool barrier,
-                                    bool can_reorder_upload) {
+                                    VideoCommon::UploadOrder order, std::source_location location) {
     if (dst_buffer == VK_NULL_HANDLE || src_buffer == VK_NULL_HANDLE) {
         return;
     }
+    const bool from_stream = src_buffer == staging_pool.StreamBuf();
+    const bool reorder = from_stream && order.reorder;
     static constexpr VkMemoryBarrier READ_BARRIER{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
         .pNext = nullptr,
@@ -567,29 +725,59 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
     };
 
+    if (reorder_check) {
+        // The upload's place against the uses before it, then the copy's own uses.
+        if (from_stream) {
+            reorder_check->CheckUpload(dst_buffer, copies,
+                                       reorder ? order : VideoCommon::UploadOrder{}, location);
+        }
+        for (const VideoCommon::BufferCopy& copy : copies) {
+            if (!from_stream) {
+                reorder_check->NoteUse(src_buffer, copy.src_offset, copy.size,
+                                       UploadReorderCheck::Source::CopyRead);
+            }
+            reorder_check->NoteUse(dst_buffer, copy.dst_offset, copy.size,
+                                   UploadReorderCheck::Source::CopyWrite);
+        }
+    }
+
     // Measuring a popular game, this number never exceeds the specified size once data is warmed up
     boost::container::small_vector<VkBufferCopy, 8> vk_copies(copies.size());
     std::ranges::transform(copies, vk_copies.begin(), MakeBufferCopy);
-    if (src_buffer == staging_pool.StreamBuf() && can_reorder_upload) {
-        scheduler.RecordWithUploadBuffer([src_buffer, dst_buffer, vk_copies](
-                                             vk::CommandBuffer, vk::CommandBuffer upload_cmdbuf) {
-            upload_cmdbuf.CopyBuffer(src_buffer, dst_buffer, vk_copies);
-        });
+    if (reorder) {
+        // Ahead of this submission's work: no render pass ends for it. Recorded into the upload
+        // command buffer with the submission's other reordered uploads when it is submitted.
+        scheduler.RecordReorderedUpload(
+            src_buffer, dst_buffer,
+            std::span<const VkBufferCopy>(vk_copies.data(), vk_copies.size()), order.prior_tick);
         return;
     }
 
-    scheduler.RequestOutsideRenderPassOperationContext();
-    scheduler.Record([src_buffer, dst_buffer, vk_copies, barrier](vk::CommandBuffer cmdbuf) {
-        if (barrier) {
-            cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
-                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, READ_BARRIER);
-        }
-        cmdbuf.CopyBuffer(src_buffer, dst_buffer, vk_copies);
-        if (barrier) {
-            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                   vk::PIPELINE_STAGE_GRAPHICS_COMPUTE, 0, WRITE_BARRIER);
-        }
-    });
+    scheduler.RequestOutsideRenderPassOperationContext(location);
+    if (barrier && from_stream && !vk_copies.empty()) {
+        // An upload in order, with these barriers. Runs of them (Ocarina of Time's inline writes
+        // into GPU-written pages: ~600 a frame) go in one command between one pair of them.
+        scheduler.RecordUpload(src_buffer, dst_buffer,
+                               std::span<const VkBufferCopy>(vk_copies.data(), vk_copies.size()),
+                               location);
+        return;
+    }
+    scheduler.Record(
+        [src_buffer, dst_buffer, vk_copies, barrier](vk::CommandBuffer cmdbuf) {
+            if (barrier) {
+                cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, READ_BARRIER);
+            }
+            cmdbuf.CopyBuffer(src_buffer, dst_buffer, vk_copies);
+            if (barrier) {
+                // Later transfers too: a reordered upload of the same bytes in a later
+                // submission has no barrier of its own before it.
+                cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       vk::PIPELINE_STAGE_GRAPHICS_COMPUTE_TRANSFER, 0,
+                                       WRITE_BARRIER);
+            }
+        },
+        location);
 }
 
 void BufferCacheRuntime::PreCopyBarrier() {
@@ -624,6 +812,7 @@ void BufferCacheRuntime::ClearBuffer(VkBuffer dest_buffer, u32 offset, size_t si
     if (dest_buffer == VK_NULL_HANDLE) {
         return;
     }
+    NoteCheckUse(dest_buffer, offset, size, UploadReorderCheck::Source::Clear);
     static constexpr VkMemoryBarrier READ_BARRIER{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
         .pNext = nullptr,
@@ -681,6 +870,7 @@ bool BufferCacheRuntime::BindMultiRangeStorageBuffer(u64 key, bool is_written) {
 void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat index_format,
                                          u32 base_vertex, u32 num_indices, VkBuffer buffer,
                                          u32 offset, [[maybe_unused]] u32 size) {
+    NoteCheckUse(buffer, offset, size, UploadReorderCheck::Source::Index);
     VkIndexType vk_index_type = MaxwellToVK::IndexFormat(index_format);
     VkDeviceSize vk_offset = offset;
     VkBuffer vk_buffer = buffer;
@@ -756,6 +946,10 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, VkBuffer buffer, u32 offset
     if (index >= device.GetMaxVertexInputBindings()) {
         return;
     }
+    NoteCheckUse(buffer, offset, size, UploadReorderCheck::Source::Vertex);
+    if (index < bound_vertex_buffers.size()) {
+        bound_vertex_buffers[index].epoch = ~u64{0};
+    }
     if (buffer != VK_NULL_HANDLE && size != 0 && IsVertexRepacked(index)) {
         const auto repacked =
             vertex_repack_pass->Assemble(buffer, offset, size, u64{offset} + size);
@@ -790,6 +984,8 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
     boost::container::static_vector<VkBuffer, VideoCommon::NUM_VERTEX_BUFFERS> buffer_handles(bindings.buffers.size());
     for (u32 i = 0; i < bindings.buffers.size(); ++i) {
         auto handle = bindings.buffers[i]->Handle();
+        NoteCheckUse(handle, bindings.offsets[i], bindings.sizes[i],
+                     UploadReorderCheck::Source::Vertex);
         if (handle == VK_NULL_HANDLE) {
             bindings.offsets[i] = 0;
             bindings.sizes[i] = VK_WHOLE_SIZE;
@@ -826,6 +1022,25 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
     if (binding_count == 0) {
         return;
     }
+    // The same buffers are still bound in this command buffer (as for index buffers): skip the
+    // rebind. Draws re-resolve their vertex streams when the guest rewrites unchanged registers.
+    if (!VideoCommon::Nx2Perf::Verify()) {
+        const u64 epoch = scheduler.RecordingEpoch();
+        bool unchanged = true;
+        for (u32 i = 0; unchanged && i < binding_count; ++i) {
+            const BoundVertexBuffer& bound = bound_vertex_buffers[min_binding + i];
+            unchanged = bound.epoch == epoch && bound.buffer == buffer_handles[i] &&
+                        bound.offset == bindings.offsets[i] && bound.size == bindings.sizes[i] &&
+                        bound.stride == bindings.strides[i];
+        }
+        if (unchanged) {
+            return;
+        }
+        for (u32 i = 0; i < binding_count; ++i) {
+            bound_vertex_buffers[min_binding + i] = {buffer_handles[i], bindings.offsets[i],
+                                                     bindings.sizes[i], bindings.strides[i], epoch};
+        }
+    }
     if (device.IsExtExtendedDynamicStateSupported()) {
         scheduler.Record([bindings_ = std::move(bindings), buffer_handles_ = std::move(buffer_handles), binding_count](vk::CommandBuffer cmdbuf) {
             cmdbuf.BindVertexBuffers2EXT(bindings_.min_index, binding_count, buffer_handles_.data(), bindings_.offsets.data(), bindings_.sizes.data(), bindings_.strides.data());
@@ -843,6 +1058,7 @@ void BufferCacheRuntime::BindTransformFeedbackBuffer(u32 index, VkBuffer buffer,
         // Already logged in the rasterizer
         return;
     }
+    NoteCheckUse(buffer, offset, size, UploadReorderCheck::Source::TransformFeedback);
     if (buffer == VK_NULL_HANDLE) {
         // Vulkan doesn't support null transform feedback buffers.
         // Replace it with our own null buffer.
@@ -866,6 +1082,8 @@ void BufferCacheRuntime::BindTransformFeedbackBuffers(VideoCommon::HostBindings<
     boost::container::static_vector<VkBuffer, VideoCommon::NUM_VERTEX_BUFFERS> buffer_handles(bindings.buffers.size());
     for (u32 i = 0; i < bindings.buffers.size(); ++i) {
         auto handle = bindings.buffers[i]->Handle();
+        NoteCheckUse(handle, bindings.offsets[i], bindings.sizes[i],
+                     UploadReorderCheck::Source::TransformFeedback);
         if (handle == VK_NULL_HANDLE) {
             ReserveNullBuffer();
             handle = *null_buffer;
@@ -883,6 +1101,26 @@ void BufferCacheRuntime::ReserveNullBuffer() {
     if (!null_buffer) {
         null_buffer = CreateNullBuffer();
     }
+}
+
+VkBuffer BufferCacheRuntime::Nx2MeshMirror() {
+    if (!nx2_mesh_mirror) {
+        const VkBufferCreateInfo create_info{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .size = VkDeviceSize{Nx2MeshMirrorSlots} * Nx2MeshMirrorSlotSize,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+        };
+        nx2_mesh_mirror = memory_allocator.CreateBuffer(create_info, MemoryUsage::DeviceLocal);
+        if (device.HasDebuggingToolAttached()) {
+            nx2_mesh_mirror.SetObjectNameEXT("Mesh task count mirror");
+        }
+    }
+    return *nx2_mesh_mirror;
 }
 
 vk::Buffer BufferCacheRuntime::CreateNullBuffer() {

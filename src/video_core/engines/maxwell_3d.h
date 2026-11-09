@@ -3122,6 +3122,32 @@ public:
         void UpdateTopology(Maxwell3D& maxwell3d);
         void ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed, u32 instance_count);
         void ProcessDrawIndirect(Maxwell3D& maxwell3d);
+        /// The GPU-written words vertex_buffer.count and vertex_buffer.first came from
+        /// (Maxwell3D::DrawFromGpuArguments): the draw ends as a mesh task draw whose group
+        /// count the GPU reads, or reads them first.
+        struct GpuVertexArguments {
+            GPUVAddr address;
+            DAddr device;
+            u32 unknown; ///< Registers still holding older values: first (bit 0), count (bit 1)
+        };
+        /// Set while the end of such a draw runs.
+        std::optional<GpuVertexArguments> gpu_draw_arguments;
+        /// Registers that still hold older values: a draw that uses them reads the words first.
+        std::optional<GpuVertexArguments> pending_vertex_arguments;
+        /// Reads the words pending_vertex_arguments still marks into the registers.
+        void ResolveVertexArguments(Maxwell3D& maxwell3d);
+        /// DrawEnd's non-indexed draw from gpu_draw_arguments, when the rasterizer can draw it
+        /// with the GPU reading the count (DrawMeshTasksFromGpu).
+        bool DrawFromGpuArguments(Maxwell3D& maxwell3d);
+        /// A write to vertex_buffer.first or .count: that register is known again.
+        void NoteVertexArgumentWrite(u32 method) noexcept {
+            const u32 bit = method == MAXWELL3D_REG_INDEX(vertex_buffer.first)   ? 1U
+                            : method == MAXWELL3D_REG_INDEX(vertex_buffer.count) ? 2U
+                                                                                 : 0U;
+            if (bit != 0 && (pending_vertex_arguments->unknown &= ~bit) == 0) {
+                pending_vertex_arguments.reset();
+            }
+        }
         State draw_state{};
         DrawTextureState draw_texture_state{};
         IndirectParams indirect_state{};
@@ -3200,6 +3226,16 @@ public:
 
     /// Write the value to the register identified by method.
     void CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) override;
+
+    /// Split front: `words` GPU-written words at `arguments` are all the parameters of the macro
+    /// that starts at `method`. When the macro only draws with them (FrontGpuArgumentDraw), its
+    /// draw runs on the back from the words in GPU memory, without reading them here. False
+    /// otherwise: the caller reads the words as usual.
+    bool FrontDrawFromGpuArguments(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
+                                   GPUVAddr arguments, u32 words);
+    /// Split back: the rest of such a macro after its draw.begin write.
+    void DrawFromGpuArguments(Core::System& system, GPUVAddr arguments, DAddr device,
+                              u32 end_value);
 
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
@@ -3280,6 +3316,11 @@ public:
     static bool IsFastDrawDeltaMethod(u32 method);
     /// A vertex stream's address, size or limit (not its stride or enable).
     static bool IsFastDrawVertexBuffer(u32 method);
+    /// Executable methods whose work leaves what a draw resolves to alone (counter resets, the
+    /// render enable condition): fast draw records nothing for them.
+    static bool IsFastDrawNeutralMethod(u32 method);
+    /// Registers only a report or a macro memory read takes as operands.
+    static bool IsFastDrawReportOperand(u32 method);
     void NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end);
 
     /// Handles a write to the CB_DATA[i] register.
@@ -3293,14 +3334,58 @@ private:
 
     void ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call);
 
-    u32 ProcessShadowRam(u32 method, u32 argument);
+    /// The value a write leaves in the register, as the shadow RAM mode has it: the argument
+    /// (tracked in shadow_state when tracking), or the shadow copy when replaying.
+    u32 ProcessShadowRam(u32 method, u32 argument) {
+        const auto control = shadow_state.shadow_ram_control;
+        if (control == Regs::ShadowRamControl::Track ||
+            control == Regs::ShadowRamControl::TrackWithFilter) {
+            return shadow_state.reg_array[method] = argument;
+        }
+        if (control == Regs::ShadowRamControl::Replay) {
+            return shadow_state.reg_array[method];
+        }
+        return argument;
+    }
 
-    void ProcessDirtyRegisters(u32 method, u32 argument);
+    /// Stores a register's value and sets its dirty flags. Defined here, as the hot method paths
+    /// call it for nearly every write.
+    void ProcessDirtyRegisters(u32 method, u32 argument) {
+        // The instances after the first are drawn together once their loop ends, and they must
+        // see the state they were begun with: NVN's draw macros reset the base instance (and its
+        // copy in c[0][0x644]) right after the loop, before the macro returns.
+        if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method))
+            [[unlikely]] {
+            draw_manager.DrawDeferred(*this, true);
+        }
+        if (VideoCommon::Nx2FastDraw::Enabled() && regs.reg_array[method] != argument &&
+            !IsFastDrawParameter(method)) {
+            VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Register, method);
+        }
+        regs.reg_array[method] = argument;
+        for (const auto& table : dirty.tables) {
+            dirty.flags[table[method]] = true;
+        }
+    }
+
+    /// CallMethodFast for a state register (not in execution_mask): a write of the value the
+    /// register holds changes nothing (EDEN_NX2_SKIP_SAME=0 keeps it).
+    void WriteStateRegister(u32 method, u32 method_argument) {
+        const u32 argument = ProcessShadowRam(method, method_argument);
+        if (!SkipSameValueWrites() || regs.reg_array[method] != argument) {
+            ProcessDirtyRegisters(method, argument);
+        }
+    }
 
     void ConsumeSinkImpl(Core::System& system) override;
 
     void ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call);
 
+    /// CallMethod after the split's checks: CallMethodFast, or CallMethodSlow where it can't.
+    void DispatchMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call);
+    /// CallMethod with EDEN_NX2_GPU_PROFILE: DispatchMethod, counted and timed.
+    void ProfiledCallMethod(Core::System& system, u32 method, u32 method_argument,
+                            bool is_last_call);
     /// CallMethod with every check, for the cases and tools CallMethodFast leaves out.
     void CallMethodSlow(Core::System& system, u32 method, u32 method_argument, bool is_last_call);
     void CallMethodFast(u32 method, u32 method_argument, bool is_last_call);
@@ -3394,6 +3479,12 @@ private:
     // model). Read per engine, not at static initialization, which runs before the frontend
     // loads nx2_switches.txt.
     const bool trace_first_method_writes = std::getenv("EDEN_NX2_3D_METHODS") != nullptr;
+    // EDEN_NX2_DMA_READ_VERIFY=1: a macro DMA read the front makes without draining the split
+    // (FrontDmaRead) drains it anyway and has the caches write the words out, as every read
+    // did before, and the macro gets those words. The front counts the reads whose words
+    // differ from the ones it read first and logs the counts every 10 s, the first 16 reads
+    // with their words. The differences must stay 0. Read per engine, as the switch above.
+    const bool dma_read_verify = std::getenv("EDEN_NX2_DMA_READ_VERIFY") != nullptr;
     // EDEN_NX2_SKIP_SAME and EDEN_NX2_PERF_VERIFY, read per engine like the switch above. Every
     // method checks them, so they are members rather than statics with a guard on the hot path.
     const bool skip_same_value_writes = [] {
@@ -3418,19 +3509,39 @@ private:
 
     // Split GPU thread, macros on the front (FrontCallMethod): the front's state, and whether
     // the front owns the macro code and bindings (the back thread then leaves them alone).
+    struct OotContext;
     struct FrontState;
     FrontState& Front(Core::System& system, VideoCommon::GpuSplit& split);
     void ReleaseFront();
     void FrontWrite(VideoCommon::GpuSplit& split, FrontState& state, u32 method, u32 argument,
                     bool is_last_call, bool from_macro);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+    bool FrontRunOnBack(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state,
+                        const MacroEngine& engine, u32 start);
+    std::vector<std::pair<u32, u32>> FrontRunTheOldWay(VideoCommon::GpuSplit& split,
+                                                       const FrontState& state, u32 start);
+    u32 FrontRegister(VideoCommon::GpuSplit& split, FrontState& state, u32 method);
+    bool FrontTakeOver(VideoCommon::GpuSplit& split, FrontState& state, u32 method);
     void FrontTrackInstanceLoop(FrontState& state, u32 method, u32 value);
     bool FrontSkipsLoopWrite(FrontState& state, u32 method, u32 value, bool shadow_kept);
+    void FrontNoteWrites(VideoCommon::GpuSplit& split, const FrontState& state, u32 method,
+                         u32 amount);
     void FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& state, u32 macro, u32 method,
                       u32 count);
     void FrontNoteReport(VideoCommon::GpuSplit& split, const FrontState& state);
     void FrontVerify(VideoCommon::GpuSplit& split, FrontState& state);
     void FinishFrontMacro(Core::System& system);
+    /// What a native macro does with two parameters, found by running its code in a sandbox
+    /// (FrontGpuArgumentDraw): draw.begin = begin, vertex_buffer.first = second parameter,
+    /// vertex_buffer.count = first parameter, draw.end = end, and nothing else.
+    struct GpuArgumentDraw {
+        u32 begin;
+        u32 end;
+    };
+    /// The macro at native code position `start` as a GpuArgumentDraw, if it is one.
+    std::optional<GpuArgumentDraw> FrontGpuArgumentDraw(u32 start);
+    ::Common::unordered_map<u32, std::optional<GpuArgumentDraw>> front_gpu_argument_draws;
+    u64 front_gpu_argument_generation{~u64{0}};
     std::unique_ptr<FrontState> front;
     bool front_macros{};
     // EDEN_NX2_SPLIT_VERIFY: the last SET_SHADOW_RAM_CONTROL writes each side saw (argument,

@@ -23,6 +23,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_drain_check.h"
 #include "video_core/renderer_opengl/gl_device.h"
 #include "video_core/renderer_opengl/gl_query_cache.h"
 #include "video_core/renderer_opengl/gl_rasterizer.h"
@@ -396,6 +397,11 @@ void RasterizerOpenGL::DrawTexture() {
 }
 
 void RasterizerOpenGL::DispatchCompute() {
+    // As after a draw: run the sync operations threads wait for, such as a guest read's flush,
+    // rather than only at the next draw.
+    SCOPE_EXIT {
+        gpu.TickWork();
+    };
     gpu_memory->FlushCaching();
     ComputePipeline* const pipeline{shader_cache.CurrentComputePipeline()};
     if (!pipeline) {
@@ -411,6 +417,9 @@ void RasterizerOpenGL::DispatchCompute() {
     if (pipeline->UsesLocalMemory()) {
         program_manager.LocalMemoryWarmup();
     }
+    // Like draws (and Vulkan's dispatches): guest threads read the caches' state under these
+    // locks (GetFlushArea, WaitForPendingDownloads) while a dispatch binds and marks buffers.
+    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     pipeline->SetEngine(kepler_compute, gpu_memory);
     pipeline->Configure();
     const auto& qmd{kepler_compute->launch_description};
@@ -441,6 +450,12 @@ void RasterizerOpenGL::ResetCounter(VideoCommon::QueryType type) {
 
 void RasterizerOpenGL::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                              VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) {
+    if (VideoCommon::Nx2DrainCheck::g_enabled && type == VideoCommon::QueryType::Payload)
+        [[unlikely]] {
+        if (const auto released = gpu_memory->GpuToCpuAddress(gpu_addr)) {
+            VideoCommon::Nx2DrainCheck::NoteRelease(*released);
+        }
+    }
     const auto query_cache_type = MaxwellToVideoCoreQuery(type);
     if (!query_cache_type.has_value()) {
         return QueryFallback(gpu_addr, type, flags, payload, subreport);

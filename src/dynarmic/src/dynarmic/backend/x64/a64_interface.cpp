@@ -9,6 +9,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <xmmintrin.h>
 
 #include <boost/icl/interval_set.hpp>
 #include "common/assert.h"
@@ -20,6 +21,7 @@
 #include "dynarmic/backend/x64/a64_jitstate.h"
 #include "dynarmic/backend/x64/block_of_code.h"
 #include "dynarmic/backend/x64/devirtualize.h"
+#include "dynarmic/backend/x64/exclusive_monitor_friend.h"
 #include "dynarmic/backend/x64/jitstate_info.h"
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
@@ -37,6 +39,7 @@ static RunCodeCallbacks GenRunCodeCallbacks(A64::UserCallbacks* cb, CodePtr (*Lo
         ArgCallback(Devirtualize<&A64::UserCallbacks::AddTicks>(cb)),
         ArgCallback(Devirtualize<&A64::UserCallbacks::GetTicksRemaining>(cb)),
         conf.enable_cycle_counting,
+        HostCallReturn(conf) ? std::optional<u32>{u32(offsetof(A64JitState, host_stack_base))} : std::nullopt,
     };
 }
 
@@ -48,7 +51,25 @@ static std::function<void(BlockOfCode&)> GenRCP(const A64::UserConfig& conf) {
         if (conf.fastmem_pointer) {
             code.mov(code.r13, *conf.fastmem_pointer);
         }
+        if (HostCallReturn(conf)) {
+            // A RET compares its target with the frame's [rsp + ABI_SHADOW_SPACE]; with no guest
+            // frame that is the first StackLayout word (the spills live in the JIT state), which
+            // holds a value no location descriptor has (bits 57-58 are never set in one).
+            code.mov(code.qword[code.rsp + ABI_SHADOW_SPACE], -1);
+            code.mov(code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, host_stack_base)], code.rsp);
+            code.lea(code.rax, code.ptr[code.rsp - HostCallFrameSize * HostCallMaxDepth]);
+            code.mov(code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, host_stack_limit)], code.rax);
+        }
     };
+}
+
+// Largest power of two <= conf.rsb_size, between 8 and A64JitState::RSB_SIZE, minus one.
+static size_t RsbPtrMask(const A64::UserConfig& conf) {
+    size_t size = A64JitState::RSB_SIZE;
+    while (size > 8 && size > conf.rsb_size) {
+        size >>= 1;
+    }
+    return size - 1;
 }
 
 static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code) {
@@ -62,11 +83,26 @@ struct Jit::Impl final {
 public:
     Impl(Jit* jit, UserConfig conf)
         : conf(conf)
-        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
+        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state, RsbPtrMask(conf)}, conf.code_cache_size, GenRCP(conf))
         , emitter(block_of_code, conf, jit)
         , polyfill_options(GenPolyfillOptions(block_of_code))
     {
         ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
+        emitter.SetAtomicFallbackHaltReason(&jit_state.halt_reason);
+        SetJitStatePointers();
+    }
+
+    // The per-Jit values that core-independent code reads through the JIT state.
+    void SetJitStatePointers() {
+        jit_state.callbacks = conf.callbacks;
+        jit_state.user_config = &conf;
+        jit_state.tpidrro_el0 = conf.tpidrro_el0;
+        jit_state.tpidr_el0 = conf.tpidr_el0;
+        if (conf.global_monitor) {
+            jit_state.exclusive_address_slot = GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id);
+            jit_state.exclusive_value_slot = GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id);
+        }
+        jit_state.atomic_fallback_context = AtomicFallbackContext{&conf, &jit_state.halt_reason};
     }
 
     ~Impl() = default;
@@ -78,7 +114,7 @@ public:
         // TODO: Check code alignment
         const CodePtr current_code_ptr = [this] {
             // RSB optimization
-            const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A64JitState::RSB_PTR_MASK;
+            const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & u32(RsbPtrMask(conf));
             if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
                 jit_state.rsb_ptr = new_rsb_ptr;
                 return CodePtr(jit_state.rsb_codeptrs[new_rsb_ptr]);
@@ -118,6 +154,7 @@ public:
     void Reset() {
         ASSERT(!is_executing);
         jit_state = {};
+        SetJitStatePointers();
     }
 
     void HaltExecution(HaltReason hr) {
@@ -137,7 +174,8 @@ public:
     }
 
     u64 GetPC() const {
-        return jit_state.pc;
+        // Between a declined host function and its fallback block the PC carries the marker.
+        return A64::LocationDescriptor::GuestPC(jit_state.pc);
     }
 
     void SetPC(u64 value) {
@@ -245,6 +283,16 @@ private:
         if (auto block = emitter.GetBasicBlock(descriptor))
             return block->entrypoint;
 
+        // The dispatcher looks blocks up with the guest's MXCSR loaded. Compiling runs host code
+        // that does FP arithmetic (hash table load factors), which would raise flags the guest
+        // reads back as FPSR exceptions (IXC on the first run of a block) and run under the
+        // guest's rounding and flush modes: evict and compile with the default MXCSR.
+        struct HostMxcsr {
+            const u32 saved = _mm_getcsr();
+            HostMxcsr() { _mm_setcsr(0x1F80); }
+            ~HostMxcsr() { _mm_setcsr(saved); }
+        } const host_mxcsr;
+
         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
             // Immediately evacuate cache
@@ -258,7 +306,8 @@ private:
         // LocationDescriptor ctor() does important ops (like tflags) do not skip
         auto const arch_descriptor = A64::LocationDescriptor{descriptor};
         ir_block.Reset(arch_descriptor);
-        A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
+        const auto get_host_function = [this](u64 vaddr) { return conf.callbacks->GetHostFunction(vaddr); };
+        A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct, true, conf.elide_ld_st_barriers, conf.native_lse_atomics}, get_host_function);
         Optimization::Optimize(ir_block, conf, polyfill_options);
         return emitter.Emit(ir_block).entrypoint;
     }

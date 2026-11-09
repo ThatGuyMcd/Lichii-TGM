@@ -51,6 +51,8 @@ add_library(
     jit_symbols.h
     nx2_sampler.cpp
     nx2_sampler.h
+    nx2_address_wait.cpp
+    nx2_address_wait.h
     dynamic_library.cpp
     dynamic_library.h
     elf.h
@@ -204,6 +206,8 @@ if(ARCHITECTURE_x86_64)
     target_sources(
         common
         PRIVATE
+        x64/monitor_wait.cpp
+        x64/monitor_wait.h
         x64/rdtsc.cpp
         x64/rdtsc.h
         x64/xbyak.h)

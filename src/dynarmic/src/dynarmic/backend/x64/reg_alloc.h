@@ -78,7 +78,7 @@ public:
         return std::find(values.begin(), values.end(), inst) != values.end();
     }
 #ifndef NDEBUG
-    void EmitVerboseDebuggingOutput(BlockOfCode& code, size_t host_loc_index) const noexcept;
+    void EmitVerboseDebuggingOutput(BlockOfCode& code, size_t host_loc_index) const;
 #endif
 private:
     boost::container::small_vector<IR::Inst*, 3> values; //24
@@ -114,6 +114,10 @@ public:
     inline bool IsVoid() const noexcept {
         return GetType() == IR::Type::Void;
     }
+    /// The producing instruction of a non-immediate argument.
+    inline IR::Inst* GetInst() const noexcept {
+        return value.GetInst();
+    }
 
     bool FitsInImmediateU32() const noexcept;
     bool FitsInImmediateS32() const noexcept;
@@ -144,51 +148,54 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
     RegAlloc() noexcept = default;
-    RegAlloc(std::bitset<32> gpr_order, std::bitset<32> xmm_order) noexcept;
+    std::optional<s32> SpillJitOffset() const noexcept { return spill_jit_offset; }
+    /// spill_jit_offset: the spill slots are at [ABI_JIT_PTR + offset] instead of on the stack.
+    RegAlloc(std::bitset<32> gpr_order, std::bitset<32> xmm_order, bool spill_to_gpr = false, bool scratch_copy = false,
+             std::optional<s32> spill_jit_offset = std::nullopt) noexcept;
 
     ArgumentInfo GetArgumentInfo(const IR::Inst* inst) noexcept;
     void RegisterPseudoOperation(const IR::Inst* inst) noexcept;
     inline bool IsValueLive(const IR::Inst* inst) const noexcept {
         return !!ValueLocation(inst);
     }
-    inline Xbyak::Reg64 UseGpr(BlockOfCode& code, Argument& arg) noexcept {
+    inline Xbyak::Reg64 UseGpr(BlockOfCode& code, Argument& arg) {
         ASSERT(!arg.allocated);
         arg.allocated = true;
         return HostLocToReg64(UseImpl(code, arg.value, gpr_order));
     }
-    inline Xbyak::Xmm UseXmm(BlockOfCode& code, Argument& arg) noexcept {
+    inline Xbyak::Xmm UseXmm(BlockOfCode& code, Argument& arg) {
         ASSERT(!arg.allocated);
         arg.allocated = true;
         return HostLocToXmm(UseImpl(code, arg.value, xmm_order));
     }
-    inline OpArg UseOpArg(BlockOfCode& code, Argument& arg) noexcept {
+    inline OpArg UseOpArg(BlockOfCode& code, Argument& arg) {
         return UseGpr(code, arg);
     }
-    inline void Use(BlockOfCode& code, Argument& arg, const HostLoc host_loc) noexcept {
+    inline void Use(BlockOfCode& code, Argument& arg, const HostLoc host_loc) {
         ASSERT(!arg.allocated);
         arg.allocated = true;
         UseImpl(code, arg.value, BuildRegSet({host_loc}));
     }
 
-    Xbyak::Reg64 UseScratchGpr(BlockOfCode& code, Argument& arg) noexcept;
-    Xbyak::Xmm UseScratchXmm(BlockOfCode& code, Argument& arg) noexcept;
-    void UseScratch(BlockOfCode& code, Argument& arg, HostLoc host_loc) noexcept;
+    Xbyak::Reg64 UseScratchGpr(BlockOfCode& code, Argument& arg);
+    Xbyak::Xmm UseScratchXmm(BlockOfCode& code, Argument& arg);
+    void UseScratch(BlockOfCode& code, Argument& arg, HostLoc host_loc);
 
-    void DefineValue(BlockOfCode& code, IR::Inst* inst, const Xbyak::Reg& reg) noexcept;
-    void DefineValue(BlockOfCode& code, IR::Inst* inst, Argument& arg) noexcept;
+    void DefineValue(BlockOfCode& code, IR::Inst* inst, const Xbyak::Reg& reg);
+    void DefineValue(BlockOfCode& code, IR::Inst* inst, Argument& arg);
 
     void Release(const Xbyak::Reg& reg) noexcept;
 
-    inline Xbyak::Reg64 ScratchGpr(BlockOfCode& code) noexcept {
+    inline Xbyak::Reg64 ScratchGpr(BlockOfCode& code) {
         return HostLocToReg64(ScratchImpl(code, gpr_order));
     }
-    inline Xbyak::Reg64 ScratchGpr(BlockOfCode& code, const HostLoc desired_location) noexcept {
+    inline Xbyak::Reg64 ScratchGpr(BlockOfCode& code, const HostLoc desired_location) {
         return HostLocToReg64(ScratchImpl(code, BuildRegSet({desired_location})));
     }
-    inline Xbyak::Xmm ScratchXmm(BlockOfCode& code) noexcept {
+    inline Xbyak::Xmm ScratchXmm(BlockOfCode& code) {
         return HostLocToXmm(ScratchImpl(code, xmm_order));
     }
-    inline Xbyak::Xmm ScratchXmm(BlockOfCode& code, HostLoc desired_location) noexcept {
+    inline Xbyak::Xmm ScratchXmm(BlockOfCode& code, HostLoc desired_location) {
         return HostLocToXmm(ScratchImpl(code, BuildRegSet({desired_location})));
     }
 
@@ -199,11 +206,11 @@ public:
         const std::optional<Argument::copyable_reference> arg1 = {},
         const std::optional<Argument::copyable_reference> arg2 = {},
         const std::optional<Argument::copyable_reference> arg3 = {}
-    ) noexcept;
+    );
 
     // TODO: Values in host flags
-    void AllocStackSpace(BlockOfCode& code, const size_t stack_space) noexcept;
-    void ReleaseStackSpace(BlockOfCode& code, const size_t stack_space) noexcept;
+    void AllocStackSpace(BlockOfCode& code, const size_t stack_space);
+    void ReleaseStackSpace(BlockOfCode& code, const size_t stack_space);
 
     inline void EndOfAllocScope() noexcept {
         // After every IR instruction: skip the locations it left alone.
@@ -215,7 +222,7 @@ public:
         ASSERT(std::all_of(hostloc_info.begin(), hostloc_info.end(), [](const auto& i) noexcept { return i.IsEmpty(); }));
     }
 #ifndef NDEBUG
-    inline void EmitVerboseDebuggingOutput(BlockOfCode& code) noexcept {
+    inline void EmitVerboseDebuggingOutput(BlockOfCode& code) {
         for (size_t i = 0; i < hostloc_info.size(); i++)
             hostloc_info[i].EmitVerboseDebuggingOutput(code, i);
     }
@@ -225,19 +232,19 @@ private:
 
     HostLoc SelectARegister(std::bitset<32> desired_locations) const noexcept;
     std::optional<HostLoc> ValueLocation(const IR::Inst* value) const noexcept;
-    HostLoc UseImpl(BlockOfCode& code, IR::Value use_value, std::bitset<32> desired_locations) noexcept;
-    HostLoc UseScratchImpl(BlockOfCode& code, IR::Value use_value, std::bitset<32> desired_locations) noexcept;
-    HostLoc ScratchImpl(BlockOfCode& code, std::bitset<32> desired_locations) noexcept;
-    void DefineValueImpl(BlockOfCode& code, IR::Inst* def_inst, HostLoc host_loc) noexcept;
-    void DefineValueImpl(BlockOfCode& code, IR::Inst* def_inst, const IR::Value& use_inst) noexcept;
+    HostLoc UseImpl(BlockOfCode& code, IR::Value use_value, std::bitset<32> desired_locations);
+    HostLoc UseScratchImpl(BlockOfCode& code, IR::Value use_value, std::bitset<32> desired_locations);
+    HostLoc ScratchImpl(BlockOfCode& code, std::bitset<32> desired_locations);
+    void DefineValueImpl(BlockOfCode& code, IR::Inst* def_inst, HostLoc host_loc);
+    void DefineValueImpl(BlockOfCode& code, IR::Inst* def_inst, const IR::Value& use_inst);
 
-    HostLoc LoadImmediate(BlockOfCode& code, IR::Value imm, HostLoc host_loc) noexcept;
-    void Move(BlockOfCode& code, HostLoc to, HostLoc from) noexcept;
-    void CopyToScratch(BlockOfCode& code, size_t bit_width, HostLoc to, HostLoc from) noexcept;
-    void Exchange(BlockOfCode& code, HostLoc a, HostLoc b) noexcept;
-    void MoveOutOfTheWay(BlockOfCode& code, HostLoc reg) noexcept;
+    HostLoc LoadImmediate(BlockOfCode& code, IR::Value imm, HostLoc host_loc);
+    void Move(BlockOfCode& code, HostLoc to, HostLoc from);
+    void CopyToScratch(BlockOfCode& code, size_t bit_width, HostLoc to, HostLoc from);
+    void Exchange(BlockOfCode& code, HostLoc a, HostLoc b);
+    void MoveOutOfTheWay(BlockOfCode& code, HostLoc reg);
 
-    void SpillRegister(BlockOfCode& code, HostLoc loc) noexcept;
+    void SpillRegister(BlockOfCode& code, HostLoc loc);
     HostLoc FindFreeSpill(bool is_xmm) const noexcept;
 
     inline HostLocInfo& LocInfo(const HostLoc loc) noexcept {
@@ -249,14 +256,17 @@ private:
         return hostloc_info[size_t(loc)];
     }
 
-    void EmitMove(BlockOfCode& code, const size_t bit_width, const HostLoc to, const HostLoc from) noexcept;
-    void EmitExchange(BlockOfCode& code, const HostLoc a, const HostLoc b) noexcept;
+    void EmitMove(BlockOfCode& code, const size_t bit_width, const HostLoc to, const HostLoc from);
+    void EmitExchange(BlockOfCode& code, const HostLoc a, const HostLoc b);
 
 //data
     alignas(64) std::array<HostLocInfo, NonSpillHostLocCount + SpillCount> hostloc_info;
     std::bitset<32> gpr_order;
     std::bitset<32> xmm_order;
     size_t reserved_stack_space = 0;
+    bool spill_to_gpr = false;
+    bool scratch_copy = false;
+    std::optional<s32> spill_jit_offset;
 };
 
 }  // namespace Dynarmic::Backend::X64

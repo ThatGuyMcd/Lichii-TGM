@@ -48,6 +48,13 @@ public:
     // Switch 2: GPU address of the read-only syncpoint shim (u32 per syncpoint); 0 = none.
     void SetNativeSyncpointShim(GPUVAddr address);
     static constexpr u32 NumShimSyncpoints = 192; // Tegra::Host1x::SyncpointManager
+    /// Whether [address, address + size) overlaps the syncpoint shim, whose words Read serves
+    /// from the guest syncpoints instead of memory.
+    [[nodiscard]] bool OverlapsSyncpointShim(GPUVAddr address, u64 size) const {
+        const GPUVAddr shim = native_syncpoint_shim.load(std::memory_order_acquire);
+        return shim != 0 && address < shim + NumShimSyncpoints * sizeof(u32) &&
+               address + size > shim;
+    }
 
     /// Switch 2 lays out block-linear surfaces with the console's GOB swizzle.
     void EnableNativeTiling() {
@@ -59,6 +66,9 @@ public:
     bool IsShuttingDown() const;
 
     static constexpr bool HAS_FLUSH_INVALIDATION = true;
+    /// The video memory manager can route a CPU-side (safe) read's flush to the GPU split's back
+    /// thread, where the caches live, instead of touching them on the front. See FlushRegionForRead.
+    static constexpr bool HAS_SPLIT_AWARE_FLUSH = true;
 
     inline size_t GetID() const noexcept {
         return unique_identifier;
@@ -161,6 +171,12 @@ public:
 
     void FlushRegion(GPUVAddr gpu_addr, size_t size,
                      VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
+
+    /// Flush for a CPU-side (safe) read of guest memory. Under the GPU split the rasterizer's
+    /// caches belong to the back thread, so the flush is queued there and this call waits for it,
+    /// instead of the front touching back-owned state. With no split, or when already on the back,
+    /// this is exactly FlushRegion.
+    void FlushRegionForRead(GPUVAddr gpu_addr, size_t size) const;
 
     void InvalidateRegion(GPUVAddr gpu_addr, size_t size,
                           VideoCommon::CacheType which = VideoCommon::CacheType::All) const;

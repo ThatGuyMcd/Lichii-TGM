@@ -54,7 +54,8 @@ VK_DEFINE_HANDLE(VmaPool)
             shader_demote_to_helper_invocation)                                                    \
     FEATURE(EXT, SubgroupSizeControl, SUBGROUP_SIZE_CONTROL, subgroup_size_control)                \
     FEATURE(KHR, Maintenance4, MAINTENANCE_4, maintenance4)                                        \
-    FEATURE(KHR, Synchronization2, SYNCHRONIZATION_2, synchronization2)
+    FEATURE(KHR, Synchronization2, SYNCHRONIZATION_2, synchronization2)                            \
+    FEATURE(KHR, DynamicRendering, DYNAMIC_RENDERING, dynamic_rendering)
 
 #define FOR_EACH_VK_FEATURE_1_4(FEATURE)
 

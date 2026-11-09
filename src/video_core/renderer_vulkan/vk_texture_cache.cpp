@@ -4819,22 +4819,30 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::NullImageV
     image_views[static_cast<size_t>(Shader::TextureType::Color3D)] =
         make_view(*null_image_3d, VK_IMAGE_VIEW_TYPE_3D, 1);
 
-    ImageInfo info_cube = info;
-    info_cube.type = ImageType::e2D;
-    info_cube.resources.layers = 6;
-    null_image_cube = MakeImage(*device, runtime.memory_allocator, info_cube, {});
-    image_views[static_cast<size_t>(Shader::TextureType::ColorCube)] =
-        make_view(*null_image_cube, VK_IMAGE_VIEW_TYPE_CUBE, 6);
-    image_views[static_cast<size_t>(Shader::TextureType::ColorArrayCube)] =
-        make_view(*null_image_cube, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, 6);
+    // MakeImage omits CUBE_COMPATIBLE on these drivers, so cube views cannot be created.
+    VkImage cube_handle{};
+    if (!device->HasBrokenCubeImageCompatibility()) {
+        ImageInfo info_cube = info;
+        info_cube.type = ImageType::e2D;
+        info_cube.resources.layers = 6;
+        null_image_cube = MakeImage(*device, runtime.memory_allocator, info_cube, {});
+        cube_handle = *null_image_cube;
+        image_views[static_cast<size_t>(Shader::TextureType::ColorCube)] =
+            make_view(cube_handle, VK_IMAGE_VIEW_TYPE_CUBE, 6);
+        image_views[static_cast<size_t>(Shader::TextureType::ColorArrayCube)] =
+            make_view(cube_handle, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, 6);
+    }
 
     runtime.scheduler.RequestOutsideRenderPassOperationContext();
     runtime.scheduler.Record([images = std::array{*null_image, *null_image_2d, *null_image_3d,
-                                                 *null_image_cube}](vk::CommandBuffer cmdbuf) {
+                                                 cube_handle}](vk::CommandBuffer cmdbuf) {
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0,
                                            VK_REMAINING_MIP_LEVELS, 0,
                                            VK_REMAINING_ARRAY_LAYERS};
         for (VkImage image : images) {
+            if (image == VK_NULL_HANDLE) {
+                continue;
+            }
             VkImageMemoryBarrier barrier{
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .pNext = nullptr,

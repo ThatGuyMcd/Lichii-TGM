@@ -230,19 +230,17 @@ void Init(QWidget* root) {
     QtCommon::Meta::RegisterMetaTypes();
 
     // build version
-    const auto branch_name = std::string(Common::g_scm_branch);
-    const auto description = std::string(Common::g_scm_desc);
     const auto build_id = std::string(Common::g_build_id);
 
     const auto yuzu_build =
-        fmt::format("Lichii Development Build | {}-{}", branch_name, description);
+        fmt::format("{} | {}", Common::g_build_fullname, Common::g_scm_rev);
     const auto override_build =
         fmt::format(fmt::runtime(std::string(Common::g_title_bar_format_idle)), build_id);
     const auto yuzu_build_version = override_build.empty() ? yuzu_build : override_build;
     const auto processor_count = std::thread::hardware_concurrency();
 
     // info logging
-    LOG_INFO(Frontend, "Lichii Version: {}", yuzu_build_version);
+    LOG_INFO(Frontend, "Lichii-tgm Version: {}", yuzu_build_version);
     LogRuntimes();
 #ifdef ARCHITECTURE_x86_64
     const auto& caps = Common::g_cpu_caps;

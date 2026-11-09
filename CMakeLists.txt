@@ -6,6 +6,8 @@ cmake_minimum_required(VERSION 3.31)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "macOS deployment target")
 project(yuzu)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules/Branding.cmake")
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules/find")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/externals/cmake-modules")
@@ -74,7 +76,7 @@ endif()
 option(ENABLE_QT "Enable the Qt frontend" ON)
 option(ENABLE_QT_TRANSLATION "Enable translations for the Qt frontend" OFF)
 option(ENABLE_UPDATE_CHECKER "Enable update checker (for Qt and Android)" OFF)
-set(LICHII_BUILD_TAG "" CACHE STRING "Published build-N release tag; empty for local builds")
+set(LICHII_BUILD_TAG "" CACHE STRING "Published fork release tag; empty for development builds")
 set(LICHII_BUILD_PLATFORM "" CACHE STRING "Release asset platform and variant, such as linux-x86_64-pgo")
 cmake_dependent_option(YUZU_USE_QT_MULTIMEDIA "Use QtMultimedia for Camera"  OFF "NOT YUZU_USE_BUNDLED_QT" OFF)
 cmake_dependent_option(YUZU_USE_QT_WEB_ENGINE "Use QtWebEngine for web applet implementation" OFF "NOT YUZU_USE_BUNDLED_QT" OFF)
@@ -789,15 +791,15 @@ endif()
 
 # TODO: Icon/install handling n such should be put into dist/CMakeLists.txt
 if(ENABLE_QT AND UNIX AND NOT APPLE)
-    install(FILES "dist/io.github.zortos293.lichii.desktop"
+    install(FILES "${PROJECT_BINARY_DIR}/dist/${LICHII_TGM_APP_ID}.desktop"
         DESTINATION "share/applications")
     install(FILES "dist/lichii.png"
         DESTINATION "share/icons/hicolor/256x256/apps"
-        RENAME "io.github.zortos293.lichii.png")
+        RENAME "${LICHII_TGM_APP_ID}.png")
 
-    install(FILES "dist/io.github.zortos293.lichii.xml"
+    install(FILES "${PROJECT_BINARY_DIR}/dist/${LICHII_TGM_APP_ID}.xml"
         DESTINATION "share/mime/packages")
-    install(FILES "dist/io.github.zortos293.lichii.metainfo.xml"
+    install(FILES "${PROJECT_BINARY_DIR}/dist/${LICHII_TGM_APP_ID}.metainfo.xml"
         DESTINATION "share/metainfo")
 endif()
 

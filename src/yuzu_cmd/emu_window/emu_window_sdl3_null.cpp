@@ -26,8 +26,7 @@
 EmuWindow_SDL3_Null::EmuWindow_SDL3_Null(InputCommon::InputSubsystem* input_subsystem_,
                                          Core::System& system_, bool fullscreen)
     : EmuWindow_SDL3{input_subsystem_, system_} {
-    const std::string window_title = fmt::format("Eden {} | {}-{} (Vulkan)", Common::g_build_name,
-                                                 Common::g_scm_branch, Common::g_scm_desc);
+    const std::string window_title = fmt::format("{} (Null)", Common::g_build_fullname);
     render_window =
         SDL_CreateWindow(window_title.c_str(), Layout::ScreenUndocked::Width,
                          Layout::ScreenUndocked::Height,

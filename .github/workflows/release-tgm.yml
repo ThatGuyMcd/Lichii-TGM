@@ -1,0 +1,61 @@
+name: Publish verified Lichii-tgm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tested release tag with a draft and verified assets
+        required: true
+        default: Lichii-tgm-v1.0
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tgm-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'ThatGuyMcd/Lichii-TGM'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Verify draft, tag, manifest and asset checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^Lichii-tgm-v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+          gh release view "$TAG" --repo "$REPO" --json isDraft --jq '.isDraft' | grep -qx true
+          mkdir release-assets
+          gh release download "$TAG" --repo "$REPO" --dir release-assets
+          cd release-assets
+          test -f "$TAG-windows-x86_64.zip"
+          test -f "$TAG-linux-x86_64.AppImage"
+          sha256sum --check SHA256SUMS
+          SOURCE_COMMIT=$(git -C .. rev-parse HEAD) python3 - <<'PY'
+          import json, os, pathlib
+          manifest = json.loads(pathlib.Path('release-manifest.json').read_text())
+          assert manifest['source_commit'] == os.environ['SOURCE_COMMIT']
+          assert manifest['release_tag'] == os.environ['TAG']
+          assert manifest['validation']['windows_ctest_groups'] == 7
+          assert manifest['validation']['linux_ctest_groups'] == 7
+          PY
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          release_id=$(gh release view "$TAG" --repo "$REPO" --json databaseId --jq '.databaseId')
+          gh api --method PATCH "repos/$REPO/releases/$release_id" \
+            -F draft=false -F prerelease=false -f make_latest=true

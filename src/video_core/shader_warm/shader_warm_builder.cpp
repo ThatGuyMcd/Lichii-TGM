@@ -688,7 +688,7 @@ Result BuildNativeFiles(Core::System& system, const fs::path& game_path, u64 tit
         }
         const auto header = Nx2Recipe::ReadHeader(recipe);
         if (!header) {
-            return fail("Not a Lichii precompile recipe; caches from other emulators are not "
+            return fail("Not a Lichii-tgm precompile recipe; caches from other emulators are not "
                         "supported");
         }
         if (header->title_id != title_id) {

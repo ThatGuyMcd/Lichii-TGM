@@ -126,7 +126,7 @@ private slots:
 Session DialogTest::Seed() {
     return {.program_id = 0x0400000000000000ULL,
             .title = QStringLiteral("Synthetic Switch 2 game"),
-            .build = QStringLiteral("Lichii prototype (synthetic)"),
+            .build = QStringLiteral("Lichii-tgm prototype (synthetic)"),
             .game_version = QStringLiteral("1.0.0"),
             .cpu = QStringLiteral("Example CPU"),
             .gpu = {},

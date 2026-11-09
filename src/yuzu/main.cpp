@@ -5,6 +5,7 @@
 
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
+#include "common/scm_rev.h"
 #include "nx2_switches.h"
 #include "startup_checks.h"
 
@@ -133,7 +134,9 @@ int main(int argc, char* argv[]) {
 
     // Init settings params
     QCoreApplication::setOrganizationName(QStringLiteral("eden"));
-    QCoreApplication::setApplicationName(QStringLiteral("Lichii"));
+    QCoreApplication::setApplicationName(QStringLiteral("Lichii-tgm"));
+    QCoreApplication::setApplicationVersion(QString::fromUtf8(Common::g_build_version));
+    QGuiApplication::setDesktopFileName(QStringLiteral("io.github.thatguymcd.lichii_tgm"));
 
     // Increases the maximum open file limit.
     // TODO: This should be common to all frontends.
@@ -185,7 +188,7 @@ int main(int argc, char* argv[]) {
 
     // Fix the Wayland appId. This needs to match the name of the .desktop file without the .desktop
     // suffix.
-    QGuiApplication::setDesktopFileName(QStringLiteral("io.github.zortos293.lichii"));
+    QGuiApplication::setDesktopFileName(QStringLiteral("io.github.thatguymcd.lichii_tgm"));
 #endif
 
     auto rounding_policy = GetHighDpiRoundingPolicy();

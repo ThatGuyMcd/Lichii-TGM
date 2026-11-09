@@ -1,4 +1,4 @@
-name: release-binaries
+name: Legacy upstream release (disabled on forks)
 
 on:
   workflow_dispatch:
@@ -43,6 +43,7 @@ concurrency:
 
 jobs:
   prepare-release:
+    if: github.repository == 'zortos293/Lichii'
     name: Prepare release
     runs-on: ubuntu-24.04
     permissions:

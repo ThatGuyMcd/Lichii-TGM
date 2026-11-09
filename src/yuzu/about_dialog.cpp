@@ -14,8 +14,8 @@ AboutDialog::AboutDialog(QWidget* parent)
     : QDialog(parent), ui{std::make_unique<Ui::AboutDialog>()} {
     static const std::string build_id = std::string{Common::g_build_id};
     static const std::string yuzu_build =
-        fmt::format("{} | {} | {}", std::string{Common::g_build_name},
-                    std::string{Common::g_build_version}, std::string{Common::g_compiler_id});
+        fmt::format("{} | {}", std::string{Common::g_build_fullname},
+                    std::string{Common::g_compiler_id});
 
     const auto override_build =
         fmt::format(fmt::runtime(std::string(Common::g_title_bar_format_idle)), build_id);
@@ -23,7 +23,7 @@ AboutDialog::AboutDialog(QWidget* parent)
 
     ui->setupUi(this);
     // Try and request the icon from Qt theme (Linux?)
-    const QIcon yuzu_logo = QIcon::fromTheme(QStringLiteral("io.github.zortos293.lichii"),
+    const QIcon yuzu_logo = QIcon::fromTheme(QStringLiteral("io.github.thatguymcd.lichii_tgm"),
                                            QIcon(QStringLiteral(":/img/lichii.ico")));
     if (!yuzu_logo.isNull()) {
         ui->labelLogo->setPixmap(yuzu_logo.pixmap(200));

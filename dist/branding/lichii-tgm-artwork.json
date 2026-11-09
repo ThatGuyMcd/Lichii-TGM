@@ -1,0 +1,7 @@
+{
+  "asset": "dist/branding/lichii-tgm-v1.0-banner.png",
+  "original_artwork_credit": "YOB (yobslab), original Lichii fruit artwork",
+  "edit_target": "dist/branding/lichii_icon_with_logo.png",
+  "method": "Built-in imagegen text-localization edit; existing fruit icon retained",
+  "final_prompt": "Correct the text in this fork release banner. The text MUST read exactly: Lichii-tgm-v1.0. Use an uppercase capital L at the start, lowercase ichii-tgm-v, then digit 1, a visible decimal period '.', and digit 0. Do not omit the period, do not write v10. Preserve the fruit icon, transparent background and red/pink rounded white-outlined style. Ensure that the final v1.0 includes a clear prominent dot separated from both digits. Only change the lettering, retain all other design elements. Wide horizontal banner with full wordmark on one line and no extra text."
+}

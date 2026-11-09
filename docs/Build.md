@@ -1,9 +1,10 @@
-# Building Eglantine
+# Building Lichii-tgm
 
 > [!WARNING]
 > This guide is intended for developers ONLY. If you are not a developer or packager, you are unlikely to receive support.
 
-This is a full-fledged guide to build Eglantine on all supported platforms.
+This is the inherited developer build guide for Lichii-tgm. Fork release naming,
+version metadata and packaging are described in [TGM-Release.md](TGM-Release.md).
 
 If you already have a development environment set up:
 
@@ -23,8 +24,8 @@ First, you must [install some dependencies](Deps.md).
 Next, you will want to clone Eglantine via the terminal:
 
 ```sh
-git clone https://github.com/Djihads80/Eglantine.git
-cd Eglantine
+git clone https://github.com/ThatGuyMcd/Lichii-TGM.git
+cd Lichii-TGM
 ```
 
 Or use Qt Creator (Create Project -> Import Project -> Git Clone).
@@ -186,9 +187,9 @@ cmake --build build
 
 Your compiled executable will be in:
 
-- `build/bin/eglantine.exe` for Windows,
-- `build/bin/Eglantine.app/Contents/MacOS/eglantine` for macOS,
-- and `build/bin/eglantine` for others.
+- `build/bin/lichii-tgm.exe` for Windows,
+- `build/bin/lichii-tgm.app/Contents/MacOS/lichii-tgm` for macOS,
+- and `build/bin/lichii-tgm` for others.
 
 ## Scripts
 

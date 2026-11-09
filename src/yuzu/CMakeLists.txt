@@ -261,7 +261,10 @@ add_executable(yuzu
     game/carousel.h game/carousel.cpp
 )
 
-set_target_properties(yuzu PROPERTIES OUTPUT_NAME "lichii")
+set_target_properties(yuzu PROPERTIES OUTPUT_NAME "lichii-tgm")
+if (WIN32)
+    target_sources(yuzu PRIVATE "${PROJECT_BINARY_DIR}/dist/lichii-tgm-version.rc")
+endif()
 
 # Shipped next to the executable: the NX2 switches a GUI launch cannot set another way. Read at
 # startup (LoadNx2Switches in main.cpp); a user copy in %APPDATA%\eden overrides it.
@@ -405,6 +408,10 @@ if (APPLE)
     target_sources(yuzu PRIVATE ${_icons})
 
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE TRUE)
+    set_target_properties(yuzu PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "${LICHII_TGM_APP_ID}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${LICHII_TGM_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${LICHII_TGM_VERSION}")
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist)
 
     set(CMAKE_FIND_LIBRARY_SUFFIXES ".dylib")

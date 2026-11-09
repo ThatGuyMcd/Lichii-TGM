@@ -317,7 +317,10 @@ endif()
 
 if (YUZU_CMD)
     add_subdirectory(yuzu_cmd)
-    set_target_properties(yuzu-cmd PROPERTIES OUTPUT_NAME "eden-cli")
+    set_target_properties(yuzu-cmd PROPERTIES OUTPUT_NAME "lichii-tgm-cli")
+    if (WIN32)
+        target_sources(yuzu-cmd PRIVATE "${PROJECT_BINARY_DIR}/dist/lichii-tgm-version.rc")
+    endif()
 endif()
 
 if (ENABLE_QT)

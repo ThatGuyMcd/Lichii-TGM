@@ -66,6 +66,7 @@ SWITCHABLE(AnisotropyMode, true);
 SWITCHABLE(AntiAliasing, false);
 SWITCHABLE(OotAntiAliasing, false);
 SWITCHABLE(DlssPreset, false);
+SWITCHABLE(OcarinaDlssMode, false);
 SWITCHABLE(AspectRatio, true);
 SWITCHABLE(AstcDecodeMode, true);
 SWITCHABLE(AstcRecompression, true);
@@ -428,6 +429,9 @@ struct Values {
     SwitchableSetting<DlssPreset> dlss_preset{linkage, DlssPreset::Auto, "dlss_preset",
                                               Category::Renderer};
     SwitchableSetting<bool> ocarina_fsr{linkage, false, "ocarina_fsr", Category::Renderer};
+    // Ocarina of Time's render resolution under Max Resolution, as a DLSS mode to 4K.
+    SwitchableSetting<OcarinaDlssMode> ocarina_dlss_mode{linkage, OcarinaDlssMode::Quality,
+                                                         "ocarina_dlss_mode", Category::Renderer};
     SwitchableSetting<AspectRatio, true> aspect_ratio{linkage,
                                                       AspectRatio::R16_9,
                                                       "aspect_ratio",

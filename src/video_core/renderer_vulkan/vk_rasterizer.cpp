@@ -3188,7 +3188,11 @@ void RasterizerVulkan::ReadOcarinaActor(OcarinaActorMesh& mesh) {
 /// Track the scene depth on its reader dispatch, or try to replace a recognized upscale dispatch.
 bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool replace) {
     constexpr u64 depth_reader = 0x1fc7a0423116281fULL;
-    const bool upscale_4k = replace && pipeline.ShaderHash() == ComputePipeline::Ocarina1440pShader;
+    const u64 upscale_hash = pipeline.ShaderHash();
+    const bool upscale_4k =
+        replace && (upscale_hash == ComputePipeline::Ocarina1440pShader ||
+                    upscale_hash == ComputePipeline::Ocarina1440pScaledShader ||
+                    upscale_hash == ComputePipeline::Ocarina1440pScaledFieldShader);
     if ((!replace && pipeline.ShaderHash() != depth_reader) || !OcarinaTemporalEnabled()) {
         return false;
     }
@@ -3278,13 +3282,16 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
     if (native_size && oot_backend != VideoCommon::OcarinaUpscaleBackend::Fsr) {
         return fail("full-size pass is FSR only");
     }
-    const bool valid_extents = upscale_4k
-        ? extent.width == 2560 && extent.height == 1440 &&
-            target.size.width == 2560 && target.size.height == 1440
-        : native_size
-        ? target.size.width == extent.width && target.size.height == extent.height
-        : target.size.width == extent.width * 4 / 3 &&
-            target.size.height == extent.height * 4 / 3;
+    const bool valid_extents =
+        upscale_4k
+            // Any 16:9 scene up to 2560x1440 (the lower ocarina_dlss_mode render scales).
+            ? extent.width <= 2560 &&
+                  std::abs(static_cast<int>(extent.width * 9) -
+                           static_cast<int>(extent.height * 16)) <= 32 &&
+                  target.size.width == 2560 && target.size.height == 1440
+            : native_size ? target.size.width == extent.width && target.size.height == extent.height
+            : target.size.width == extent.width * 4 / 3 &&
+                  target.size.height == extent.height * 4 / 3;
     if (!valid_extents || !color.BackingImage() || !target.BackingImage() ||
         color.IsRescaled() || target.IsRescaled() ||
         color.Samples() != VK_SAMPLE_COUNT_1_BIT || target.Samples() != VK_SAMPLE_COUNT_1_BIT ||

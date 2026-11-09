@@ -233,7 +233,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
         // Only builds with NVIDIA Streamline (Windows) can use it.
         if (setting->Id() == Settings::values.nvidia_dlss.Id() ||
             setting->Id() == Settings::values.dlss_sharpening.Id() ||
-            setting->Id() == Settings::values.dlss_preset.Id()) {
+            setting->Id() == Settings::values.dlss_preset.Id() || Settings::values.ocarina_dlss_mode.Id()) {
             continue;
         }
 #endif

@@ -82,7 +82,16 @@ inline float UpscaleLodBias() {
     if (override_bias) {
         return *override_bias;
     }
-    return (OutputOnlyRescale() ? std::log2(1.0f / 1.5f) : 0.0f) - 1.0f;
+    float ratio = 1.0f;
+    if (OutputOnlyRescale()) {
+        switch (Settings::values.ocarina_dlss_mode.GetValue()) {
+        case Settings::OcarinaDlssMode::Balanced: ratio = 0.58f; break;
+        case Settings::OcarinaDlssMode::Performance: ratio = 0.5f; break;
+        case Settings::OcarinaDlssMode::UltraPerformance: ratio = 1.0f / 3.0f; break;
+        default: ratio = 2.0f / 3.0f; break;
+        }
+    }
+    return std::log2(ratio) - 1.0f;
 }
 
 /// The 3D's images are rescaled (DLAA at 4K).

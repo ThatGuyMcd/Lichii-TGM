@@ -13,14 +13,14 @@ namespace {
 // Every field of Info is listed in VisitInfo below. An info that grows a field has to be listed
 // there too: this size check fails the build until it is (update the size with it).
 #if defined(_MSC_VER) && defined(_WIN64)
-static_assert(sizeof(Info) == 6936,
+static_assert(sizeof(Info) == 7160,
               "Shader::Info changed: list the new fields in VisitInfo, then update this size");
 // The descriptors are held in vectors, so a field they grow does not change sizeof(Info).
 static_assert(sizeof(ConstantBufferDescriptor) == 8 && sizeof(StorageBufferDescriptor) == 80 &&
                   sizeof(TextureBufferDescriptor) == 40 && sizeof(ImageBufferDescriptor) == 28 &&
-                  sizeof(TextureDescriptor) == 44 && sizeof(ImageDescriptor) == 36,
+                  sizeof(TextureDescriptor) == 48 && sizeof(ImageDescriptor) == 36,
               "A Shader::Info descriptor changed: list the new fields in its Visit function below, "
-              "then update these sizes and PrecompiledInfosMagic (vk_pipeline_cache.cpp)");
+              "then update these sizes and the preparation identity (vk_pipeline_cache.cpp)");
 static_assert(sizeof(StorageWriteExtent) == 60,
               "StorageWriteExtent changed: list the new fields in VisitWriteExtent below");
 #endif
@@ -237,6 +237,7 @@ void VisitTexture(Io& io, D& d) {
     io(d.count);
     io(d.size_shift);
     io(d.handle_program);
+    io(d.is_descriptor_array);
 }
 template <typename Io, typename D>
 void VisitImage(Io& io, D& d) {
@@ -324,6 +325,7 @@ void VisitInfo(Io& io, I& info) {
     io(info.uses_sparse_residency);
     io(info.uses_demote_to_helper_invocation);
     io(info.uses_subgroup_vote);
+    io(info.removed_conditional_barrier);
     io(info.uses_subgroup_mask);
     io(info.uses_fswzadd);
     io(info.uses_derivatives);
@@ -354,6 +356,16 @@ void VisitInfo(Io& io, I& info) {
     io(info.uses_rescaling_uniform);
     io(info.uses_cbuf_indirect);
     io(info.uses_render_area);
+    io(info.oot_motion.history);
+    io(info.oot_motion.image);
+    io(info.oot_motion.early_tests);
+    io(info.oot_motion.location_current);
+    io(info.oot_motion.location_previous);
+    io(info.oot_motion.mesh_max_vertices);
+    io(info.oot_motion.shadow);
+    io(info.oot_motion.shadow_words);
+    io(info.oot_motion.shadow_base);
+    io(info.oot_motion.shadow_size);
     io(info.used_constant_buffer_types);
     io(info.used_storage_buffer_types);
     io(info.used_indirect_cbuf_types);

@@ -1297,9 +1297,9 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     // Debug: does the input hold anything? Download it once and count non-zero words.
     static const u32 sample_at = [] {
         const char* value = std::getenv("EDEN_NX2_SAMPLE_AT");
-        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 20U;
+        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
     }();
-    if (static u32 sampled{}; sampled++ == sample_at) {
+    if (static u32 sampled{}; sample_at != 0 && ++sampled == sample_at) {
         const auto sample = [&](const Texture::TICEntry& tic) {
             const u64 size = u64{tic.Width()} * tic.Height() * 4;
             if (const auto device = memory_manager.GpuToCpuAddress(tic.Address())) {
@@ -1372,7 +1372,7 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     };
     const bool done = upscale_temporally() ||
                       rasterizer->AccelerateSurfaceCopy(source, surface(*output), config);
-    if (static u32 checked{}; checked++ == sample_at) {
+    if (static u32 checked{}; sample_at != 0 && ++checked == sample_at) {
         const u64 size = u64{output->Width()} * output->Height() * 4;
         if (const auto device = memory_manager.GpuToCpuAddress(output->Address())) {
             rasterizer->FlushRegion(*device, size, VideoCommon::CacheType::All);
@@ -1391,9 +1391,9 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
     // Debug: trace the draws that follow one upscale (EDEN_NX2_RT_TRACE_AFTER_UPSCALE).
     static const u32 trace_at = [] {
         const char* value = std::getenv("EDEN_NX2_TRACE_AFTER_UPSCALE");
-        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 30U;
+        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 0U;
     }();
-    if (static u32 count{}; ++count == trace_at) g_nx2_trace_draws_after_upscale = 40;
+    if (static u32 count{}; trace_at != 0 && ++count == trace_at) g_nx2_trace_draws_after_upscale = 40;
     static u32 logged{};
     if (logged++ < 4) {
         LOG_INFO(HW_GPU, "Upscale fallback {:#x} {}x{} block {}/{}/{} -> {:#x} {}x{} block {}/{}/{} levels {}: {}",

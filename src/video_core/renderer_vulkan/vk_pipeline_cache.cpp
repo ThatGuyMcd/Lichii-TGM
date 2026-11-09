@@ -1832,7 +1832,7 @@ std::string PipelineCache::NativePreparationStamp(const std::filesystem::path& p
     }
     const auto properties = device.GetPhysical().GetProperties();
     std::string stamp = fmt::format(
-        "lichii-2 {} {} {} {} {} {} {}", content, LICHII_PREPARATION_REVISION, CACHE_VERSION,
+        "lichii-3 {} {} {} {} {} {} {}", content, LICHII_PREPARATION_REVISION, CACHE_VERSION,
         properties.vendorID, properties.deviceID, properties.driverVersion, properties.apiVersion);
     for (const auto byte : properties.pipelineCacheUUID) {
         stamp += fmt::format("{:02x}", byte);
@@ -3061,7 +3061,7 @@ void PipelineCache::EvictUnusedPipelines() {
 void PipelineCache::LogEvictionPolicy() const {
     if (device.IsMoltenVK()) {
         LOG_INFO(Render_Vulkan, "Pipeline eviction: off on MoltenVK");
-    } else if (PreloadAllPipelines()) {
+    } else if (PreloadAllPipelines(device.IsMoltenVK())) {
         LOG_INFO(Render_Vulkan, "Pipeline eviction: off (EDEN_NX2_PRELOAD_ALL_PIPELINES=1)");
     } else if (const size_t kept = kept_pipelines.load(std::memory_order::relaxed); kept != 0) {
         LOG_INFO(Render_Vulkan,

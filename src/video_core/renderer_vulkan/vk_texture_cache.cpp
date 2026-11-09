@@ -5139,14 +5139,19 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     // A decode image of the same shape the GPU is done with: title 1's title screen decodes
     // dozens of textures a frame, mostly of a few shapes. Making one took 263 us; from VMA's
     // shared blocks 90 us, but freeing them there left ~1 GB of those blocks unused.
-    const auto reusable = std::ranges::find_if(free_transcodes, [&](const PendingTranscode& t) {
-        return t.width == width && t.height == height && t.levels == levels && t.layers == layers;
-    });
-    PendingTranscode pending;
-    if (reusable != free_transcodes.end()) {
-        pending = std::move(*reusable);
+    const auto take_free = [&](u32 batch_layers, PendingTranscode& out) {
+        const auto reusable = std::ranges::find_if(free_transcodes, [&](const PendingTranscode& t) {
+            return t.width == width && t.height == height && t.levels == levels &&
+                   t.layers == batch_layers;
+        });
+        if (reusable == free_transcodes.end()) {
+            return false;
+        }
+        out = std::move(*reusable);
         free_transcodes.erase(reusable);
-    } else {
+        return true;
+    };
+    const auto make_decode = [&](u32 batch_layers) {
         const VkImageCreateInfo decode_ci{
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             .pNext = nullptr,
@@ -5155,7 +5160,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             .format = DecodeFormat,
             .extent = {width, height, 1},
             .mipLevels = levels,
-            .arrayLayers = layers,
+            .arrayLayers = batch_layers,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage = VK_IMAGE_USAGE_STORAGE_BIT,
@@ -5164,11 +5169,24 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             .pQueueFamilyIndices = nullptr,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
-        vk::Image decode = memory_allocator.TryCreateImage(decode_ci, true);
+        return memory_allocator.TryCreateImage(decode_ci, true);
+    };
+    // The decode image holds RGBA8 for every layer at once: a 1365x1365 array of 90 layers with
+    // 11 levels is ~890 MiB in one allocation. On a full card that allocation failed on every use
+    // of the texture, forever (#1035). When the whole array does not fit, decode and encode it a
+    // few layers at a time through a smaller image; the encoded output is the same.
+    u32 batch = layers;
+    PendingTranscode pending;
+    if (!take_free(batch, pending)) {
+        vk::Image decode = make_decode(batch);
         if (!decode && !free_transcodes.empty()) {
             // The GPU is done with these: their memory goes back to the driver now.
             free_transcodes.clear();
-            decode = memory_allocator.TryCreateImage(decode_ci, true);
+            decode = make_decode(batch);
+        }
+        while (!decode && batch > 1) {
+            batch = Common::DivCeil(batch, 2U);
+            decode = make_decode(batch);
         }
         if (!decode) {
             static u32 logged{};
@@ -5182,6 +5200,15 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             TransitionImageLayout(image);
             return;
         }
+        if (batch != layers) {
+            static u32 batch_logged{};
+            if (batch_logged++ < 32) {
+                LOG_WARNING(Render_Vulkan,
+                            "ASTC image {:#x} ({}x{}, {} levels, {} layers) decoded {} layers at a "
+                            "time: not enough device memory for all of them",
+                            image.gpu_addr, width, height, levels, layers, batch);
+            }
+        }
         pending = PendingTranscode{
             .tick = 0,
             .image = std::move(decode),
@@ -5189,7 +5216,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             .width = width,
             .height = height,
             .levels = levels,
-            .layers = layers,
+            .layers = batch,
             .unused_frames = 0,
         };
         for (u32 level = 0; level < levels; ++level) {
@@ -5197,30 +5224,21 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
                 MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat));
         }
     }
-    astc_decoder_pass->AssembleInto(
-        info, 0, image.guest_size_bytes,
-        ASTCDecoderPass::Target{
-            .image = *pending.image,
-            .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .initialized = false,
-            .level_view = [&pending](s32 level) { return *pending.views[level]; },
-            .wait = true,
-            .levels = levels,
-        },
-        map, swizzles);
 
     // Encode every level into one buffer, then copy it into the image.
     const bool bc3 = !IsOpaqueBc1Astc(device, info) &&
                      Settings::GetAstcRecompression() != Settings::AstcRecompression::Bc1;
     const u64 block_bytes = bc3 ? 16 : 8;
     boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
+    boost::container::small_vector<u64, 16> layer_bytes; // one encoded layer of each level
     u64 total = 0;
     for (u32 level = 0; level < levels; ++level) {
         const u32 level_width = (std::max)(width >> level, 1U);
         const u32 level_height = (std::max)(height >> level, 1U);
         const u32 blocks_x = Common::DivCeil(level_width, 4U);
         const u32 blocks_y = Common::DivCeil(level_height, 4U);
-        const u64 size = u64{blocks_x} * blocks_y * layers * block_bytes;
+        layer_bytes.push_back(u64{blocks_x} * blocks_y * block_bytes);
+        const u64 size = layer_bytes.back() * layers;
         copies.push_back({
             .buffer_offset = total,
             .buffer_size = size,
@@ -5237,10 +5255,42 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         total += size;
     }
     const auto output = staging_buffer_pool.Request(total, MemoryUsage::DeviceLocal);
-    for (u32 level = 0; level < levels; ++level) {
-        bc_encoder_pass->Encode(*pending.views[level], copies[level].image_extent.width,
-                                copies[level].image_extent.height, layers, bc3, output.buffer,
-                                output.offset, total, copies[level].buffer_offset);
+
+    const u64 layer_stride = info.layer_stride;
+    const size_t guest_size = image.guest_size_bytes;
+    for (u32 base = 0; base < layers; base += batch) {
+        const u32 count = (std::min)(batch, layers - base);
+        // The swizzles describe one layer's levels and the decoder steps layer_stride per layer
+        // from the start of its input, so a batch is the same info with fewer layers, read from
+        // its first layer on. The swizzle math does not depend on the layer count.
+        ImageInfo batch_info = info;
+        batch_info.resources.layers = static_cast<s32>(count);
+        StagingBufferRef batch_map = map;
+        batch_map.offset += u64{base} * layer_stride;
+        const size_t guest_offset = static_cast<size_t>(u64{base} * layer_stride);
+        const size_t batch_size =
+            batch == layers
+                ? guest_size
+                : (std::min)(static_cast<size_t>(u64{count} * layer_stride),
+                             guest_size - (std::min)(guest_size, guest_offset));
+        astc_decoder_pass->AssembleInto(
+            batch_info, 0, batch_size,
+            ASTCDecoderPass::Target{
+                .image = *pending.image,
+                .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
+                // A later batch overwrites what the previous batch's encode read: wait for it.
+                .initialized = base != 0,
+                .level_view = [&pending](s32 level) { return *pending.views[level]; },
+                .wait = true,
+                .levels = levels,
+            },
+            batch_map, swizzles);
+        for (u32 level = 0; level < levels; ++level) {
+            bc_encoder_pass->Encode(*pending.views[level], copies[level].image_extent.width,
+                                    copies[level].image_extent.height, count, bc3, output.buffer,
+                                    output.offset, total,
+                                    copies[level].buffer_offset + layer_bytes[level] * base);
+        }
     }
     scheduler.Record([](vk::CommandBuffer cmdbuf) {
         const VkMemoryBarrier barrier{

@@ -49,6 +49,8 @@ SWITCHABLE(AntiAliasing, false);
 SWITCHABLE(OotAntiAliasing, false);
 SWITCHABLE(DlssPreset, false);
 SWITCHABLE(OcarinaDlssMode, false);
+SWITCHABLE(NvidiaDlssQuality, false);
+SWITCHABLE(NeuralRendering, false);
 SWITCHABLE(AspectRatio, true);
 SWITCHABLE(AstcDecodeMode, true);
 SWITCHABLE(AstcRecompression, true);

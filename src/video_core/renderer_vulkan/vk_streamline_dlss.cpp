@@ -15,7 +15,7 @@
 #include "common/settings.h"
 #include "video_core/dlss_evaluation.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
-#include "video_core/renderer_vulkan/vk_streamline_dlss.h"
+#include "video_core/renderer_vulkan/vk_nvidia_dlss.h"
 #include "video_core/vulkan_common/streamline.h"
 #include "video_core/vulkan_common/streamline_api.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -159,7 +159,7 @@ sl::float4x4 ToStreamline(const Matrix& m) {
 /// as the image rows go, upward only with flip_y. Returns false when the matrices don't look
 /// like a perspective camera (the constants then keep their identities).
 bool SetCameraConstants(sl::Constants& constants,
-                        const StreamlineDlssUpscaler::Inputs::Camera& camera, f32 aspect) {
+                        const NvidiaDlssUpscaler::Inputs::Camera& camera, f32 aspect) {
     const f32 y = camera.flip_y ? 1.0f : -1.0f;
     const Matrix to_game{1, 0, 0, 0, 0, y, 0, 0, 0, 0, 2, -1, 0, 0, 0, 1};
     const Matrix from_game{1, 0, 0, 0, 0, y, 0, 0, 0, 0, 0.5f, 0.5f, 0, 0, 0, 1};
@@ -227,7 +227,7 @@ bool SetCameraConstants(sl::Constants& constants,
     return true;
 }
 
-VkImageMemoryBarrier Barrier(const StreamlineDlssUpscaler::Image& image, VkAccessFlags src_access,
+VkImageMemoryBarrier Barrier(const NvidiaDlssUpscaler::Image& image, VkAccessFlags src_access,
                              VkAccessFlags dst_access, VkImageLayout old_layout,
                              VkImageLayout new_layout) {
     VkImageSubresourceRange range = image.range;
@@ -262,7 +262,7 @@ sl::Resource Resource(VkImage image, VkImageView view, VkFormat format, VkImageL
 
 } // Anonymous namespace
 
-StreamlineDlssUpscaler::StreamlineDlssUpscaler(const Device& device_, Scheduler& scheduler_,
+NvidiaDlssUpscaler::NvidiaDlssUpscaler(const Device& device_, Scheduler& scheduler_,
                                                MemoryAllocator& memory_allocator_)
     : device{device_}, scheduler{scheduler_}, memory_allocator{memory_allocator_} {
     if (!Streamline::IsDlssAvailable()) {
@@ -297,7 +297,7 @@ StreamlineDlssUpscaler::StreamlineDlssUpscaler(const Device& device_, Scheduler&
     });
 }
 
-StreamlineDlssUpscaler::~StreamlineDlssUpscaler() {
+NvidiaDlssUpscaler::~NvidiaDlssUpscaler() {
     // Not scheduler.Finish(): this runs when the renderer goes away, after the game's channels are
     // released, and a submit would touch their state. Nothing more gets recorded by then.
     void(device.GetLogical().WaitIdle());
@@ -306,7 +306,7 @@ StreamlineDlssUpscaler::~StreamlineDlssUpscaler() {
     }
 }
 
-void StreamlineDlssUpscaler::CreateExposure() {
+void NvidiaDlssUpscaler::CreateExposure() {
     exposure_image = memory_allocator.CreateImage(VkImageCreateInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext = nullptr,
@@ -342,7 +342,7 @@ void StreamlineDlssUpscaler::CreateExposure() {
     });
 }
 
-void StreamlineDlssUpscaler::ClearExposure(vk::CommandBuffer cmdbuf, VkImage image, f32 value) {
+void NvidiaDlssUpscaler::ClearExposure(vk::CommandBuffer cmdbuf, VkImage image, f32 value) {
     const VkImageSubresourceRange range{
         .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
         .baseMipLevel = 0,
@@ -376,7 +376,7 @@ void StreamlineDlssUpscaler::ClearExposure(vk::CommandBuffer cmdbuf, VkImage ima
                                    VK_IMAGE_LAYOUT_GENERAL));
 }
 
-void StreamlineDlssUpscaler::CreateOutput(VkExtent2D upscale_size) {
+void NvidiaDlssUpscaler::CreateOutput(VkExtent2D upscale_size) {
     if (output_image) {
         scheduler.Finish(); // the old output may still be in use
     }
@@ -441,7 +441,7 @@ void StreamlineDlssUpscaler::CreateOutput(VkExtent2D upscale_size) {
     create(output_image, output_view);
 }
 
-bool StreamlineDlssUpscaler::Upscale(const Inputs& in) {
+bool NvidiaDlssUpscaler::Upscale(const Inputs& in) {
     if (failed) {
         return false;
     }

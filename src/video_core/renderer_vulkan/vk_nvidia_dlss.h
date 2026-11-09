@@ -2,13 +2,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // NVIDIA DLSS (through NVIDIA Streamline) in place of a game's DLSS
-// evaluation. NVIDIA's DLLs come from the user's PC; see vulkan_common/streamline.h.
+// evaluation. NVIDIA's DLLs come from the user's PC; see vulkan_common/nvidia_dlss.h.
 
 #pragma once
 
 #include <array>
 #include <atomic>
 #include <optional>
+#include <memory>
+
+struct NVSDK_NGX_Handle;
+struct NVSDK_NGX_Parameter;
+namespace VideoCore::NeuralRendering { class Backend; }
 
 #include "common/common_types.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -19,7 +24,7 @@ class Device;
 class MemoryAllocator;
 class Scheduler;
 
-class StreamlineDlssUpscaler {
+class NvidiaDlssUpscaler {
 public:
     struct Image {
         VkImageView view;
@@ -65,9 +70,9 @@ public:
     };
 
     /// Throws vk::Exception when Streamline has no DLSS for this device.
-    explicit StreamlineDlssUpscaler(const Device& device, Scheduler& scheduler,
+    explicit NvidiaDlssUpscaler(const Device& device, Scheduler& scheduler,
                                     MemoryAllocator& memory_allocator);
-    ~StreamlineDlssUpscaler();
+    ~NvidiaDlssUpscaler();
 
     /// Records one evaluation into the output image (RGBA16F at the upscale size, GENERAL
     /// layout). Returns false when DLSS can't run, so the caller can fall back to FSR 3.1.
@@ -80,12 +85,28 @@ public:
     [[nodiscard]] VkImageView OutputView() const noexcept {
         return *output_view;
     }
+    [[nodiscard]] VkSampler LinearSampler() const noexcept { return linear_sampler ? *linear_sampler : *point_sampler; }
     /// Nearest-neighbour clamp sampler (normalized coordinates), for reading the output.
     [[nodiscard]] VkSampler PointSampler() const noexcept {
         return *point_sampler;
     }
 
 private:
+    void CreateSampler();
+#ifdef EGLANTINE_NGX
+    void PrepareNeuralRendering(const Inputs& inputs);
+    std::unique_ptr<VideoCore::NeuralRendering::Backend> neural_rendering;
+    VkImageView neural_motion_view{};
+    u32 neural_style{};
+    bool neural_requested{};
+    bool neural_failed{};
+    bool neural_model_verified{};
+    NVSDK_NGX_Handle* feature{};
+    NVSDK_NGX_Parameter* parameters{};
+    bool depth_inverted = true;
+    bool hdr_input = true;
+#endif
+    vk::Sampler linear_sampler;
     void CreateOutput(VkExtent2D upscale_size);
     void CreateExposure();
     static void ClearExposure(vk::CommandBuffer cmdbuf, VkImage image, f32 value);

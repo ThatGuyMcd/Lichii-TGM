@@ -126,7 +126,8 @@ public:
     void EmitAtomicRmwMemory(A64EmitContext& ctx, IR::Inst* inst);
     template<std::size_t bitsize>
     void EmitAtomicCasMemory(A64EmitContext& ctx, IR::Inst* inst);
-    using AtomicFallbackFn = u64 (*)(const A64::UserConfig& conf, u64 vaddr, u64 a, u64 b);
+    using AtomicFallbackContext = X64::AtomicFallbackContext;
+    using AtomicFallbackFn = u64 (*)(const AtomicFallbackContext& context, u64 vaddr, u64 a, u64 b);
     void EmitAtomicFallbackStub(Xbyak::Reg64 result, std::initializer_list<Xbyak::Reg64> sources, std::optional<u32> param4, AtomicFallbackFn fallback);
 
     // Terminal instruction emitters
@@ -141,7 +142,12 @@ public:
     void EmitPatchMovRcx(CodePtr target_code_ptr = nullptr) override;
 
 //data
+    void SetAtomicFallbackHaltReason(const volatile u32* halt_reason) {
+        atomic_fallback.halt_reason = halt_reason;
+    }
+
     const A64::UserConfig conf;
+    AtomicFallbackContext atomic_fallback{&conf, nullptr};
     RegAlloc reg_alloc; //reusable reg alloc
     BlockRangeInformation<u64> block_ranges;
     std::vector<FastDispatchEntry> fast_dispatch_table;

@@ -199,6 +199,7 @@ if ("x86_64" IN_LIST ARCHITECTURE)
         backend/x64/a64_interface.cpp
         backend/x64/a64_jitstate.cpp
         backend/x64/a64_jitstate.h
+        backend/x64/atomic_fallback.h
     )
 endif()
 

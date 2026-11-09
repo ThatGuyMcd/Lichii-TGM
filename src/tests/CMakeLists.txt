@@ -211,7 +211,8 @@ target_link_libraries(tests PRIVATE common core audio_core input_common video_co
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 
 if (TARGET dynarmic::dynarmic)
-    target_sources(tests PRIVATE core/window_trace.cpp core/guest_cpu.cpp)
+    target_sources(tests PRIVATE core/window_trace.cpp core/guest_cpu.cpp
+        core/dynarmic_atomic_fallback.cpp)
     target_link_libraries(tests PRIVATE dynarmic::dynarmic)
 endif()
 

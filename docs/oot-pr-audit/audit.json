@@ -4,7 +4,7 @@
   "branch": "oot-experimental",
   "audit_date": "2026-11-09",
   "upstream_base": "986a2b684d752cd5227d0d8cdd63d52111d9c298",
-  "source_commit_at_generation": "5be1c227578e38f9dab6b09bffff9e71ba44db25",
+  "source_commit_at_generation": "87ec69dbedfe641e1913ee4920689a15ccb3590c",
   "terms": [
     "ocarina",
     "oot",
@@ -13,11 +13,10 @@
   "total_prs_reviewed": 527,
   "matching_prs": 305,
   "counts": {
-    "reconciled": 65,
+    "reconciled": 66,
     "merged": 72,
     "upstream-merged": 130,
     "already-present": 33,
-    "partial-experimental": 1,
     "partial-platform": 1,
     "out-of-scope": 1,
     "superseded-build": 2
@@ -995,8 +994,8 @@
       "head_repo": "JuliusBairaktaris/Lichii",
       "draft": true,
       "mentionedIn": "title/body/comments search",
-      "disposition": "partial-experimental",
-      "reason": "CPU/JIT, native macros, ultrawide camera/HUD/heap, live HDR/screenshots, VRR/cadence/host-vsync/Anti-Lag, immediate input, performance overlay, AMD FSR 4/native-AA/frame generation and HUDless composition are ported. Remaining alternate native GPU architecture is still under reconciliation; this is not a literal whole-branch merge."
+      "disposition": "reconciled",
+      "reason": "CPU/JIT, native macros, ultrawide camera/HUD/heap, live HDR/screenshots, VRR/cadence/host-vsync/Anti-Lag, immediate input, performance overlay, AMD FSR 4/native-AA/frame generation and HUDless composition are ported. Native GPU address tables, pool residency, descriptor heaps, shader objects, dynamic-state packets, pipeline libraries and pipeline binaries are integrated with capability/settings guards and current shader-cache identities. The current readback/barrier/recipe implementations remain authoritative instead of importing competing older whole-tree state machines. See ../OOT_EXPERIMENTAL_INTEGRATION.md for controls and limits."
     },
     {
       "number": 823,

@@ -14,7 +14,8 @@ is used; the package does not create a portable `user` folder automatically.
 The integrated features include asynchronous GPU readback, CPU/JIT and storage optimizations,
 shader preparation and pipeline retention, graphics pipeline libraries, task/mesh prediction,
 DLSS/DLAA and FSR paths, frame generation, HDR, ultrawide camera/HUD hooks, VRR pacing,
-immediate input, and the performance overlay. Hardware-dependent paths retain capability checks.
+immediate input, the performance overlay, native GPU address tables, descriptor heaps, shader
+objects and driver pipeline binaries. Hardware-dependent paths retain capability checks.
 Mutually exclusive alternatives use their settings or experiment switches.
 
 Graphics settings expose **Ocarina of Time anti-aliasing**, **HDR**, aspect ratio, and frame
@@ -29,6 +30,12 @@ Graphics pipeline libraries use `EDEN_NX2_GPL=1`; optional optimized links addit
 task/mesh prewarm has the per-game `use_mesh_shader_warmup` setting. Diagnostics remain opt-in;
 see the integration manifest and `nx2_switches.txt` for additional controls. Environment
 variables must be set before starting Lichii.
+
+Native descriptor heaps use `EDEN_NX2_DESCRIPTOR_HEAP=1`, and shader objects use
+`EDEN_NX2_SHADER_OBJECT=1`. Both require driver support and retain fallback paths for
+incompatible shaders. Native storage and uniform address paths can be disabled separately
+with `EDEN_NX2_NATIVE_STORAGE=0` and `EDEN_NX2_NATIVE_UNIFORMS=0`. The integration manifest
+records the remaining comparison controls and architectural exclusions.
 
 This is an experimental integration. Build and unit-test results do not establish gameplay
 correctness, image quality or performance. No local OoT gameplay session, guard-room test,

@@ -82,7 +82,7 @@ Original PR heads, source state and per-PR decisions are also saved in [audit.js
 | [#841](https://github.com/zortos293/Lichii/pull/841) | merged | upstream-merged | vulkan: build cached task/mesh pipelines at boot without VK_EXT_mesh_shader |
 | [#840](https://github.com/zortos293/Lichii/pull/840) | open | merged | video_core: Add native Linux DLSS, DLAA quality, and neural rendering |
 | [#836](https://github.com/zortos293/Lichii/pull/836) | open | merged | vulkan: recycle images instead of creating and freeing them every frame (Ocarina of Time) |
-| [#831](https://github.com/zortos293/Lichii/pull/831) | open | partial-experimental | Ocarina of Time on RDNA 4 and Zen 5: 224 fps VRR cap, AMD FSR 4 and frame generation, pacing, loads, HDR, 21:9 (draft, tracking) |
+| [#831](https://github.com/zortos293/Lichii/pull/831) | open | reconciled | Ocarina of Time on RDNA 4 and Zen 5: 224 fps VRR cap, AMD FSR 4 and frame generation, pacing, loads, HDR, 21:9 (draft, tracking) |
 | [#823](https://github.com/zortos293/Lichii/pull/823) | open | merged | texture_cache: let an integrated GPU's memory share bound the textures only (#739) |
 | [#820](https://github.com/zortos293/Lichii/pull/820) | merged | upstream-merged | shader: interpolate noperspective varyings perspective-correct (OoT tomb red line, port of #722) |
 | [#818](https://github.com/zortos293/Lichii/pull/818) | merged | upstream-merged | texture_cache: don't upload stale guest memory into new images (Switch 2 titles) |

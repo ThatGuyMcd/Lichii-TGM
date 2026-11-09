@@ -343,9 +343,22 @@ fs::path FindNativeRecipe(u64 title_id) {
     if (fs::exists(NativeRecipePath(title_id), ec)) {
         return NativeRecipePath(title_id);
     }
+    fs::path recipe_dir;
+#ifdef _WIN32
+    recipe_dir = Common::FS::GetExeDirectory() / "recipes";
+#elif defined(__linux__)
+    const auto executable = fs::read_symlink("/proc/self/exe", ec);
+    if (ec) {
+        return {};
+    }
+    recipe_dir = executable.parent_path() / "recipes";
+#elif defined(__APPLE__)
+    recipe_dir = Common::FS::GetBundleDirectory() / "Contents/MacOS/recipes";
+#else
+    return {};
+#endif
     std::vector<fs::path> candidates;
-    for (const auto& entry :
-         fs::directory_iterator(Common::FS::GetExeDirectory() / "recipes", ec)) {
+    for (const auto& entry : fs::directory_iterator(recipe_dir, ec)) {
         if (entry.path().extension() == ".nx2recipe" && entry.is_regular_file(ec)) {
             candidates.push_back(entry.path());
         }

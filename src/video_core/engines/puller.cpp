@@ -702,6 +702,7 @@ bool Puller::AcquireWithoutDrain(DmaPusher& dma_pusher, PendingAcquire& acquire)
     }
     switch (answer.kind) {
     case Kind::Met:
+        split.NoteSync();
         return true;
     case Kind::MetByQueued:
         // What the front reads after the acquire waits for the work sent before the release

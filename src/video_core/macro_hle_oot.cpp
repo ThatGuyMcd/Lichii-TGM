@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -102,7 +104,7 @@ const Macro* Find(u64 hash) {
 }
 
 bool DumpEnabled() {
-    static const bool enabled = VideoCommon::Nx2Switch("EDEN_NX2_OOT_MACROS_DUMP", false);
+    static const bool enabled = (std::getenv("EDEN_NX2_OOT_MACROS_DUMP") != nullptr && std::strcmp(std::getenv("EDEN_NX2_OOT_MACROS_DUMP"), "0") != 0);
     return enabled;
 }
 

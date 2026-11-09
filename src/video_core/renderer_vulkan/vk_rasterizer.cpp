@@ -447,6 +447,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
+    state_tracker.ClearChannel();
     VideoCommon::GpuSplit::Get().SetIdleHook(nullptr, nullptr);
     scheduler.WaitWorker();
     scheduler.Finish();
@@ -4616,10 +4617,15 @@ void RasterizerVulkan::BindChannel(Tegra::Control::ChannelState& channel) {
     pipeline_cache.BindToChannel(channel_id);
     query_cache.BindToChannel(channel_id);
     state_tracker.ChangeChannel(channel);
+    bound_channel_id = channel_id;
     state_tracker.InvalidateState();
 }
 
 void RasterizerVulkan::ReleaseChannel(s32 channel_id) {
+    if (channel_id == bound_channel_id) {
+        state_tracker.ClearChannel();
+        bound_channel_id = -1;
+    }
     EraseChannel(channel_id);
     {
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};

@@ -518,7 +518,7 @@ void PresentManager::PresentOnTick(std::stop_token token, u32 rate) {
     } else {
         const auto tick = cadence.Next(Clock::now(), rate);
         if (const auto ahead = tick - Clock::now(); ahead > PreciseWaitGuard) {
-            void(cadence_wake.BlockFor(ahead - PreciseWaitGuard));
+            void(cadence_wake.SleepFor(ahead - PreciseWaitGuard));
         }
         if (const auto ahead = tick - Clock::now(); ahead > Clock::duration::zero()) {
             void(cadence_wake.WaitFor(ahead));

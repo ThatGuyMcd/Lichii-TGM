@@ -71,6 +71,7 @@ enum class DrainSite : u32 {
     BackCode,       ///< The macro code changes under the macros the back has yet to run
     ListCopies,     ///< Lists on GPU-written pages: the dispatches and copies before the last sync
     RingFull,       ///< The front waits for room in the split ring
+    SafeReadFlush,  ///< EDEN_NX2_SPLIT_SAFE_READS: a CPU-side read flushes back-owned caches
     Count,
 };
 
@@ -78,7 +79,7 @@ inline constexpr std::array<const char*, static_cast<size_t>(DrainSite::Count)> 
     "other",           "fetch drain",   "acquire",    "semaphore flush", "fence release",
     "list writers",    "list sync",     "list flush", "macro dma read",  "macro dma writes",
     "macro dma flush", "gp sync fence", "map",        "front start",     "front verify",
-    "back register",   "back code",     "list copy writers", "ring full",
+    "back register",   "back code",     "list copy writers", "ring full", "safe read flush",
 };
 
 // Splits the GPU thread in two (NX2_GPU_THREAD_SPLIT.md). The GPU thread (the front) takes the

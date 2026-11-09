@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 
 #include "common/common_types.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
@@ -41,6 +42,18 @@ public:
     /// at the render size) to DLSS's output (RGBA16F storage image, GENERAL layout).
     bool CompositeParticles(Scheduler& scheduler, VkImageView output_view, VkExtent2D output_size,
                             VkImageView without_view, VkExtent2D render_size);
+
+    struct Snapshot {
+        VkImage image;
+        VkImageView view;
+    };
+    [[nodiscard]] std::optional<Snapshot> SceneSnapshot(u32 which, VkExtent2D size) const {
+        if (!scene_images[which] || scene_extents[which].width != size.width ||
+            scene_extents[which].height != size.height) {
+            return std::nullopt;
+        }
+        return Snapshot{*scene_images[which], *scene_views[which]};
+    }
 
     [[nodiscard]] VkImage Image() const noexcept {
         return *image;

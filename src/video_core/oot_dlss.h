@@ -16,6 +16,7 @@
 
 #include "common/common_types.h"
 #include "common/settings.h"
+#include "video_core/nvidia_dlss_policy.h"
 #include "video_core/surface.h"
 #include "video_core/textures/texture.h"
 
@@ -35,12 +36,29 @@ inline bool Requested() {
         }
         return std::nullopt;
     }();
-    if (override_requested) {
-        return *override_requested;
-    }
-    const auto mode = Settings::values.oot_anti_aliasing.GetValue();
-    return mode == Settings::OotAntiAliasing::NvidiaDlss ||
-           mode == Settings::OotAntiAliasing::NvidiaDlaa;
+    return NvidiaOotDlssRequested(Settings::values.oot_anti_aliasing.GetValue(), override_requested);
+}
+
+inline NvidiaDlssActivity& Runtime() {
+    static NvidiaDlssActivity state;
+    return state;
+}
+
+inline void ResetRuntime(bool available) {
+    Runtime().Reset(available);
+}
+
+inline void NoteBackendFailure() {
+    Runtime().Fail();
+}
+
+/// Recording failures stop jitter at the next frame boundary; selection still owns the copy.
+inline void BeginRuntimeFrame() {
+    Runtime().BeginFrame();
+}
+
+inline bool Active() {
+    return Requested() && Runtime().Active();
 }
 
 /// DLSS output: 4K, with the 3D at 4K (DLAA) or at the game's 2560x1440 (Quality: only the
@@ -73,7 +91,7 @@ inline bool OutputOnlyRescale() {
 /// than one frame at the render size. Quality: -1.585; DLAA: -1. The game's own bias stays
 /// under it. EDEN_OOT_LOD_BIAS=<n> replaces it in either mode (0: off).
 inline float UpscaleLodBias() {
-    if (!Requested() || Settings::GetCurrentProgramID() != ProgramId) {
+    if (!Active() || Settings::GetCurrentProgramID() != ProgramId) {
         return 0.0f;
     }
     static const std::optional<float> override_bias = []() -> std::optional<float> {
@@ -102,7 +120,7 @@ inline bool HdrInput() {
         const char* value = std::getenv("EDEN_OOT_DLSS_HDR");
         return value != nullptr && value[0] == '0';
     }();
-    return !disabled && Requested() && !OutputOnlyRescale() &&
+    return !disabled && Active() && !OutputOnlyRescale() &&
            Settings::GetCurrentProgramID() == ProgramId;
 }
 
@@ -113,7 +131,7 @@ inline bool ObjectMotionRequested() {
         const char* value = std::getenv("EDEN_OOT_OBJECT_MOTION");
         return value != nullptr && value[0] == '0';
     }();
-    return !disabled && Requested();
+    return !disabled && Active();
 }
 
 /// DLSS replaces the game's network (No sharpening is video_core/oot_network.h's).

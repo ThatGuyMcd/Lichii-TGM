@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -19,8 +20,8 @@
 #include "video_core/renderer_vulkan/vk_dlss_network_probe.h"
 #include "video_core/renderer_vulkan/vk_fsr3_upscaler.h"
 #include "video_core/renderer_vulkan/vk_oot_motion_vectors.h"
-#ifdef EGLANTINE_STREAMLINE
-#include "video_core/renderer_vulkan/vk_streamline_dlss.h"
+#ifdef EGLANTINE_NVIDIA_DLSS
+#include "video_core/renderer_vulkan/vk_nvidia_dlss.h"
 #endif
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
@@ -293,15 +294,17 @@ public:
 
     /// Draws an upscaler's RGBA16F output into the DLSS output and returns it to GENERAL.
     void DrawUpscaledOutput(Framebuffer* dst_framebuffer, VkImageView view, VkImage image,
-                            VkSampler sampler);
-#ifdef EGLANTINE_STREAMLINE
+                            VkSampler sampler, std::function<bool()> should_draw = {});
+    void DrawDlssFallback(Framebuffer* dst_framebuffer, ImageView& original,
+                          std::array<u32, 2> render_size, bool particles);
+#ifdef EGLANTINE_NVIDIA_DLSS
     /// NVIDIA's DLSS (through NVIDIA Streamline) in place of the game's,
     /// before FSR 3.1, when the setting is on. Returns false to fall back to FSR 3.1.
     bool UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageView& input_color,
                          ImageView& motion_vectors, ImageView& depth,
                          std::array<u32, 2> render_size, std::array<f32, 2> jitter,
                          std::array<f32, 2> motion_scale, bool reset);
-    std::unique_ptr<StreamlineDlssUpscaler> dlss_upscaler;
+    std::unique_ptr<NvidiaDlssUpscaler> dlss_upscaler;
     bool dlss_unsupported{};
     std::unique_ptr<OotMotionVectors> oot_motion_vectors;
 #endif
@@ -920,7 +923,8 @@ private:
     bool has_added_anisotropy{};
     bool has_linear_filtering{};
     bool has_depth_comparison{};
-    f32 added_lod_bias{}; ///< Ocarina FSR part of base_ci.mipLodBias
+    f32 added_lod_bias{}; ///< Temporal upscaler part of base_ci.mipLodBias
+    bool dlss_lod_bias{};
     bool has_minmax_reduction{};
     bool has_custom_border_colors{};
     bool has_srgb_border_color{};

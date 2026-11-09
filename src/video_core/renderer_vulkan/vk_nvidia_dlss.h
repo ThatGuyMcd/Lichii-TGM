@@ -1,17 +1,22 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// NVIDIA DLSS (through NVIDIA Streamline) in place of a game's DLSS
-// evaluation. NVIDIA's DLLs come from the user's PC; see vulkan_common/streamline.h.
+// NVIDIA DLSS through Windows Streamline or native Linux NGX. Runtime libraries
+// and optional neural model data are supplied separately.
 
 #pragma once
 
 #include <array>
 #include <atomic>
 #include <optional>
+#include <memory>
 
 #include "common/common_types.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+
+struct NVSDK_NGX_Handle;
+struct NVSDK_NGX_Parameter;
+namespace VideoCore::NeuralRendering { class Backend; }
 
 namespace Vulkan {
 
@@ -19,7 +24,7 @@ class Device;
 class MemoryAllocator;
 class Scheduler;
 
-class StreamlineDlssUpscaler {
+class NvidiaDlssUpscaler {
 public:
     struct Image {
         VkImageView view;
@@ -30,7 +35,7 @@ public:
     };
 
     struct Inputs {
-        Image color;          ///< Jittered linear colour at the render size.
+        Image color;          ///< Jittered scene colour, linear HDR or tonemapped.
         Image depth;          ///< Device depth (reversed) at the render size.
         Image motion_vectors; ///< Motion to the previous frame at the render size.
         /// R16F mask at the render size (GENERAL layout): where DLSS should trust this frame's
@@ -64,10 +69,10 @@ public:
         std::optional<Camera> camera;
     };
 
-    /// Throws vk::Exception when Streamline has no DLSS for this device.
-    explicit StreamlineDlssUpscaler(const Device& device, Scheduler& scheduler,
+    /// Throws vk::Exception when the platform runtime has no DLSS for this device.
+    explicit NvidiaDlssUpscaler(const Device& device, Scheduler& scheduler,
                                     MemoryAllocator& memory_allocator);
-    ~StreamlineDlssUpscaler();
+    ~NvidiaDlssUpscaler();
 
     /// Records one evaluation into the output image (RGBA16F at the upscale size, GENERAL
     /// layout). Returns false when DLSS can't run, so the caller can fall back to FSR 3.1.
@@ -93,7 +98,10 @@ public:
         return *point_sampler;
     }
 
+    [[nodiscard]] VkSampler LinearSampler() const noexcept { return *linear_sampler; }
+
 private:
+    void CreateSampler();
     void CreateOutput(VkExtent2D upscale_size);
     void CreateExposure();
     static void ClearExposure(vk::CommandBuffer cmdbuf, VkImage image, f32 value);
@@ -101,9 +109,25 @@ private:
     const Device& device;
     Scheduler& scheduler;
     MemoryAllocator& memory_allocator;
+#ifdef EGLANTINE_STREAMLINE
     void* set_options{}; ///< slDLSSSetOptions
     void* get_state{};   ///< slDLSSGetState
     u32 applied_preset_value{~0u}; ///< sl::DLSSPreset last given to DLSS
+#endif
+#ifdef EGLANTINE_NGX
+    void PrepareNeuralRendering(const Inputs& inputs, bool requested);
+    std::unique_ptr<VideoCore::NeuralRendering::Backend> neural_rendering;
+    VkImageView neural_motion_view{};
+    bool neural_requested{};
+    bool neural_failed{};
+    bool neural_model_verified{};
+    NVSDK_NGX_Handle* feature{};
+    NVSDK_NGX_Parameter* parameters{};
+    bool ngx_depth_inverted = true;
+    bool ngx_hdr_input{};
+    bool ngx_auto_exposure{};
+    u32 ngx_preset{~0u};
+#endif
     VkExtent2D render_extent{};
     VkExtent2D upscale_extent{};
     u32 frame_index{};
@@ -115,6 +139,7 @@ private:
     bool applied_auto_exposure{};
     bool applied_hdr_input{};
     vk::Sampler point_sampler;
+    vk::Sampler linear_sampler;
     std::atomic<bool> failed{};
     std::atomic<bool> vram_warned{};
 };

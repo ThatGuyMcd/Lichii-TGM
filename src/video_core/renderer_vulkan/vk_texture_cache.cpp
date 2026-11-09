@@ -51,8 +51,8 @@
 #include "video_core/texture_cache/util.h"
 #include "video_core/dlss_contract.h"
 #include "video_core/vulkan_common/vulkan_device.h"
-#ifdef EGLANTINE_STREAMLINE
-#include "video_core/vulkan_common/streamline.h"
+#ifdef EGLANTINE_NVIDIA_DLSS
+#include "video_core/vulkan_common/nvidia_dlss.h"
 #endif
 #include "video_core/vulkan_common/unbacked_fallback.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
@@ -1833,6 +1833,7 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
     });
 }
 
+/// Report whether temporal replacement needs depth, honoring the forced stand-in override.
 bool TextureCacheRuntime::WantsTemporalUpscaleDepth() const {
     // FSR 3.1 replaces DLSS; the temporal stand-in only runs when FSR cannot (no depth, a device
     // without the formats, a failed start). EDEN_NX2_DLSS_REPLACEMENT=standin forces
@@ -1844,21 +1845,22 @@ bool TextureCacheRuntime::WantsTemporalUpscaleDepth() const {
     if (force_standin) {
         return false;
     }
-#ifdef EGLANTINE_STREAMLINE
-    if (Streamline::IsDlssAvailable() && !dlss_unsupported) {
+#ifdef EGLANTINE_NVIDIA_DLSS
+    if (NvidiaDlss::IsAvailable() && !dlss_unsupported) {
         return true;
     }
 #endif
     return !fsr3_unsupported;
 }
 
+/// Report NVIDIA DLSS availability while honoring forced FSR and prior unsupported-input failures.
 bool TextureCacheRuntime::UsesNvidiaDlss() const {
-#ifdef EGLANTINE_STREAMLINE
+#ifdef EGLANTINE_NVIDIA_DLSS
     static const bool force_fsr = [] {
         const char* const value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
         return value && std::string_view{value} == "fsr";
     }();
-    return !force_fsr && !dlss_unsupported && Streamline::IsDlssAvailable();
+    return !force_fsr && !dlss_unsupported && NvidiaDlss::IsAvailable();
 #else
     return false;
 #endif
@@ -1874,6 +1876,8 @@ std::optional<VideoCore::GameDlssProbe> TextureCacheRuntime::ProbeGameDlssOutput
                                      output.Handle(Shader::TextureType::Color2D));
 }
 
+/// Try depth-aware FSR presentation with the supplied motion and jitter, returning false when
+/// unavailable.
 bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageView& input_color,
                                           ImageView& motion_vectors, ImageView& depth,
                                           std::array<u32, 2> render_size,
@@ -1891,7 +1895,7 @@ bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageVie
             : 1000.0f / 30.0f;
     const bool reset = !fsr3_last_evaluation || frame_time_ms > 250.0f;
     fsr3_last_evaluation = now;
-#ifdef EGLANTINE_STREAMLINE
+#ifdef EGLANTINE_NVIDIA_DLSS
     if (UpscaleWithDlss(dst_framebuffer, input_color, motion_vectors, depth, render_size, jitter,
                         motion_scale, reset)) {
         return true;
@@ -1962,43 +1966,42 @@ bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageVie
 }
 
 void TextureCacheRuntime::DrawUpscaledOutput(Framebuffer* dst_framebuffer, VkImageView view,
-                                             VkImage output, VkSampler sampler) {
-    // Draw the result into the DLSS output, which keeps its own format; the blit leaves the
-    // upscaler's output image in SHADER_READ_ONLY_OPTIMAL, so return it to GENERAL for the next
-    // frame.
+                                             VkImage output, VkSampler sampler,
+                                             std::function<bool()> should_draw) {
     const VkExtent2D extent = dst_framebuffer->RenderArea();
-    const Region2D region{
-        .start = {0, 0},
-        .end = {static_cast<s32>(extent.width), static_cast<s32>(extent.height)},
-    };
+    const Region2D region{{0, 0}, {static_cast<s32>(extent.width), static_cast<s32>(extent.height)}};
     blit_image_helper.BlitColor(dst_framebuffer, view, output, sampler, region, region,
-                                {extent.width, extent.height, 1});
-    scheduler.RequestOutsideRenderPassOperationContext();
-    scheduler.Record([output](vk::CommandBuffer cmdbuf) {
-        const VkImageMemoryBarrier barrier{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = output,
-            .subresourceRange{
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier);
-    });
+                                {extent.width, extent.height, 1}, std::move(should_draw), {}, true);
 }
 
-#ifdef EGLANTINE_STREAMLINE
+void TextureCacheRuntime::DrawDlssFallback(Framebuffer* dst_framebuffer, ImageView& original,
+                                           std::array<u32, 2> render_size, bool particles) {
+#ifdef EGLANTINE_NVIDIA_DLSS
+    auto* const upscaler = dlss_upscaler.get();
+    VkImage image = original.ImageHandle();
+    VkImageView view = original.Handle(Shader::TextureType::Color2D);
+    VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,
+        static_cast<u32>(original.range.base.level), 1,
+        static_cast<u32>(original.range.base.layer), 1};
+    if (particles && oot_motion_vectors) {
+        if (const auto snapshot = oot_motion_vectors->SceneSnapshot(2, {render_size[0], render_size[1]})) {
+            image = snapshot->image;
+            view = snapshot->view;
+            range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        }
+    }
+    const VkExtent2D extent = dst_framebuffer->RenderArea();
+    const Region2D dst{{0, 0}, {static_cast<s32>(extent.width), static_cast<s32>(extent.height)}};
+    const Region2D src{{0, 0}, {static_cast<s32>(render_size[0]), static_cast<s32>(render_size[1])}};
+    blit_image_helper.BlitColor(dst_framebuffer, view, image, upscaler->LinearSampler(), dst, src,
+                                {render_size[0], render_size[1], 1},
+                                [upscaler] { return upscaler->Failed(); }, range, true);
+#endif
+}
+
+#ifdef EGLANTINE_NVIDIA_DLSS
+/// Try NVIDIA DLSS for the destination framebuffer, honoring quality settings and preserving
+/// fallback on failure.
 bool TextureCacheRuntime::UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageView& input_color,
                                           ImageView& motion_vectors, ImageView& depth,
                                           std::array<u32, 2> render_size,
@@ -2013,14 +2016,14 @@ bool TextureCacheRuntime::UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageVie
         return false;
     }
     if (!dlss_upscaler) {
-        // Off in the settings, or Streamline didn't start: it has said why.
-        if (!Streamline::IsDlssAvailable()) {
+        // Off in the settings, or the platform DLSS runtime did not start.
+        if (!NvidiaDlss::IsAvailable()) {
             dlss_unsupported = true;
             return false;
         }
         try {
             dlss_upscaler =
-                std::make_unique<StreamlineDlssUpscaler>(device, scheduler, memory_allocator);
+                std::make_unique<NvidiaDlssUpscaler>(device, scheduler, memory_allocator);
         } catch (const vk::Exception& exception) {
             LOG_WARNING(Render_Vulkan, "NVIDIA DLSS unavailable ({}); using FSR 3.1",
                         exception.what());
@@ -2029,7 +2032,7 @@ bool TextureCacheRuntime::UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageVie
         }
     }
     const auto image = [&](ImageView& view, VkImageView handle, VkImageAspectFlags aspect) {
-        return StreamlineDlssUpscaler::Image{
+        return NvidiaDlssUpscaler::Image{
             .view = handle,
             .image = view.ImageHandle(),
             .format = MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, false, view.format)
@@ -2044,7 +2047,10 @@ bool TextureCacheRuntime::UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageVie
             .barrier_aspect = ImageAspectMask(view.format),
         };
     };
-    const VkExtent2D extent = dst_framebuffer->RenderArea();
+    const bool native_resolution = Settings::GetNvidiaDlssRuntimeSettings().quality ==
+                                   Settings::NvidiaDlssQuality::Native;
+    const VkExtent2D extent = native_resolution ? VkExtent2D{render_size[0], render_size[1]}
+                                               : dst_framebuffer->RenderArea();
     bool upscaled{};
     try {
         upscaled = dlss_upscaler->Upscale({
@@ -2069,8 +2075,11 @@ bool TextureCacheRuntime::UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageVie
         dlss_unsupported = true;
         return false;
     }
+    DrawDlssFallback(dst_framebuffer, input_color, render_size, false);
     DrawUpscaledOutput(dst_framebuffer, dlss_upscaler->OutputView(), dlss_upscaler->OutputImage(),
-                       dlss_upscaler->PointSampler());
+                       native_resolution ? dlss_upscaler->LinearSampler()
+                                         : dlss_upscaler->PointSampler(),
+                       [upscaler = dlss_upscaler.get()] { return !upscaler->Failed(); });
     static bool logged{};
     if (!logged) {
         logged = true;
@@ -2086,12 +2095,12 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
                                   std::array<f32, 2> jitter, const std::array<f32, 16>& reproject,
                                   bool flip_y, bool reset, bool hdr, ImageView* effects,
                                   ImageView* fog) {
-#ifdef EGLANTINE_STREAMLINE
-    if (dlss_unsupported) {
+#ifdef EGLANTINE_NVIDIA_DLSS
+    if (!::VideoCommon::OotDlss::Active() || dlss_unsupported) {
         return false;
     }
     if (!dlss_upscaler) {
-        if (!Streamline::IsDlssAvailable()) {
+        if (!NvidiaDlss::IsAvailable()) {
             dlss_unsupported = true;
             LOG_WARNING(Render_Vulkan, "OoT DLSS: NVIDIA DLSS is not available (turn on \"Use "
                                        "NVIDIA DLSS\" in Graphics); copying the image instead");
@@ -2099,7 +2108,7 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
         }
         try {
             dlss_upscaler =
-                std::make_unique<StreamlineDlssUpscaler>(device, scheduler, memory_allocator);
+                std::make_unique<NvidiaDlssUpscaler>(device, scheduler, memory_allocator);
         } catch (const vk::Exception& exception) {
             LOG_WARNING(Render_Vulkan, "OoT DLSS: NVIDIA DLSS unavailable ({})", exception.what());
             dlss_unsupported = true;
@@ -2141,7 +2150,7 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
         fog_view, ::VideoCommon::OotDlss::FogMaskGain(),
         input_color.Handle(Shader::TextureType::Color2D));
     const auto image = [&](ImageView& view, VkImageView handle, VkImageAspectFlags aspect) {
-        return StreamlineDlssUpscaler::Image{
+        return NvidiaDlssUpscaler::Image{
             .view = handle,
             .image = view.ImageHandle(),
             .format = MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, false, view.format)
@@ -2178,7 +2187,7 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
             },
             .bias_mask =
                 effects_view != VK_NULL_HANDLE || fog_view != VK_NULL_HANDLE
-                    ? std::optional{StreamlineDlssUpscaler::Image{
+                    ? std::optional{NvidiaDlssUpscaler::Image{
                           .view = oot_motion_vectors->MaskView(),
                           .image = oot_motion_vectors->MaskImage(),
                           .format = VK_FORMAT_R16_SFLOAT,
@@ -2220,7 +2229,7 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
                 return exposure;
             }(),
             .camera = [&] {
-                StreamlineDlssUpscaler::Inputs::Camera camera{
+                NvidiaDlssUpscaler::Inputs::Camera camera{
                     .reproject = reproject, .view_projection{}, .flip_y = flip_y};
                 auto& current = ::VideoCommon::OotDlss::CurrentCamera();
                 std::scoped_lock lock{current.mutex};
@@ -2233,6 +2242,7 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
     }
     if (!upscaled) {
         dlss_unsupported = true;
+        ::VideoCommon::OotDlss::NoteBackendFailure();
         return false;
     }
     if (particles_after &&
@@ -2241,6 +2251,8 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
                                                 size)) {
         ::VideoCommon::OotDlss::NoteFallback("particles not composited");
     }
+    DrawDlssFallback(dst_framebuffer, input_color, render_size, particles_after);
+    const auto draw_success = [upscaler = dlss_upscaler.get()] { return !upscaler->Failed(); };
     // EDEN_OOT_MOTION_DEBUG=1: show the motion vectors in place of the image (see
     // oot_motion_vectors.comp).
     static const bool motion_debug = [] {
@@ -2249,7 +2261,7 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
     }();
     if (motion_debug) {
         DrawUpscaledOutput(dst_framebuffer, motion_view, oot_motion_vectors->Image(),
-                           dlss_upscaler->PointSampler());
+                           dlss_upscaler->PointSampler(), draw_success);
     } else if (const int strength = Settings::values.dlss_sharpening.GetValue();
                strength > 0 && (render_size[0] != dst_framebuffer->RenderArea().width ||
                                 render_size[1] != dst_framebuffer->RenderArea().height)) {
@@ -2264,10 +2276,10 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
         };
         const f32 stops = 2.0f * (1.0f - static_cast<f32>(std::min(strength, 100)) / 100.0f);
         blit_image_helper.TemporalSharpen(dst_framebuffer, dlss_upscaler->OutputView(), region,
-                                          stops);
+                                          stops, draw_success);
     } else {
         DrawUpscaledOutput(dst_framebuffer, dlss_upscaler->OutputView(),
-                           dlss_upscaler->OutputImage(), dlss_upscaler->PointSampler());
+                           dlss_upscaler->OutputImage(), dlss_upscaler->PointSampler(), draw_success);
     }
     static bool logged{};
     if (!std::exchange(logged, true)) {
@@ -2282,7 +2294,7 @@ bool TextureCacheRuntime::OotDlss(Framebuffer* dst_framebuffer, ImageView& input
 }
 
 bool TextureCacheRuntime::OotDlssEvaluationSucceeded() const noexcept {
-#ifdef EGLANTINE_STREAMLINE
+#ifdef EGLANTINE_NVIDIA_DLSS
     return dlss_upscaler && dlss_upscaler->EvaluationSucceeded();
 #else
     return false;
@@ -2291,7 +2303,7 @@ bool TextureCacheRuntime::OotDlssEvaluationSucceeded() const noexcept {
 
 void TextureCacheRuntime::OotSnapshotScene(VkImage image, VideoCore::Surface::PixelFormat format,
                                            std::array<u32, 2> size, u32 which, bool restore) {
-#ifdef EGLANTINE_STREAMLINE
+#ifdef EGLANTINE_NVIDIA_DLSS
     if (!oot_motion_vectors) {
         oot_motion_vectors = std::make_unique<OotMotionVectors>(device, memory_allocator);
     }
@@ -4982,7 +4994,11 @@ Sampler::Sampler(TextureCacheRuntime& runtime, const Tegra::Texture::TSCEntry& t
     ocarina_fsr_failed = &runtime.ocarina_fsr_failed;
     if (::VideoCommon::OotDlss::Requested()) {
         if (tsc.mipmap_filter != TextureMipmapFilter::None) {
-            lod_bias = std::clamp(lod_bias + ::VideoCommon::OotDlss::UpscaleLodBias(), -15.0f, 15.0f);
+            const f32 biased = std::clamp(
+                lod_bias + ::VideoCommon::OotDlss::UpscaleLodBias(), -15.0f, 15.0f);
+            added_lod_bias = biased - lod_bias;
+            dlss_lod_bias = true;
+            lod_bias = biased;
         }
     } else if (const f32 fsr_lod_bias = runtime.OcarinaFsrLodBias();
                fsr_lod_bias != 0.0f && tsc.mipmap_filter != TextureMipmapFilter::None) {
@@ -5031,7 +5047,8 @@ Sampler::VariantKey Sampler::MakeKey(const ImageView& image_view, bool is_depth)
     // the upscaler failed this session (the game's pass runs again).
     if (added_lod_bias != 0.0f) {
         const Image* const image = image_view.BackingImage();
-        key.drop_lod_bias = !VideoCommon::KeepOcarinaFsrLodBias(
+        key.drop_lod_bias = dlss_lod_bias ? !VideoCommon::OotDlss::Active() :
+            !VideoCommon::KeepOcarinaFsrLodBias(
             Settings::IsDockedMode(), *ocarina_fsr_failed,
             image != nullptr && True(image->flags & ImageFlagBits::GpuModified));
     }

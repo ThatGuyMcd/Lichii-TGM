@@ -53,9 +53,9 @@
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/vk_ocarina_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_fsr3_upscaler.h"
-#ifdef EGLANTINE_STREAMLINE
-#include "video_core/renderer_vulkan/vk_streamline_dlss.h"
-#include "video_core/vulkan_common/streamline.h"
+#ifdef EGLANTINE_NVIDIA_DLSS
+#include "video_core/renderer_vulkan/vk_nvidia_dlss.h"
+#include "video_core/vulkan_common/nvidia_dlss.h"
 #endif
 #include "video_core/renderer_vulkan/submission_policy.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -450,6 +450,11 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
       accelerate_dma(buffer_cache, texture_cache, scheduler),
       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
       frame_dump(device, memory_allocator, scheduler) {
+#ifdef EGLANTINE_NVIDIA_DLSS
+    VideoCommon::OotDlss::ResetRuntime(NvidiaDlss::IsAvailable());
+#else
+    VideoCommon::OotDlss::ResetRuntime(false);
+#endif
     scheduler.SetQueryCache(query_cache);
     buffer_cache.SetPendingCpuWrites(
         [this](const std::function<void(DAddr, size_t)>& callback) {
@@ -858,7 +863,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         Profile::Scope scope{Profile::Zone::PipelineLookup};
         return pipeline_cache.CurrentGraphicsPipeline();
     }()};
-    if (VideoCommon::OotDlss::Requested() &&
+    if (VideoCommon::OotDlss::Active() &&
         Settings::GetCurrentProgramID() == VideoCommon::OotDlss::ProgramId) [[unlikely]] {
         CaptureOotCamera();
     }
@@ -922,7 +927,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
                 }
             }
         }
-        if (VideoCommon::OotDlss::Requested() &&
+        if (VideoCommon::OotDlss::Active() &&
             VideoCommon::OotDlss::HdrDlssStage() != VideoCommon::OotDlss::HdrStage::Tonemap &&
             rt0.Address() == targets.color_gpu.load(std::memory_order_relaxed)) {
             for (const u64 hash : pipeline->ShaderHashes()) {
@@ -943,7 +948,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         }
         // The effects layer: one RGBA16F target at half the scene's size (the volumetric fog
         // draws two at once).
-        if (VideoCommon::OotDlss::Requested() && VideoCommon::OotDlss::MaskGain() > 0.0f &&
+        if (VideoCommon::OotDlss::Active() && VideoCommon::OotDlss::MaskGain() > 0.0f &&
             maxwell3d->regs.rt_control.count == 1 &&
             rt0.format == Tegra::RenderTargetFormat::R16G16B16A16_FLOAT &&
             rt0.width * 2 == targets.depth_width.load(std::memory_order_relaxed) &&
@@ -957,7 +962,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         }
         // The volumetric fog: the second of two RGBA16F targets at half the scene's size.
         const auto& rt1 = maxwell3d->regs.rt[1];
-        if (VideoCommon::OotDlss::Requested() && VideoCommon::OotDlss::FogMaskGain() > 0.0f &&
+        if (VideoCommon::OotDlss::Active() && VideoCommon::OotDlss::FogMaskGain() > 0.0f &&
             maxwell3d->regs.rt_control.count == 2 &&
             rt1.format == Tegra::RenderTargetFormat::R16G16B16A16_FLOAT &&
             rt1.width * 2 == targets.depth_width.load(std::memory_order_relaxed) &&
@@ -3553,7 +3558,10 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
         if (oot_jitter_frame == render_trace_frame) {
             jitter = oot_jitter_offset;
         }
-        const VkExtent2D output_extent = upscale_4k ? VkExtent2D{3840, 2160} : target_extent;
+        const bool native_dlss = oot_backend == VideoCommon::OcarinaUpscaleBackend::Dlss &&
+            Settings::GetNvidiaDlssRuntimeSettings().quality == Settings::NvidiaDlssQuality::Native;
+        const VkExtent2D output_extent = native_dlss ? extent :
+            upscale_4k ? VkExtent2D{3840, 2160} : target_extent;
         const bool recorded = oot_live_dlss->Record(color_view, depth.DepthView(), target_view,
                                                    extent, output_extent, target_extent, oot_motion.current,
                                                    oot_motion.previous, mesh, depth.ImageHandle(),
@@ -3561,7 +3569,7 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
         if (!recorded) {
             return fail("temporal upscaler declined the frame");
         }
-        if (upscale_4k) {
+        if (upscale_4k && !native_dlss) {
             oot_live_dlss->SaveSceneReference(scene_reference);
             oot_4k_scene_frame = render_trace_frame;
             oot_4k_guest_present = VK_NULL_HANDLE;
@@ -3668,6 +3676,7 @@ void RasterizerVulkan::TickFrame() {
     frame_dump.TickFrame();
     ++render_trace_frame;
     oot_native_dlss_frame.reset();
+    VideoCommon::OotDlss::BeginRuntimeFrame();
     render_trace_draws = 0;
     render_trace_clears = 0;
     if (Common::DkbFrameTrace::Enabled()) {
@@ -4500,6 +4509,9 @@ bool RasterizerVulkan::OotSnapshotScene(u32 which, bool restore) {
 void RasterizerVulkan::OotDlssBeforeTonemap() {
     using namespace VideoCommon::OotDlss;
     using Tegra::Engines::Fermi2D;
+    if (!Active()) {
+        return;
+    }
     auto& targets = Targets();
     const u64 scene_frame = SceneFrame().load(std::memory_order_relaxed);
     if (targets.hdr_frame.load(std::memory_order_relaxed) == scene_frame) {
@@ -4675,6 +4687,7 @@ void RasterizerVulkan::PushOotObjectMotion(u32 base_vertex, u32 num_vertices, u3
         return;
     }
     using Layout = OotObjectMotion::Layout;
+    enabled = enabled && VideoCommon::OotDlss::Active();
     Layout data{.flags = 0};
     const auto& regs = maxwell3d->regs;
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
@@ -4774,7 +4787,7 @@ void RasterizerVulkan::PushOotObjectMotion(u32 base_vertex, u32 num_vertices, u3
 
 std::array<float, 2> RasterizerVulkan::OotDlssViewportJitter(
     const Tegra::Engines::Maxwell3D::Regs& regs) const {
-    if (!VideoCommon::OotDlss::Requested() ||
+    if (!VideoCommon::OotDlss::Active() ||
         Settings::GetCurrentProgramID() != VideoCommon::OotDlss::ProgramId) {
         return {};
     }
@@ -4805,7 +4818,7 @@ std::array<float, 2> RasterizerVulkan::OotDlssViewportJitter(
 void RasterizerVulkan::UpdateViewportsState(Tegra::Engines::Maxwell3D::Regs& regs) {
     // The jitter depends on the bound depth target and the frame, which the viewport dirty flag
     // does not track: re-send the viewports whenever it changes.
-    const bool oot_dlss = VideoCommon::OotDlss::Requested();
+    const bool oot_dlss = VideoCommon::OotDlss::Active();
     const std::array<float, 2> jitter = oot_dlss ? OotDlssViewportJitter(regs) : oot_jitter_applied;
     const bool jitter_changed = jitter != applied_viewport_jitter;
     if (!state_tracker.TouchViewports() && !jitter_changed) {

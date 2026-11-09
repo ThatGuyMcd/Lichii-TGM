@@ -537,9 +537,9 @@ VkExtent2D GetConversionExtent(const ImageView& src_image_view) {
 }
 
 void TransitionImageLayout(vk::CommandBuffer& cmdbuf, VkImage image, VkImageLayout target_layout,
-                           VkImageLayout source_layout = VK_IMAGE_LAYOUT_GENERAL) {
-    constexpr VkFlags flags{VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT};
+                           VkImageLayout source_layout = VK_IMAGE_LAYOUT_GENERAL,
+                           std::optional<VkImageSubresourceRange> source_range = {}) {
+    constexpr VkFlags flags{VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
     const VkImageMemoryBarrier barrier{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .pNext = nullptr,
@@ -550,15 +550,15 @@ void TransitionImageLayout(vk::CommandBuffer& cmdbuf, VkImage image, VkImageLayo
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = image,
-        .subresourceRange{
+        .subresourceRange = source_range.value_or(VkImageSubresourceRange{
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel = 0,
             .levelCount = 1,
             .baseArrayLayer = 0,
             .layerCount = 1,
-        },
+        }),
     };
-    cmdbuf.PipelineBarrier(vk::PIPELINE_STAGE_GRAPHICS_COMPUTE, vk::PIPELINE_STAGE_GRAPHICS_COMPUTE,
+    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                            0, barrier);
 }
 
@@ -783,7 +783,9 @@ void BlitImageHelper::BlitColor(const Framebuffer* dst_framebuffer, const ImageV
 void BlitImageHelper::BlitColor(const Framebuffer* dst_framebuffer, VkImageView src_image_view,
                                 VkImage src_image, VkSampler src_sampler,
                                 const Region2D& dst_region, const Region2D& src_region,
-                                const Extent3D& src_size) {
+                                const Extent3D& src_size, std::function<bool()> should_draw,
+                                std::optional<VkImageSubresourceRange> source_range,
+                                bool restore_source) {
     const BlitImagePipelineKey key{
         .renderpass = dst_framebuffer->RenderPass(),
         .operation = Tegra::Engines::Fermi2D::Operation::SrcCopy,
@@ -798,8 +800,13 @@ void BlitImageHelper::BlitColor(const Framebuffer* dst_framebuffer, VkImageView 
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([this, render_pass, framebuffer, render_area, src_image_view, src_image,
                       src_sampler, dst_region, src_region, src_size, pipeline,
-                      layout](vk::CommandBuffer cmdbuf) {
-        TransitionImageLayout(cmdbuf, src_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                      layout, should_draw = std::move(should_draw), source_range,
+                      restore_source](vk::CommandBuffer cmdbuf) {
+        if (should_draw && !should_draw()) {
+            return;
+        }
+        TransitionImageLayout(cmdbuf, src_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              VK_IMAGE_LAYOUT_GENERAL, source_range);
         BeginRenderPass(cmdbuf, render_pass, framebuffer, render_area);
         const VkDescriptorSet descriptor_set = one_texture_descriptor_allocator.Commit();
         // The source was just transitioned: describe it in that layout.
@@ -811,6 +818,10 @@ void BlitImageHelper::BlitColor(const Framebuffer* dst_framebuffer, VkImageView 
         BindBlitState(cmdbuf, layout, dst_region, src_region, src_size);
         cmdbuf.Draw(3, 1, 0, 0);
         cmdbuf.EndRenderPass();
+        if (restore_source) {
+            TransitionImageLayout(cmdbuf, src_image, VK_IMAGE_LAYOUT_GENERAL,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, source_range);
+        }
     });
     // The blit replaced the bound pipeline and its static state, the color write mask among it.
     scheduler.InvalidateState();
@@ -859,7 +870,8 @@ void BlitImageHelper::TemporalUpscale(const Framebuffer* dst_framebuffer,
 }
 
 void BlitImageHelper::TemporalSharpen(const Framebuffer* dst_framebuffer, VkImageView source,
-                                      const Region2D& dst_region, f32 sharpness) {
+                                      const Region2D& dst_region, f32 sharpness,
+                                      std::function<bool()> should_draw) {
     const VkPipelineLayout layout = *temporal_sharpen_pipeline_layout;
     const VkPipeline pipeline = FindOrEmplaceTemporalSharpenPipeline(dst_framebuffer->RenderPass());
     const VkSampler sampler = *nearest_sampler;
@@ -870,7 +882,10 @@ void BlitImageHelper::TemporalSharpen(const Framebuffer* dst_framebuffer, VkImag
     FSR::FsrRcasCon(push_constants.rcas.data(), sharpness);
     scheduler.RequestRenderpass(dst_framebuffer);
     scheduler.Record([this, dst_region, pipeline, layout, sampler, source,
-                      push_constants](vk::CommandBuffer cmdbuf) {
+                      push_constants, should_draw = std::move(should_draw)](vk::CommandBuffer cmdbuf) {
+        if (should_draw && !should_draw()) {
+            return;
+        }
         const VkDescriptorSet descriptor_set = one_texture_descriptor_allocator.Commit();
         UpdateOneTextureDescriptorSet(device, descriptor_set, sampler, source);
         cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);

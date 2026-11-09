@@ -210,6 +210,7 @@ ConfigureGraphics::~ConfigureGraphics() = default;
 
 void ConfigureGraphics::SetConfiguration() {}
 
+/// Build graphics controls and connect dependent DLSS quality and neural rendering settings.
 void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     QLayout* api_layout = ui->api_widget->layout();
     QWidget* api_grid_widget = new QWidget(this);
@@ -231,9 +232,10 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 #endif
-#ifndef EGLANTINE_STREAMLINE
-        // Only builds with NVIDIA Streamline (Windows) can use it.
+#ifndef EGLANTINE_NVIDIA_DLSS
+        // Only builds with a platform NVIDIA runtime can use it.
         if (setting->Id() == Settings::values.nvidia_dlss.Id() ||
+            setting->Id() == Settings::values.nvidia_dlss_quality.Id() ||
             setting->Id() == Settings::values.ocarina_dlss_mode.Id() ||
             setting->Id() == Settings::values.dlss_sharpening.Id() ||
             setting->Id() == Settings::values.dlss_preset.Id()) {
@@ -243,6 +245,12 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 #ifndef _WIN32
         // AMD's FSR 4 runtime is Windows-only.
         if (setting->Id() == Settings::values.amd_fsr4.Id()) {
+            continue;
+        }
+#endif
+#ifndef EGLANTINE_NGX
+        if (setting->Id() == Settings::values.neural_rendering.Id() ||
+            setting->Id() == Settings::values.neural_rendering_strength.Id()) {
             continue;
         }
 #endif
@@ -351,7 +359,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 
             hold_graphics.emplace(setting->Id(), widget);
 #endif
-#ifdef EGLANTINE_STREAMLINE
+#ifdef EGLANTINE_NVIDIA_DLSS
         } else if (setting->Id() == Settings::values.nvidia_dlss.Id()) {
             // NVIDIA's files and a download button under the checkbox.
             QWidget* group = new QWidget(this);

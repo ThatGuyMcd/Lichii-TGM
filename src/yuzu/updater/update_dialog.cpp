@@ -149,7 +149,7 @@ bool UpdateDialog::LaunchInstaller(QWidget* window, const QString& staging) {
     const QString helper =
         QCoreApplication::applicationDirPath() + QStringLiteral("/lichii-tgm-updater.exe");
     const QString copy = QDir::temp().filePath(
-        QStringLiteral("lichii-updater-%1.exe").arg(QCoreApplication::applicationPid()));
+        QStringLiteral("lichii-tgm-updater-%1.exe").arg(QCoreApplication::applicationPid()));
     QFile::remove(copy);
     if (!QFile::copy(helper, copy)) {
         LOG_ERROR(Frontend, "Could not copy the installer helper {}", helper.toStdString());

@@ -266,7 +266,7 @@ private:
         const ComputePipelineCacheKey& key, VideoCommon::ComputeEnvironment& env,
         const PrecompiledRecord** matched = nullptr);
 
-    void SerializeVulkanPipelineCache(const std::filesystem::path& filename,
+    bool SerializeVulkanPipelineCache(const std::filesystem::path& filename,
                                       const vk::PipelineCache& pipeline_cache, u32 cache_version);
 
     vk::PipelineCache LoadVulkanPipelineCache(const std::filesystem::path& filename,
@@ -399,6 +399,7 @@ private:
     VideoCore::ShaderNotify& shader_notify;
     bool use_asynchronous_shaders{};
     bool use_vulkan_pipeline_cache{};
+    bool IsGraphicsKeyCompatible(const GraphicsPipelineCacheKey& key) const;
     void StartMeshWarm(u64 title_id, bool before_start, std::stop_token stop_loading,
                        const VideoCore::DiskResourceLoadCallback& callback);
     bool mesh_warm_enabled{};
@@ -460,6 +461,7 @@ private:
 
     std::filesystem::path vulkan_pipeline_cache_filename;
     vk::PipelineCache vulkan_pipeline_cache;
+    std::mutex driver_cache_write_mutex;
     size_t pipelines_since_flush{};
     std::chrono::steady_clock::time_point last_flush{};
     std::atomic<size_t> last_cache_size{};

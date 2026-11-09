@@ -991,8 +991,9 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
 u32 GraphicsEnvironment::ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) {
     u32 value{};
     if (snapshot) {
+        if (cbuf_index >= snapshot->const_buffers.size() ||
+            !snapshot->const_buffers[cbuf_index].enabled) throw DetachedEnvironmentMiss{};
         const auto& cbuf{snapshot->const_buffers[cbuf_index]};
-        ASSERT(cbuf.enabled);
         if (cbuf_offset < cbuf.size) {
             std::memcpy(&value, reinterpret_cast<const u8*>(cbuf.words.data()) + cbuf_offset,
                         sizeof(value));
@@ -1068,9 +1069,11 @@ Tegra::Texture::TICEntry GraphicsEnvironment::ReadTextureDescriptor(u32 handle) 
         const auto pair{Tegra::Texture::TexturePair(handle, snapshot->via_header_index)};
         const u32 index{Tegra::Texture::TextureHeaderIndex(
             pair.first, snapshot->texture_pool_limit, snapshot->native_tiling)};
-        ASSERT(index <= snapshot->texture_pool_limit);
         const auto& pool{*snapshot->texture_pool};
-        return index < pool.size() ? pool[index] : Tegra::Texture::TICEntry{};
+        if (index > snapshot->texture_pool_limit || index >= pool.size()) {
+            throw DetachedEnvironmentMiss{};
+        }
+        return pool[index];
     }
     const auto& regs{maxwell3d->regs};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};

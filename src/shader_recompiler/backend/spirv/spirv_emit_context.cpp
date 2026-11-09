@@ -1383,7 +1383,7 @@ void EmitContext::DefineOotMotion(const Info& info, u32& binding) {
         const Id pointer{TypePointer(spv::StorageClass::StorageBuffer, struct_type)};
         oot_motion.history = AddGlobalVariable(pointer, spv::StorageClass::StorageBuffer);
         Decorate(oot_motion.history, spv::Decoration::Binding, binding);
-        Decorate(oot_motion.history, spv::Decoration::DescriptorSet, 0U);
+        Decorate(oot_motion.history, spv::Decoration::DescriptorSet, descriptor_set);
         Name(oot_motion.history, "oot_motion_history");
         if (profile.supported_spirv >= 0x00010400) {
             interfaces.push_back(oot_motion.history);
@@ -1436,7 +1436,7 @@ void EmitContext::DefineOotMotion(const Info& info, u32& binding) {
         const Id pointer{TypePointer(spv::StorageClass::StorageBuffer, struct_type)};
         oot_motion.buffer = AddGlobalVariable(pointer, spv::StorageClass::StorageBuffer);
         Decorate(oot_motion.buffer, spv::Decoration::Binding, binding);
-        Decorate(oot_motion.buffer, spv::Decoration::DescriptorSet, 0U);
+        Decorate(oot_motion.buffer, spv::Decoration::DescriptorSet, descriptor_set);
         Name(oot_motion.buffer, "oot_motion_pixels");
         if (profile.supported_spirv >= 0x00010400) {
             interfaces.push_back(oot_motion.buffer);

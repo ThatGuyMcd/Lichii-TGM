@@ -684,6 +684,14 @@ GraphicsPipeline::GraphicsPipeline(
                 }
                 // The libraries hold the shaders now (the fallback has used them too).
                 spv_modules.reset();
+            } else if (FastFirstBuildEnabled() && worker_only_build && build_workers &&
+                       !mesh_emulation) {
+                pipeline = MakePipeline(render_pass, true);
+                optimized_build.emplace(build_workers, [this, render_pass] {
+                    SCOPE_EXIT { spv_modules.reset(); };
+                    optimized_pipeline = MakePipeline(render_pass, false);
+                    optimized_ready.store(true, std::memory_order_release);
+                });
             } else {
                 pipeline = MakePipeline(render_pass, false);
             }
@@ -708,8 +716,10 @@ GraphicsPipeline::GraphicsPipeline(
         }
         // Nothing reads the shader modules once the pipeline exists, and the driver keeps a copy
         // of each one's SPIR-V while it lives (title 1: ~1,500 pipelines, 2-5 modules each).
-        spv_modules.reset();
-        if (worker_only_build) {
+        if (!optimized_build) {
+            spv_modules.reset();
+        }
+        if (worker_only_build && PipelinePerformanceDiagnosticsEnabled()) {
             const auto elapsed = std::chrono::steady_clock::now() - begin;
             static std::atomic<u32> logged{};
             if (elapsed > std::chrono::milliseconds{100} ||
@@ -2183,7 +2193,8 @@ vk::Pipeline GraphicsPipeline::MakePipeline(VkRenderPass render_pass, bool fast)
         // Votes, ballots and shuffles span the guest's 32-thread warp. A driver free to pick a
         // narrower subgroup (Intel runs mesh shaders SIMD16) splits the warp and breaks them.
         const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
-                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask;
+                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
+                                   info.uses_quad_shuffles || info.uses_fswzadd;
         const bool force_warp_size = !emulated_vertex && uses_warp_ops && device.IsExtSubgroupSizeControlSupported() &&
                                      device.IsGuestWarpSizeSupported(stage_flag);
         shader_stages.emplace_back(VkPipelineShaderStageCreateInfo{
@@ -2222,6 +2233,10 @@ vk::Pipeline GraphicsPipeline::MakePipeline(VkRenderPass render_pass, bool fast)
     }
     if (uses_descriptor_buffer) {
         flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    }
+
+    if (fast) {
+        flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
     }
 
     const bool unoptimized = (flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) != 0;
@@ -2429,7 +2444,8 @@ GplLibrary GraphicsPipeline::MakeShaderLibrary(GplPart part, const PipelineState
             StageFlag(info, MaxwellToVK::ShaderStage(Shader::StageFromIndex(stage)))};
         // Same warp size rule as the monolithic pipeline (MakePipeline).
         const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
-                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask;
+                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
+                                   info.uses_quad_shuffles || info.uses_fswzadd;
         const bool force_warp_size = uses_warp_ops && device.IsExtSubgroupSizeControlSupported() &&
                                      device.IsGuestWarpSizeSupported(stage_flag);
         shader_stages.push_back({

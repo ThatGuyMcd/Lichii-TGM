@@ -425,3 +425,14 @@ TEST_CASE("Cancelling a running pipeline build leaves it to finish",
     REQUIRE(output == 7);
     REQUIRE_FALSE(build.Failed());
 }
+
+TEST_CASE("Reloading prebuild restores the capture and resident budgets",
+          "[video_core][pipeline_prebuild]") {
+    Vulkan::PipelinePrebuild<int, int> cache{1, 8, false};
+    REQUIRE(cache.Add(1, 8, [] { return std::make_unique<int>(1); }));
+    cache.ResetForLoad();
+    REQUIRE_FALSE(cache.Take(1));
+    REQUIRE(cache.Add(2, 8, [] { return std::make_unique<int>(2); }));
+    REQUIRE_FALSE(cache.Add(3, 1, [] { return std::make_unique<int>(3); }));
+    cache.Stop();
+}

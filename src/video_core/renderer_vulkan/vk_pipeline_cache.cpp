@@ -80,6 +80,7 @@
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/shader_cache.h"
 #include "video_core/shader_environment.h"
+#include "video_core/spirv_inline_control.h"
 #include "video_core/shader_notify.h"
 #include "video_core/shader_warm/prepared_store.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
@@ -599,6 +600,38 @@ bool PrecompiledAudit() {
 std::atomic<u32> audit_same{};
 std::atomic<u32> audit_differ{};
 
+bool ShaderNoInline(bool compute) {
+    static const auto forced = [] {
+        std::array<int, 2> values{};
+        const std::array names{"EDEN_NX2_GRAPHICS_NOINLINE", "EDEN_NX2_COMPUTE_NOINLINE"};
+        for (size_t i = 0; i < values.size(); ++i) {
+            const char* value = std::getenv(names[i]);
+            values[i] = value == nullptr || *value == '\0' ? -1 : (*value == '0' ? 0 : 1);
+        }
+        return values;
+    }();
+    return forced[compute] >= 0 ? forced[compute] == 1
+                                : Settings::values.shader_calls_not_inlined.GetValue();
+}
+
+/// Prepared stores keep the emitted words; every module applies the same driver controls.
+std::vector<u32> DriverModuleCode(std::span<const u32> code, u64 hash, bool compute) {
+    if (compute) {
+        static const char* const directory = std::getenv("EDEN_NX2_COMPUTE_SPIRV_DUMP");
+        if (directory && *directory) {
+            std::ofstream file{std::filesystem::path{directory} / fmt::format("{:016x}.spv", hash),
+                               std::ios::binary};
+            file.write(reinterpret_cast<const char*>(code.data()),
+                       static_cast<std::streamsize>(code.size_bytes()));
+        }
+    }
+    std::vector<u32> words(code.begin(), code.end());
+    if (ShaderNoInline(compute)) {
+        VideoCommon::MarkSharedFunctionsDontInline(words);
+    }
+    return words;
+}
+
 /// The words of a kept SPIR-V blob, on the GPU thread.
 std::vector<u32> ReadKeptSpirv(std::ifstream& file, std::pair<u64, u32> blob) {
     const auto compressed =
@@ -617,9 +650,9 @@ std::vector<u32> ReadKeptSpirv(std::ifstream& file, std::pair<u64, u32> blob) {
 }
 
 vk::ShaderModule BuildKeptSpirv(const Device& device, const std::filesystem::path& path,
-                                std::pair<u64, u32> blob, u64 pipeline_hash) {
+                                std::pair<u64, u32> blob, u64 pipeline_hash, bool compute = false) {
     std::ifstream file(path, std::ios::binary);
-    return BuildShader(device, ReadKeptSpirv(file, blob));
+    return BuildShader(device, DriverModuleCode(ReadKeptSpirv(file, blob), pipeline_hash, compute));
 }
 constexpr u32 NoInfo = ~0U;
 
@@ -641,11 +674,13 @@ vk::ShaderModule EmitShaderModule(const Device& device, const Shader::Profile& p
     if (code_out) {
         *code_out = code;
     }
+    const auto module_code = DriverModuleCode(code, shader_hash, false);
     if (spirv_hash) {
-        *spirv_hash = Common::CityHash128(reinterpret_cast<const char*>(code.data()), code.size() * sizeof(u32));
+        *spirv_hash = Common::CityHash128(reinterpret_cast<const char*>(module_code.data()),
+                                        module_code.size() * sizeof(u32));
     }
     device.SaveShader(code);
-    vk::ShaderModule module{BuildShader(device, code)};
+    vk::ShaderModule module{BuildShader(device, module_code)};
 
     // Text log + .spv dump. Text log is gated by gpu_log_level != Off; .spv dump
     // is independent and gated only by gpu_log_shader_dumps.
@@ -1386,10 +1421,17 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         return;
     }
     if (!pipeline_cache_filename.empty()) {
-        background_pipelines.Stop();
+        mesh_warm_thread = {};
+        stop_translations.store(true, std::memory_order_relaxed);
+        translation_workers.WaitForRequests();
+        deferred_workers.WaitForRequests();
+        AdoptTranslatedGraphicsPipelines();
+        stop_translations.store(false, std::memory_order_relaxed);
+        background_pipelines.ResetForLoad();
         workers.WaitForRequests();
         HeavyBuildSlots::Instance().WaitForBuilds();
         serialization_thread.WaitForRequests();
+        disk_pipelines.clear();
         if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {
             SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
                                          CACHE_VERSION);
@@ -1835,6 +1877,35 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 }
 
 
+bool PipelineCache::IsGraphicsKeyCompatible(const GraphicsPipelineCacheKey& key) const {
+    if ((key.state.extended_dynamic_state != 0) != dynamic_features.has_extended_dynamic_state ||
+        (key.state.extended_dynamic_state_2 != 0) !=
+            dynamic_features.has_extended_dynamic_state_2 ||
+        (key.state.extended_dynamic_state_2_logic_op != 0) !=
+            dynamic_features.has_extended_dynamic_state_2_logic_op ||
+        (key.state.extended_dynamic_state_3_blend != 0) !=
+            dynamic_features.has_extended_dynamic_state_3_blend ||
+        (key.state.extended_dynamic_state_3_enables != 0) !=
+            dynamic_features.has_extended_dynamic_state_3_enables ||
+        (key.state.color_write_enable_dynamic != 0) != dynamic_features.has_color_write_enable ||
+        (key.state.dynamic_vertex_input != 0) != dynamic_features.has_dynamic_vertex_input) {
+        return false;
+    }
+
+    const bool key_requests_provoking_last = key.state.provoking_vertex_last != 0;
+    if (key_requests_provoking_last && !dynamic_features.has_provoking_vertex_last_mode) {
+        return false;
+    }
+
+    const bool key_uses_transform_feedback = key.state.xfb_enabled != 0;
+    if (key_uses_transform_feedback && key_requests_provoking_last &&
+        !dynamic_features.has_provoking_vertex_tf_preserve) {
+        return false;
+    }
+
+    return true;
+}
+
 void PipelineCache::StartMeshWarm(u64 title_id, bool before_start, std::stop_token stop_loading,
                                   const VideoCore::DiskResourceLoadCallback& callback) {
     namespace Warm = VideoCommon::ShaderWarm;
@@ -1915,8 +1986,10 @@ void PipelineCache::StartMeshWarm(u64 title_id, bool before_start, std::stop_tok
                 pools.ReleaseContents();
                 try {
                     DescriptorPool descriptors{device, scheduler};
-                    auto pipeline = CreateGraphicsPipeline(pools, key, std::span{pointers.data(), count},
-                        nullptr, false, nullptr, nullptr, nullptr, false, true, true, &descriptors);
+                    auto pipeline = IsGraphicsKeyCompatible(key)
+                        ? CreateGraphicsPipeline(pools, key, std::span{pointers.data(), count},
+                            nullptr, false, nullptr, nullptr, nullptr, false, true, true, &descriptors)
+                        : nullptr;
                     if (!pipeline) ++rejected;
                     else if (pipeline->Failed()) ++failed;
                     else ++built;
@@ -1936,11 +2009,10 @@ void PipelineCache::StartMeshWarm(u64 title_id, bool before_start, std::stop_tok
         // Failed or interrupted work stays pending. A driver cache is only persisted after all
         // candidates complete; speculative pipeline objects never enter the draw/reuse caches.
         if (complete && signature == NativePreparationStamp(path)) {
-            if (use_vulkan_pipeline_cache) {
-                SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
-                                             CACHE_VERSION);
-            }
-            if (DriverCachesPipelines(device)) {
+            const bool cache_ready = DriverCachesPipelines(device) ||
+                (use_vulkan_pipeline_cache && SerializeVulkanPipelineCache(
+                    vulkan_pipeline_cache_filename, vulkan_pipeline_cache, CACHE_VERSION));
+            if (cache_ready && !cancelled()) {
                 std::ofstream done(marker, std::ios::trunc);
                 done << signature << '\n';
             }
@@ -1960,7 +2032,12 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
     const std::string path = Common::FS::PathToUTF8String(warm_file);
     const auto stamp = [&](u64 entries) {
         return ShaderWarm::CurrentWarmStamp(warm_file, entries, device.GetDriverVersion(),
-                                            device.GetDeviceID(), CACHE_VERSION);
+                                            device.GetDeviceID(), CACHE_VERSION,
+                                            (ShaderNoInline(true) ? 1U : 0U) |
+                                                (ShaderNoInline(false) ? 2U : 0U) |
+                                                (device.IsExtGraphicsPipelineLibrarySupported() ? 4U : 0U) |
+                                                (device.CanFastLinkGraphicsLibraries() ? 8U : 0U) |
+                                                (GplOptimizeEnabled() ? 16U : 0U));
     };
     // Compute programs of the precache file, unless a matching marker says they were built.
     size_t file_entries = 0;
@@ -2157,6 +2234,10 @@ std::string PipelineCache::NativePreparationStamp(const std::filesystem::path& p
     const auto setting = [&](auto value) { stamp += fmt::format(" {}", value); };
     setting(device.IsExtGraphicsPipelineLibrarySupported());
     setting(mesh_warm_enabled);
+    setting(ShaderNoInline(false));
+    setting(ShaderNoInline(true));
+    setting(device.CanFastLinkGraphicsLibraries());
+    setting(GplOptimizeEnabled());
     setting(profile.supported_spirv);
     setting(profile.unified_descriptor_binding);
     setting(profile.support_descriptor_aliasing);
@@ -2938,7 +3019,7 @@ ComputePipelineCacheEntry PipelineCache::CreatePrecompiledComputePipeline(
         }
         auto emit_module = [this, path = precompiled_infos_path,
                             blob = precompiled_info_blobs[record.spirv[0]], hash] {
-            auto module = BuildKeptSpirv(device, path, blob, hash);
+            auto module = BuildKeptSpirv(device, path, blob, hash, true);
             precompiled_from_spirv.fetch_add(1, std::memory_order_relaxed);
             return module;
         };
@@ -4059,6 +4140,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     translation_key.motion_context = VideoCommon::OotDlss::ObjectMotionRequested() ? 1U : 0U;
     translation_key.depth_context = (key.state.depth_enabled != 0 ? 0x10000U : 0U) |
                                     static_cast<u32>(key.state.depth_format.Value());
+    translation_key.inline_context = ShaderNoInline(false);
     translation_key.library_context = device.IsExtGraphicsPipelineLibrarySupported() &&
         !key.state.xfb_enabled && (key.state.extended_dynamic_state_2 ||
                                   key.state.dynamic_state.rasterize_enable) ? 1U : 0U;
@@ -4146,7 +4228,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                     (*stage_modules)[stage] =
                         EmitShaderModule(device, profile, *job->runtime_infos[stage],
                                          job->programs[stage + 1], stage_binding,
-                                         hashes[stage + 1], stage, job->reference_spirv[stage],
+                                         hashes[stage + 1], stage,
+                                         use_libraries ? std::span<const u32>{}
+                                                       : std::span<const u32>{job->reference_spirv[stage]},
                                          VideoCommon::Nx2Perf::Verify() ? &reusable->spirv[stage] : nullptr,
                                          use_libraries ? &reusable->spirv_hashes[stage] : nullptr);
                 }
@@ -4681,7 +4765,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         *spirv_out = code;
     }
     device.SaveShader(code);
-    vk::ShaderModule spv_module{BuildShader(device, code)};
+    vk::ShaderModule spv_module{BuildShader(device, DriverModuleCode(code, key.unique_hash, true))};
 
     // Text log + .spv dump. Same split as the graphics path.
     const bool should_log = GPU::Logging::IsActive();
@@ -4729,9 +4813,10 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
     return {.failure = exception.what()};
 }
 
-void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& filename,
+bool PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& filename,
                                                  const vk::PipelineCache& pipeline_cache,
                                                  u32 cache_version) {
+    std::scoped_lock lock{driver_cache_write_mutex};
     // Written beside the cache and renamed over it: the emulator stopped mid-write left the cache
     // empty, and every later boot failed to read it.
     auto temporary = filename;
@@ -4740,7 +4825,7 @@ void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& fi
     if (!file.is_open()) {
         LOG_ERROR(Common_Filesystem, "Failed to open Vulkan driver pipeline cache file {}",
                   Common::FS::PathToUTF8String(temporary));
-        return;
+        return false;
     }
     try {
         file.exceptions(std::ifstream::failbit);
@@ -4763,7 +4848,7 @@ void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& fi
         file.close();
         std::error_code remove_error;
         std::filesystem::remove(temporary, remove_error);
-        return;
+        return false;
     }
     std::error_code error;
     std::filesystem::rename(temporary, filename, error);
@@ -4771,11 +4856,12 @@ void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& fi
         LOG_ERROR(Common_Filesystem, "Failed to replace Vulkan driver pipeline cache file {}: {}",
                   Common::FS::PathToUTF8String(filename), error.message());
         std::filesystem::remove(temporary, error);
-        return;
+        return false;
     }
 
     LOG_INFO(Render_Vulkan, "Vulkan driver pipelines cached at: {}",
              Common::FS::PathToUTF8String(filename));
+    return true;
 }
 
 vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::path& filename,

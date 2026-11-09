@@ -5,6 +5,7 @@
 #include <exception>
 
 #include "common/logging.h"
+#include "video_core/renderer_vulkan/pipeline_build.h"
 #include "video_core/renderer_vulkan/vk_pipeline_library.h"
 
 namespace Vulkan {
@@ -89,7 +90,7 @@ std::shared_ptr<const GplLibrary> GraphicsPipelineLibraryCache::GetOrCreate(
         total_libraries.fetch_add(1, std::memory_order_relaxed);
         build_ns[index].fetch_add(ns, std::memory_order_relaxed);
         StoreMax(build_max_ns[index], ns);
-        if (ns > 2'000'000 && logged_builds.fetch_add(1, std::memory_order_relaxed) < 400) {
+        if (PipelinePerformanceDiagnosticsEnabled() && ns > 2'000'000 && logged_builds.fetch_add(1, std::memory_order_relaxed) < 400) {
             LOG_INFO(Render_Vulkan, "Nx2Perf gpl: {} library {:016x} built in {:.1f} ms",
                      PART_NAMES[index], name, Ms(ns));
         }
@@ -131,6 +132,9 @@ void GraphicsPipelineLibraryCache::RecordFallback() {
 }
 
 void GraphicsPipelineLibraryCache::Report() {
+    if (!PipelinePerformanceDiagnosticsEnabled()) {
+        return;
+    }
     const auto now = std::chrono::steady_clock::now();
     if (now - window < std::chrono::seconds{10}) {
         return;

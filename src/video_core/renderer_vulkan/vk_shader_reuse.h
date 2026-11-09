@@ -65,7 +65,7 @@ struct ShaderTranslationKey {
 
     /// Settings read by the translation passes and the SPIR-V backend.
     u32 library_context;
-    u32 reserved{};
+    u32 inline_context;
     u32 motion_context;
     u32 depth_context;
     u32 resolution_up_scale;

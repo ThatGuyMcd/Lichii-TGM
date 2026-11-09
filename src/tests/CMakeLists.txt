@@ -90,6 +90,7 @@ add_executable(tests
     video_core/page_filter.cpp
     video_core/mesh_warm_builder.cpp
     video_core/pipeline_optimization.cpp
+    video_core/spirv_inline_control.cpp
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_storage_alignment.cpp
     video_core/spirv_fragment_shuffle.cpp

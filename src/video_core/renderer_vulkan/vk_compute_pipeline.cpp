@@ -35,6 +35,7 @@
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "common/scope_exit.h"
 #include "shader_recompiler/exception.h"
 
 namespace Vulkan {
@@ -203,6 +204,63 @@ void ComputePipeline::TickUpscalerTrace() {
     }
 }
 
+vk::Pipeline ComputePipeline::MakeComputePipeline(bool fast) {
+    const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
+        .pNext = nullptr,
+        .requiredSubgroupSize = GuestWarpSize,
+    };
+    // Only warp-level ops observe the subgroup size. Forcing 32 on other shaders makes Intel
+    // compile SIMD32, which can spill a register-heavy kernel for minutes (Mario Kart World).
+    const bool uses_warp_ops = info.removed_conditional_barrier ||
+                               info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
+                               info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
+                               info.uses_quad_shuffles || info.uses_fswzadd ||
+                               info.uses_cooperative_matrix;
+    VkPipelineCreateFlags flags{};
+    if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
+        flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+    }
+    if (uses_descriptor_buffer) {
+        flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    }
+    if (fast || BuildsUnoptimized(device.GetDriverID(), shader_hash)) {
+        flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    }
+    const VkComputePipelineCreateInfo compute_ci{
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = flags,
+        .stage{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext = device.IsExtSubgroupSizeControlSupported() && uses_warp_ops &&
+                             device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT)
+                         ? &subgroup_size_ci
+                         : nullptr,
+            .flags = info.uses_cooperative_matrix
+                         ? VkPipelineShaderStageCreateFlags{
+                               VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT}
+                         : VkPipelineShaderStageCreateFlags{},
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = *spv_module,
+            .pName = "main",
+            .pSpecializationInfo = nullptr,
+        },
+        .layout = *pipeline_layout,
+        .basePipelineHandle = 0,
+        .basePipelineIndex = 0,
+    };
+    const std::array<u64, 1> traced{shader_hash};
+    const bool unoptimized = (flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) != 0;
+    const auto begin = std::chrono::steady_clock::now();
+    TracePipelineBuild("BEGIN", "compute", shader_hash, traced, unoptimized);
+    auto result = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
+    TracePipelineBuild("END", "compute", shader_hash, traced, unoptimized,
+                       std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - begin).count());
+    return result;
+}
+
 ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk::PipelineCache& pipeline_cache_,
                                  DescriptorPool& descriptor_pool,
                                  GuestDescriptorQueue& guest_descriptor_queue_,
@@ -216,7 +274,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
       shader_hash{shader_hash_}, skip_until_built{skip_until_built_}, spv_module(std::move(spv_module_)),
-      emit_module{std::move(emit_module_)} {
+      emit_module{std::move(emit_module_)}, build_workers{thread_worker} {
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -271,66 +329,20 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             }
             emit_module = nullptr;
         }
-        const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT subgroup_size_ci{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT,
-            .pNext = nullptr,
-            .requiredSubgroupSize = GuestWarpSize,
-        };
-        // Only warp-level ops observe the subgroup size. Forcing 32 on other shaders makes Intel
-        // compile SIMD32, which can spill a register-heavy kernel for minutes (Mario Kart World).
-        const bool uses_warp_ops = info.removed_conditional_barrier ||
-                                   info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
-                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
-                                   info.uses_quad_shuffles || info.uses_fswzadd ||
-                                   info.uses_cooperative_matrix;
-        VkPipelineCreateFlags flags{};
-        if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
-            flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
-        }
-        if (uses_descriptor_buffer) {
-            flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        }
-        if (BuildsUnoptimized(device.GetDriverID(), shader_hash)) {
-            flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
-        }
-        const VkComputePipelineCreateInfo compute_ci{
-            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = flags,
-            .stage{
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = device.IsExtSubgroupSizeControlSupported() && uses_warp_ops &&
-                                 device.IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT)
-                             ? &subgroup_size_ci
-                             : nullptr,
-                .flags = info.uses_cooperative_matrix
-                             ? VkPipelineShaderStageCreateFlags{
-                                   VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT}
-                             : VkPipelineShaderStageCreateFlags{},
-                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                .module = *spv_module,
-                .pName = "main",
-                .pSpecializationInfo = nullptr,
-            },
-            .layout = *pipeline_layout,
-            .basePipelineHandle = 0,
-            .basePipelineIndex = 0,
-        };
         const auto build_start = std::chrono::steady_clock::now();
         const auto build_seconds = [&] {
             return std::chrono::duration<double>(std::chrono::steady_clock::now() - build_start)
                 .count();
         };
         try {
-            const std::array<u64, 1> traced{shader_hash};
-            const bool unoptimized = (flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) != 0;
-            const auto trace_begin = std::chrono::steady_clock::now();
-            TracePipelineBuild("BEGIN", "compute", shader_hash, traced, unoptimized);
-            pipeline = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
-            TracePipelineBuild("END", "compute", shader_hash, traced, unoptimized,
-                               std::chrono::duration<double, std::milli>(
-                                   std::chrono::steady_clock::now() - trace_begin)
-                                   .count());
+            pipeline = MakeComputePipeline(FastFirstBuildEnabled() && build_workers);
+            if (FastFirstBuildEnabled() && build_workers) {
+                optimized_build.emplace(build_workers, [this] {
+                    SCOPE_EXIT { spv_module.reset(); };
+                    optimized_pipeline = MakeComputePipeline(false);
+                    optimized_ready.store(true, std::memory_order_release);
+                });
+            }
         } catch (const vk::Exception& exception) {
             build_failed = true;
             LOG_CRITICAL(Render_Vulkan, "Driver rejected compute shader {:016X} after {:.1f} s: {}",
@@ -352,7 +364,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             );
         }
 
-        if (skip_until_built) {
+        if (skip_until_built && PipelinePerformanceDiagnosticsEnabled()) {
             LOG_INFO(Render_Vulkan, "Deferred compute shader {:016X} built in {:.1f} s",
                      shader_hash, build_seconds());
         }
@@ -361,7 +373,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         }
         // Nothing reads the module once the pipeline exists; the driver keeps its SPIR-V while it
         // lives.
-        spv_module.reset();
+        if (!optimized_build) {
+            spv_module.reset();
+        }
         std::scoped_lock lock{build_mutex};
         is_built = true;
         build_condvar.notify_one();
@@ -697,6 +711,13 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         return false;
     }
 
+    if (IsBuilt() && optimized_ready.load(std::memory_order_acquire) && !optimized_bound) {
+        optimized_bound = true;
+        scheduler.Record([this](vk::CommandBuffer) {
+            retired_pipeline = std::move(pipeline);
+            pipeline = std::move(optimized_pipeline);
+        });
+    }
     if (!is_built.load(std::memory_order::relaxed)) {
         // Wait for the pipeline to be built
         scheduler.Record([this](vk::CommandBuffer) {
@@ -710,7 +731,7 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
             }
             // Every GPU channel waits with the dispatch, so long waits are freezes.
             const auto waited = std::chrono::steady_clock::now() - begin;
-            if (waited > std::chrono::milliseconds{50}) {
+            if (PipelinePerformanceDiagnosticsEnabled() && waited > std::chrono::milliseconds{50}) {
                 LOG_INFO(Render_Vulkan, "Compute dispatch waited {:.1f} ms for pipeline {:016x}",
                          std::chrono::duration<double, std::milli>(waited).count(), shader_hash);
             }

@@ -25,6 +25,7 @@
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/file_sys/nup_container.h"
@@ -373,7 +374,7 @@ u64 ReadWarmCount(const fs::path& warm_file) {
 }
 
 std::optional<WarmStamp> CurrentWarmStamp(const fs::path& warm_file, u64 entries, u32 driver,
-                                          u32 device_id, u32 cache_version) {
+                                          u32 device_id, u32 cache_version, u32 pipeline_configuration) {
     std::error_code ec;
     const auto size = fs::file_size(warm_file, ec);
     if (ec) {
@@ -385,14 +386,14 @@ std::optional<WarmStamp> CurrentWarmStamp(const fs::path& warm_file, u64 entries
     }
     return WarmStamp{size,      static_cast<s64>(time.time_since_epoch().count()),
                      entries,   driver,
-                     device_id, cache_version};
+                     device_id, cache_version, pipeline_configuration};
 }
 
 std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
     std::ifstream in(WarmMarkerPath(warm_file));
     WarmStamp stamp;
     if (!(in >> stamp.size >> stamp.write_time >> stamp.entries >> stamp.driver >>
-          stamp.device_id >> stamp.cache_version)) {
+          stamp.device_id >> stamp.cache_version >> stamp.pipeline_configuration)) {
         return std::nullopt;
     }
     return stamp;
@@ -401,7 +402,8 @@ std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
 bool WriteWarmMarker(const fs::path& warm_file, const WarmStamp& stamp) {
     std::ofstream out(WarmMarkerPath(warm_file), std::ios::trunc);
     out << stamp.size << ' ' << stamp.write_time << ' ' << stamp.entries << ' ' << stamp.driver
-        << ' ' << stamp.device_id << ' ' << stamp.cache_version << '\n';
+        << ' ' << stamp.device_id << ' ' << stamp.cache_version << ' '
+        << stamp.pipeline_configuration << '\n';
     out.close();
     return static_cast<bool>(out);
 }
@@ -410,6 +412,11 @@ bool WarmPending(u64 title_id) {
     const auto file = ComputeWarmPath(title_id);
     std::error_code ec;
     if (!fs::exists(file, ec) || !fs::exists(WarmMarkerPath(file), ec)) {
+        return true;
+    }
+    const auto mesh = MeshWarmPath(title_id);
+    if (Settings::values.use_mesh_shader_warmup.GetValue() && fs::exists(mesh, ec) &&
+        !fs::exists(WarmMarkerPath(mesh), ec)) {
         return true;
     }
     return !fs::exists(NativePreparationPath(title_id), ec) && !FindNativeRecipe(title_id).empty();

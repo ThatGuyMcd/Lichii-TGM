@@ -861,6 +861,8 @@ struct Values {
 #endif
                                                        "vertex_input_dynamic_state", Category::RendererExtensions};
 
+    SwitchableSetting<bool> shader_calls_not_inlined{
+        linkage, true, "shader_calls_not_inlined", Category::RendererAdvanced};
     SwitchableSetting<bool> use_mesh_shader_warmup{
         linkage, false, "use_mesh_shader_warmup", Category::RendererAdvanced};
     SwitchableSetting<MeshShaderMode> mesh_shaders{linkage, MeshShaderMode::Automatic,

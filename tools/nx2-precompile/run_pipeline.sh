@@ -5,6 +5,9 @@
 #
 # usage: run_pipeline.sh CACHE.bin [CACHE.bin...]
 #
+# A CACHE is a title's shader cache, cache/shader/<title id>/lichii-cache.v2.bin, or a pipeline
+# cache file of the format before it (vulkan.fork-v<N>.bin); a v2 log is converted first.
+#
 # Environment:
 #   NX2_GAME     the game: a .nup file (base and update), or an unpacked RomFS folder
 #   NX2_OUT      output folder (default ./nx2-precompile-out)
@@ -26,10 +29,25 @@ PYTHON=${PYTHON:-python}
 PY=$(cd "$(dirname "$0")" && pwd)/py
 PROGRAMS=$OUT/game.programs
 PRIORS=$OUT/priors.json
+mkdir -p "$OUT"
+
+# Shader cache v2 logs (magic LXSHCACH) become pipeline cache files of the older format.
+CACHES=()
+n=0
+for cache in "$@"; do
+    n=$((n + 1))
+    if [ "$(head -c 8 "$cache")" = "LXSHCACH" ]; then
+        converted="$OUT/cache$n.fork-v$VERSION.bin"
+        "$TOOL" cache-export --cache "$cache" --out "$converted"
+        CACHES+=("$converted")
+    else
+        CACHES+=("$cache")
+    fi
+done
+set -- "${CACHES[@]}"
 TRAIN=()
 USED=()
 for cache in "$@"; do TRAIN+=(--train "$cache"); USED+=(--used "$cache"); done
-mkdir -p "$OUT"
 
 echo "== 1. the game's shader programs, found in its files by content"
 "$TOOL" extract --game "$NX2_GAME" --out "$OUT/game"
@@ -70,4 +88,4 @@ echo "== 9. SPIR-V for every environment, one at a time (a compiler abort is lis
 echo "== 10. recipe: the precompiled file without the game's code, to share; and its audit"
 "$TOOL" recipe --file "$PREP" --game "$NX2_GAME" --out "$RECIPE"
 "$TOOL" audit --recipe "$RECIPE" --game "$NX2_GAME"
-echo "done: copy $PREP next to the title's vulkan.fork-v$VERSION.bin, or share $RECIPE"
+echo "done: copy $PREP next to the title's lichii-cache.v2.bin, or share $RECIPE"

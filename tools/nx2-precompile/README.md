@@ -24,8 +24,9 @@ not stall while the driver compiles them.
    are left out), with their mesh state
    (`SET_MESH_SHADER_A/B`, `SET_MESH_INIT_SHADER` and the pass-through geometry header) derived from
    the mesh program's control section by `nx2-precompile mesh-envs`.
-3. At boot, after the disk cache is loaded, `PipelineCache::PreparePrecompiled` builds every pipeline
-   of that file once and drops it. The driver keeps the compiled code in its own cache. A draw still
+3. At boot, after the shader cache's boot builds, `PipelineCache::PreparePrecompiled` builds every
+   pipeline of that file once and drops it, as jobs of the shader job scheduler. The driver keeps
+   the compiled code in its own cache. A draw still
    translates the guest program with its real facts and builds its own pipeline; when that pipeline is
    one the file predicted, the driver finds it compiled.
 
@@ -70,6 +71,7 @@ log shows it as prepared pipelines that still take hundreds of milliseconds to b
 nx2-precompile extract  --game GAME.nup|ROMFS_DIR --out PREFIX [--packages merged|union] [--threads N]
 nx2-precompile scan     --pkg PREFIX.programs --out PREFIX [--priors FILE] [--threads N]
 nx2-precompile validate --pkg PREFIX.programs --cache CACHE.bin --out PREFIX [--priors FILE]
+nx2-precompile cache-export --cache lichii-cache.v2.bin --out CACHE.bin
 nx2-precompile mesh-envs --pkg PREFIX.programs --cache DRAWS.tsv --out PREFIX [--priors FILE]
 nx2-precompile check    --file precompiled.fork-v<N>.nx2prep
 nx2-precompile recipe   --file precompiled.fork-v<N>.nx2prep --game GAME --out GAME.nx2recipe
@@ -105,8 +107,8 @@ One person does this per game version and cache version; everyone else only need
    Check `nx2-precompile cache-version` against the Lichii build players will use; they must match.
    Install Python 3.11 or newer (no packages needed).
 2. Play the game in Lichii for a while, with the NVIDIA cache size set as above. Every pipeline the
-   game builds is recorded in the title's disk cache, `cache/shader/<title id>/vulkan.fork-v<N>.bin`
-   in Lichii's user folder. These recorded pipelines are what the tools learn render states and
+   game builds is recorded in the title's shader cache, `cache/shader/<title id>/lichii-cache.v2.bin`
+   in Lichii's user folder (`vulkan.fork-v<N>.bin` before the shader cache v2). These recorded pipelines are what the tools learn render states and
    storage-pointer facts from, so the more varied the play (areas, menus, cutscenes, effects), the
    better the predictions for the rest of the game. One long session works; caches from several
    sessions or players, in different folders, work better. Copy each cache out before the next
@@ -116,8 +118,12 @@ One person does this per game version and cache version; everyone else only need
 
    ```
    NX2_GAME="D:/Games/Game [title][v131072].nup" NX2_OUT=out NX2_TOOL=path/to/nx2-precompile.exe \
-       bash tools/nx2-precompile/run_pipeline.sh session1/vulkan.fork-v54.bin session2/vulkan.fork-v54.bin
+       bash tools/nx2-precompile/run_pipeline.sh session1/lichii-cache.v2.bin session2/lichii-cache.v2.bin
    ```
+
+   A shader cache v2 log is converted first (`nx2-precompile cache-export`): its graphics and
+   compute records are the older cache format's records byte for byte, which the other commands
+   and the Python scripts read. Caches of the older format are read as they are.
 
    For an unpacked game, `NX2_GAME` is its `romfs` folder; the recipe takes the game's title ID
    from the `exefs/main.npdm` beside it, so the game list's recipe menu accepts it.
@@ -168,7 +174,7 @@ serialized environment.
 `PREFIX.mesh` (mesh-envs): `NXPMESH1`, then per draw u32 line, u64 mesh state hash, u64 task and
 mesh shader hashes, and the sized task (possibly empty) and mesh environments.
 
-`precompiled.fork-v<N>.nx2prep`, in the game's shader directory next to `vulkan.fork-v<N>.bin`:
+`precompiled.fork-v<N>.nx2prep`, in the game's shader directory next to `lichii-cache.v2.bin`:
 `NX2PREP1`, u32 cache version, u32 environment count, u32 record count, u32 reserved; per environment
 u64 offset and u64 size; per record u8 kind (0 graphics, 1 compute), u8 environment count, u16
 reserved, u32 environment indices in stage order, then the 1056-byte graphics or 24-byte compute key.

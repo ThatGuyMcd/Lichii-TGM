@@ -55,6 +55,7 @@
 #include "core/file_sys/vfs/vfs_real.h"
 #include "video_core/nx2_recipe.h"
 #include "video_core/pipeline_cache_files.h"
+#include "video_core/shader_cache_v2/cache_file.h"
 
 namespace {
 using Json = nlohmann::json;
@@ -1602,6 +1603,38 @@ int Audit(const std::filesystem::path& recipe_path, const std::filesystem::path&
     return matches.empty() ? 0 : 1;
 }
 
+/// A shader cache v2 log (lichii-cache.v2.bin) written as a pipeline cache file of the format
+/// before it (vulkan.fork-v<N>.bin): its live graphics and compute records, whose payloads are the
+/// older format's records byte for byte. The other commands and the Python scripts read that format.
+int CacheExport(const std::filesystem::path& cache, const std::filesystem::path& out) {
+    namespace CacheV2 = VideoCommon::ShaderCacheV2;
+    const CacheV2::LogFile log = CacheV2::ReadLogFile(cache);
+    if (log.bytes.empty()) {
+        throw std::runtime_error("no shader cache v2 log at " + cache.string());
+    }
+    std::ofstream file(out, std::ios::binary | std::ios::trunc);
+    file.exceptions(std::ofstream::failbit | std::ofstream::badbit);
+    constexpr std::array<char, 8> magic{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
+    const u32 version = VideoCommon::VulkanPipelineCacheVersion;
+    file.write(magic.data(), magic.size());
+    file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+    size_t graphics = 0, compute = 0;
+    for (const CacheV2::LogRecord& record : log.parsed.live) {
+        if (record.kind == CacheV2::RecordKind::Graphics) {
+            ++graphics;
+        } else if (record.kind == CacheV2::RecordKind::Compute) {
+            ++compute;
+        } else {
+            continue;
+        }
+        file.write(reinterpret_cast<const char*>(record.payload.data()),
+                   static_cast<std::streamsize>(record.payload.size()));
+    }
+    fmt::print("{} graphics and {} compute pipelines written to {}\n", graphics, compute,
+               out.string());
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1634,6 +1667,11 @@ int main(int argc, char** argv) {
             else if (arg == "--recipe") recipe = value;
             else if (arg == "--packages") packages = value;
             else throw std::runtime_error("Unknown option " + arg);
+        }
+        if (command == "cache-export") {
+            if (cache.empty() || out.empty())
+                throw std::runtime_error("cache-export needs --cache lichii-cache.v2.bin --out FILE");
+            return CacheExport(cache, out);
         }
         if (command == "recipe") {
             if (check_file.empty() || game.empty() || out.empty())

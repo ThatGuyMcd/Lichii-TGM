@@ -427,6 +427,7 @@ struct Values {
     // NVIDIA DLSS's model; Auto lets the caller choose (preset K for Ocarina of Time).
     SwitchableSetting<DlssPreset> dlss_preset{linkage, DlssPreset::Auto, "dlss_preset",
                                               Category::Renderer};
+    SwitchableSetting<bool> ocarina_fsr{linkage, false, "ocarina_fsr", Category::Renderer};
     SwitchableSetting<AspectRatio, true> aspect_ratio{linkage,
                                                       AspectRatio::R16_9,
                                                       "aspect_ratio",

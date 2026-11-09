@@ -341,7 +341,7 @@ bool A64EmitX64::EmitIndirectBranchCache() {
     Xbyak::Label miss;
     code.cmp(rax, qword[code.rip + &entry->pc]);
     code.jne(miss);
-    code.jmp(qword[code.rip + &entry->code_ptr]);
+    code.jmp(ptr[code.rip + &entry->code_ptr]);
     code.L(miss);
     code.lea(rbp, ptr[code.rip + entry]);
     code.jmp(terminal_handler_fast_dispatch_fill, code.T_NEAR);

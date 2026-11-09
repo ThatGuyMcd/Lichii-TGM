@@ -137,11 +137,6 @@ add_library(dynarmic STATIC
 )
 
 if ("x86_64" IN_LIST ARCHITECTURE)
-    # Newer versions of xbyak (>= 7.25.0) have stricter checks that currently
-    # fail in dynarmic
-    target_compile_definitions(dynarmic PRIVATE XBYAK_STRICT_CHECK_MEM_REG_SIZE=0)
-
-    target_compile_definitions(dynarmic PRIVATE XBYAK_OLD_DISP_CHECK=1)
     target_link_libraries(dynarmic PRIVATE xbyak::xbyak)
 
     target_architecture_specific_sources(dynarmic "x86_64"

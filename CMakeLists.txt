@@ -594,6 +594,16 @@ find_package(enet)
 
 if (ARCHITECTURE_x86 OR ARCHITECTURE_x86_64)
     find_package(xbyak)
+    # Xbyak is header-only: its inline definitions must agree across all consumers.
+    # Keep Dynarmic's compatibility settings on the shared interface, not privately on one target.
+    get_target_property(xbyak_target xbyak::xbyak ALIASED_TARGET)
+    if (NOT xbyak_target)
+        set(xbyak_target xbyak::xbyak)
+    endif()
+    target_compile_definitions(${xbyak_target} INTERFACE
+        XBYAK_STRICT_CHECK_MEM_REG_SIZE=0
+        XBYAK_OLD_DISP_CHECK=1
+    )
 endif()
 
 if (NOT YUZU_STATIC_ROOM)

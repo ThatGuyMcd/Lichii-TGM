@@ -193,18 +193,65 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         const char* value = std::getenv("EDEN_NX2_TC_MIN_AGE");
         return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
     }();
+    // Images that must be downloaded before eviction are downloaded together with one GPU wait,
+    // instead of one wait per image. They stay registered until then; `pending_freed` is the
+    // memory their deletion will free.
+    using Map = decltype(runtime.DownloadStagingBuffer(size_t{}));
+    using Copies = decltype(FullDownloadCopies(std::declval<const ImageInfo&>()));
+    struct PendingDownload {
+        ImageId image_id;
+        Map map;
+        Copies copies;
+    };
+    boost::container::small_vector<PendingDownload, 16> pending;
+    size_t pending_bytes = 0;
+    u64 pending_freed = 0;
+    const auto used_memory = [&] {
+        return total_used_memory - (std::min)(total_used_memory, pending_freed);
+    };
+    const auto Evict = [this](ImageId image_id) {
+        auto& image = slot_images[image_id];
+        if (True(image.flags & ImageFlagBits::Tracked)) {
+            UntrackImage(image, image_id);
+        }
+        ++(True(image.flags & ImageFlagBits::CostlyLoad) ? gc_costly_deletes : gc_deletes);
+        UnregisterImage(image_id);
+        DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+    };
+    const auto FlushPending = [&] {
+        if (pending.empty()) {
+            return;
+        }
+        runtime.Finish();
+        ++gc_download_waits;
+        for (PendingDownload& entry : pending) {
+            Image& image = slot_images[entry.image_id];
+            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, entry.copies,
+                         entry.map.mapped_span, swizzle_data_buffer);
+            runtime.FreeDeferredStagingBuffer(entry.map);
+            ++gc_download_deletes;
+            ClearStaleImage(image);
+            Evict(entry.image_id);
+        }
+        pending.clear();
+        pending_bytes = 0;
+        pending_freed = 0;
+    };
     const auto Configure = [&](bool allow_aggressive) {
-        high_priority_mode = out_of_memory || total_used_memory >= expected_memory;
-        aggressive_mode =
-            allow_aggressive && (out_of_memory || total_used_memory >= critical_memory);
+        high_priority_mode = out_of_memory || used_memory() >= expected_memory;
+        aggressive_mode = allow_aggressive && (out_of_memory || used_memory() >= critical_memory);
         ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
         ticks_to_destroy = (std::max)(ticks_to_destroy, min_age);
         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
     };
-    const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode,
-                          &evict_old_costly, out_of_memory](ImageId image_id) {
+    const auto Cleanup = [&](ImageId image_id) {
         if (num_iterations == 0) {
             return true;
+        }
+        if (std::ranges::any_of(pending, [image_id](const PendingDownload& entry) {
+                return entry.image_id == image_id;
+            })) {
+            return false;
         }
         --num_iterations;
         auto& image = slot_images[image_id];
@@ -217,29 +264,30 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             return false;
         }
         if (must_download) {
-            auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
-            const auto copies = FullDownloadCopies(image.info);
+            // As DownloadMemory: a batch is capped so the staging memory held at once stays bounded.
+            constexpr size_t MaxBatchBytes = 64_MiB;
+            // The batch is flushed after the passes only: deleting images while the LRU walk or
+            // the candidate list still refer to them is not safe. A full batch waits a frame.
+            if (!pending.empty() && pending_bytes + image.unswizzled_size_bytes > MaxBatchBytes) {
+                return false;
+            }
+            // Deferred: OpenGL hands a non-deferred download buffer to the next request at once.
+            auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes, true);
+            auto copies = FullDownloadCopies(image.info);
             image.DownloadMemory(map, copies);
-            runtime.Finish();
-            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span, swizzle_data_buffer);
-            ++gc_download_deletes;
-            ClearStaleImage(image);
+            pending_bytes += image.unswizzled_size_bytes;
+            pending_freed += (image.HasScaled() ? GetScaledImageSizeBytes(image) : 0) +
+                             ImageMemoryBytes(image);
+            pending.push_back(PendingDownload{image_id, map, std::move(copies)});
         } else {
-            MarkStale(image); // before UntrackImage (see MarkStale)
+            MarkStale(image);
+            Evict(image_id);
         }
-        if (True(image.flags & ImageFlagBits::Tracked)) {
-            UntrackImage(image, image_id);
-        }
-        ++(True(image.flags & ImageFlagBits::CostlyLoad) ? gc_costly_deletes : gc_deletes);
-        UnregisterImage(image_id);
-        DeleteImage(image_id, image.scale_tick > frame_tick + 5);
-        if (out_of_memory) {
-            return false;
-        }
-        if (aggressive_mode && total_used_memory < critical_memory) {
+        if (out_of_memory) { return false; }
+        if (aggressive_mode && used_memory() < critical_memory) {
             num_iterations >>= 2;
             aggressive_mode = false;
-        } else if (high_priority_mode && total_used_memory < expected_memory) {
+        } else if (high_priority_mode && used_memory() < expected_memory) {
             num_iterations >>= 1;
             high_priority_mode = false;
         }
@@ -256,6 +304,11 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             std::vector<ImageId> candidates;
             const size_t limit = num_iterations * 8;
             lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, [&](ImageId image_id) {
+                if (std::ranges::any_of(pending, [image_id](const PendingDownload& entry) {
+                        return entry.image_id == image_id;
+                    })) {
+                    return false;
+                }
                 candidates.push_back(image_id);
                 return candidates.size() >= limit;
             });
@@ -341,10 +394,11 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         evict_old_costly = false;
     }
     Collect();
-    if (out_of_memory || total_used_memory >= critical_memory) {
+    if (out_of_memory || used_memory() >= critical_memory) {
         Configure(true);
         Collect();
     }
+    FlushPending();
 }
 
 template <class P>
@@ -677,9 +731,9 @@ void TextureCache<P>::TickFrame() {
         if constexpr (requires { runtime.LogMemoryStatistics(); }) {
             runtime.LogMemoryStatistics();
         }
-        LOG_INFO(HW_GPU, "Texture cache last 600 frames: created {} images, deleted {} (collector {}, {} costly, {} downloaded), {} async decodes, ASTC {} opaque / {} alpha",
+        LOG_INFO(HW_GPU, "Texture cache last 600 frames: created {} images, deleted {} (collector {}, {} costly, {} downloaded in {} GPU waits), {} async decodes, ASTC {} opaque / {} alpha",
                  images_created, images_deleted, gc_deletes + gc_costly_deletes, gc_costly_deletes,
-                 gc_download_deletes,
+                 gc_download_deletes, gc_download_waits,
                  async_decodes_queued, astc_opaque_images, astc_alpha_images);
         LOG_INFO(HW_GPU, "Texture cache last 600 frames: {} uploads from guest memory, {} MiB (largest {} MiB, {} by layer)",
                  images_uploaded, uploaded_bytes >> 20, largest_upload >> 20, layer_uploads);
@@ -704,7 +758,8 @@ void TextureCache<P>::TickFrame() {
         created_shapes.clear();
         // The per-image and per-shape tallies only feed debug lines: skip them while those are off.
         debug_stats = Common::Log::IsLevelEnabled(Common::Log::Class::HW_GPU, Common::Log::Level::Debug);
-        gc_deletes = gc_costly_deletes = gc_download_deletes = async_decodes_queued = 0;
+        gc_deletes = gc_costly_deletes = gc_download_deletes = gc_download_waits = 0;
+        async_decodes_queued = 0;
         images_created = images_deleted = 0;
     }
     // EDEN_NX2_RT_EVICT_PRESSURE: while the cache is over its expected size, fresh render targets

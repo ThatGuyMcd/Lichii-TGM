@@ -2279,7 +2279,7 @@ bool Maxwell3D::FrontDrawFromGpuArguments(Core::System& system, VideoCommon::Gpu
     // The end of the macro, as FrontRunMacro ends it (its writes include draw manager methods).
     fs.draw_pending = false;
     split.Defer([this, system_ptr = &system] { FinishFrontMacro(*system_ptr); },
-                VideoCommon::GpuSplit::FastDrawNeutral);
+                VideoCommon::GpuSplit::Writes::Caches, VideoCommon::GpuSplit::FastDrawNeutral);
     return true;
 }
 

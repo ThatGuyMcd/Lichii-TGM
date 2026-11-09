@@ -44,6 +44,7 @@
 #include "shader_recompiler/exception.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/renderer_vulkan/vk_oot_object_motion.h"
 
 #if defined(__clang__) && defined(NDEBUG)
 #define LAMBDA_FORCEINLINE __attribute__((always_inline))
@@ -77,6 +78,21 @@ VkShaderStageFlagBits StageFlag(const Shader::Info& info, VkShaderStageFlagBits 
         return VK_SHADER_STAGE_MESH_BIT_EXT;
     }
     return slot_stage;
+}
+
+// Ocarina of Time object motion: the history buffer (vertex) or motion image (fragment), bound
+// after the stage's own images (DescriptorLayoutBuilder::Add).
+void PushOotMotionDescriptor(GuestDescriptorQueue& queue, const Shader::Info& info) {
+    if (!info.oot_motion.history && !info.oot_motion.image) {
+        return;
+    }
+    const OotObjectMotion* const motion = OotObjectMotion::Get();
+    if (info.oot_motion.history) {
+        queue.AddBuffer(motion->HistoryBuffer(), motion->HistoryAddress(), 0,
+                        motion->HistorySize());
+    } else {
+        queue.AddBuffer(motion->PixelBuffer(), motion->PixelAddress(), 0, motion->PixelBytes());
+    }
 }
 
 DescriptorLayoutBuilder MakeBuilder(const Device& device, std::span<const Shader::Info> infos,
@@ -449,6 +465,10 @@ GraphicsPipeline::GraphicsPipeline(
     }
     for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
         const Shader::Info& info = stage_infos[stage];
+        if (info.oot_motion.history || info.oot_motion.image) {
+            // Motion descriptors refer to per-draw history and must be rebound for every draw.
+            block(DeltaBlocker::OotMotion);
+        }
         u32& handles = handle_constant_buffers[stage];
         for (const auto& desc : info.texture_buffer_descriptors) {
             if (desc.handle_program != ~0U) {
@@ -1079,6 +1099,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             const size_t first_entry = guest_descriptor_queue.UpdateCount();
             PushImageDescriptors(texture_cache, guest_descriptor_queue, stage_infos[stage],
                                  rescaling, samplers_it, views_it);
+            PushOotMotionDescriptor(guest_descriptor_queue, stage_infos[stage]);
             if (captured_delta) {
                 KeepImageDescriptors(stage, first_entry);
             }

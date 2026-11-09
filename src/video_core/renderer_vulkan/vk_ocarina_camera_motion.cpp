@@ -1004,7 +1004,7 @@ bool OcarinaUpscaler::Record(VkImageView color, VkImageView depth, VkImageView t
             .motion_vector_scale = {1.0f, 1.0f},
             .reset = reset,
             .depth_inverted = false,
-            .hdr = false,
+            .color_hdr = 0,
         })) {
         state.scheduler.InvalidateState();
         return false;

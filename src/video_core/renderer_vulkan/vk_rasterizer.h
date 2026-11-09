@@ -9,6 +9,10 @@
 #include <array>
 #include <chrono>
 #include <optional>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 #include <string_view>
 
 #include <boost/container/static_vector.hpp>
@@ -54,6 +58,8 @@ class Maxwell3D;
 } // namespace Tegra
 
 namespace Vulkan {
+
+class OotObjectMotion;
 
 struct FramebufferTextureInfo;
 
@@ -176,6 +182,12 @@ public:
                                    std::array<f32, 2> jitter,
                                    std::array<f32, 2> motion_scale, bool use_history = true) override;
     VideoCommon::OotNetwork::BypassState* OotNetworkBypass() override;
+    void OotSceneEnd() override;
+    bool AccelerateOotDlss(const Tegra::Engines::Fermi2D::Surface& src,
+                           const Tegra::Engines::Fermi2D::Surface& dst,
+                           const Tegra::Texture::TICEntry& depth, std::array<f32, 2> jitter,
+                           const std::array<f32, 16>& reproject, bool flip_y,
+                           bool reset) override;
     Tegra::Engines::AccelerateDMAInterface& AccessAccelerateDMA() override;
     void AccelerateInlineToMemory(GPUVAddr address, size_t copy_size,
                                   std::span<const u8> memory) override;
@@ -233,6 +245,49 @@ private:
     void HandleTransformFeedback();
 
     void UpdateViewportsState(Tegra::Engines::Maxwell3D::Regs& regs);
+    /// Ocarina of Time DLSS mode: this frame's sub-pixel jitter (render pixels) for draws into
+    /// the main scene depth, or zero for any other draw.
+    std::array<float, 2> OotDlssViewportJitter(const Tegra::Engines::Maxwell3D::Regs& regs) const;
+    std::array<float, 2> applied_viewport_jitter{};
+    /// Ocarina of Time DLSS mode: this frame's camera reprojection, from the first scene draw.
+    void CaptureOotCamera();
+    /// Ocarina of Time DLSS on the HDR scene colour, right before the tonemap draw (HdrInput).
+    void OotDlssBeforeTonemap();
+    /// Ocarina of Time's half-resolution effects layer (fireflies, fairies, dust), learned from
+    /// the draws into it: DLSS's bias-to-current-colour mask.
+    std::optional<Tegra::Engines::Maxwell3D::Regs::RenderTargetConfig> oot_effects_rt;
+    /// Its volumetric fog layer (the second of two RGBA16F targets at half size).
+    std::optional<Tegra::Engines::Maxwell3D::Regs::RenderTargetConfig> oot_fog_rt;
+    /// The scene frame whose fog composite was just drawn: DLSS (or the copy before the
+    /// particles) runs at the next draw.
+    u64 oot_dlss_after_fog_frame = ~0ULL;
+    std::string oot_post_fog_order; ///< the draws after it, for a log line
+    bool oot_post_fog_recording{};
+    /// Copies the scene colour before the particles (0) or at the tonemap (1), or with
+    /// `restore` back.
+    bool OotSnapshotScene(u32 which, bool restore = false);
+    /// After the tonemap draw (DLSS after it): keeps its image with the particles, then draws it
+    /// again from the scene colour before them.
+    void OotRedrawTonemap(bool is_indexed, u32 instance_count);
+    bool oot_redraw_tonemap{};
+    bool oot_redrawing{};
+    /// Pipelines already checked for scene draws without object motion.
+    std::unordered_set<const GraphicsPipeline*> oot_reject_seen;
+    /// Ocarina of Time object motion: creates its resources before a motion pipeline binds them.
+    void PrepareOotObjectMotion();
+    /// The motion image's size: the scene depth's, scaled, or 1x1 until it is known.
+    [[nodiscard]] VkExtent2D OotObjectMotionSize() const;
+    /// Pushes the draw's history slots (or turns object motion off for it) before it is recorded.
+    void PushOotObjectMotion(u32 base_vertex, u32 num_vertices, u32 num_instances,
+                             u32 base_instance, bool is_indexed, bool enabled);
+    /// Smallest and largest index of an index buffer range (restart index skipped), cached.
+    [[nodiscard]] std::optional<std::pair<u32, u32>> OotIndexBounds();
+    std::unique_ptr<OotObjectMotion> oot_object_motion;
+    GraphicsPipeline* oot_motion_pipeline{};
+    std::unordered_map<u64, std::pair<u32, u32>> oot_index_bounds;
+    std::vector<u8> oot_index_scratch;
+    u64 oot_jittered_updates{};
+    std::optional<u64> oot_native_dlss_frame;
     void UpdateScissorsState(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateDepthBias(Tegra::Engines::Maxwell3D::Regs& regs);
     void UpdateBlendConstants(Tegra::Engines::Maxwell3D::Regs& regs);

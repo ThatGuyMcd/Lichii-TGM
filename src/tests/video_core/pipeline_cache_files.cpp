@@ -975,7 +975,9 @@ TEST_CASE("Compute translations lacking a value go, but not one the order is rel
         REQUIRE(copies.empty());
         std::vector<size_t> indices;
         for (size_t index = 0; index < candidates.size(); ++index) {
-            if (std::ranges::find(incomplete, candidates[index].record) != incomplete.end()) {
+            if (std::ranges::find_if(incomplete, [&](const auto& record) {
+                    return record == candidates[index].record;
+                }) != incomplete.end()) {
                 indices.push_back(index);
             }
         }

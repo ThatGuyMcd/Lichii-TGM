@@ -64,6 +64,10 @@ struct LogFile;
 struct ProgramRecord;
 } // namespace VideoCommon::ShaderCacheV2
 
+namespace VideoCommon::ShaderWarm {
+class PreparedStore;
+}
+
 namespace Vulkan {
 
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
@@ -334,18 +338,24 @@ private:
                                 size_t total_before, std::stop_token stop_loading,
                                 const VideoCore::DiskResourceLoadCallback& callback,
                                 bool& skipped);
-    /// Builds and drops every pipeline of the game's precompiled file (written offline by
-    /// tools/nx2-precompile), so the driver's own cache holds them before they are first drawn.
-    /// Draws never use these pipelines: they build their own from the guest's shaders and find the
-    /// driver's compiled code. Runs once per precompiled file, driver and emulator build.
-    void PreparePrecompiled(const std::filesystem::path& base_dir, std::stop_token stop_loading,
+    /// Includes game content, dirty translator sources, complete host profile and translation policy.
+    std::string NativePreparationStamp(const std::filesystem::path& path) const;
+    void PreparePrecompiled(const std::filesystem::path& base_dir, bool prepare,
+                            std::stop_token stop_loading,
                             const VideoCore::DiskResourceLoadCallback& callback);
-
-    /// The shader infos and SPIR-V the preparation step kept for the precompiled pipelines
-    /// (precompiled_infos.fork-v<N>.bin, written for the file, driver and build of `stamp`), and
-    /// the precompiled file's environment index; false when there are none for this stamp.
+    void RunNativePreparation(const std::filesystem::path& path,
+                              VideoCommon::ShaderWarm::PreparedStore& store,
+                              std::stop_token stop_loading,
+                              const VideoCore::DiskResourceLoadCallback& callback);
+    /// CPU translation returns the driver build; no IR survives into the driver stage.
+    Common::UniqueFunction<bool> PrepareNativeRecord(
+        const std::filesystem::path& path, std::span<const std::pair<u64, u64>> env_index,
+        VideoCommon::ShaderWarm::PreparedStore& store, u32 index, bool compute,
+        const PrecompiledRecord& record, const GraphicsPipelineCacheKey& graphics,
+        const ComputePipelineCacheKey& compute_key, VideoCommon::ShaderJobContext& context);
     bool LoadPrecompiledInfos(const std::filesystem::path& precompiled,
-                              const std::filesystem::path& infos, const std::string& stamp);
+                              const std::filesystem::path& infos,
+                              const VideoCommon::ShaderWarm::PreparedStore& store);
 
     /// A precompiled pipeline for the current key, drawn with the shader infos the preparation
     /// step kept while a worker builds it from the SPIR-V it kept (or, without it, translates
@@ -394,6 +404,7 @@ private:
     GraphicsPipeline* ReplaceFailedPrecompiled();
 
     struct PrecompiledRecord {
+        std::vector<u8> key; ///< Exact key bytes, never a hash-only match.
         std::array<u32, 5> envs{};  ///< The precompiled file's environments, in stage order
         u8 env_count{};
         std::array<u32, 5> infos{}; ///< Per pipeline stage: an info blob, ~0U for none
@@ -411,6 +422,8 @@ private:
     std::unordered_multimap<u64, PrecompiledRecord> precompiled_compute_records;
     std::vector<std::pair<u64, u64>> precompiled_env_index;         ///< Offset, size
     std::vector<std::pair<u64, u32>> precompiled_info_blobs;        ///< Offset, size (all blobs)
+    std::unordered_set<u32> precompiled_record_ids;
+    std::string precompiled_translation_policy;
     std::filesystem::path precompiled_path;
     std::filesystem::path precompiled_infos_path;
     std::ifstream precompiled_file;       ///< GPU thread only

@@ -677,7 +677,7 @@ std::vector<u8> MakeRecipe(std::span<const u8> precompiled, const X::Result& ext
 }
 
 std::vector<u8> Assemble(std::span<const u8> recipe, const X::Result& extracted, u32 cache_version,
-                         Report& report, unsigned threads) {
+                         Report& report, unsigned threads, std::stop_token stop) {
     const auto body = Decompress(recipe);
     Reader r{body};
     if (r.Get<u32>() != Format) {
@@ -685,13 +685,18 @@ std::vector<u8> Assemble(std::span<const u8> recipe, const X::Result& extracted,
     }
     r.Get<u64>();
     r.Get<u32>();
-    r.Get<u32>();
+    if (r.Get<u32>() != cache_version) {
+        throw std::runtime_error("recipe cache version mismatch");
+    }
 
     std::unordered_map<u64, const X::Program*> by_fingerprint;
     for (const auto& p : extracted.programs) {
         by_fingerprint.try_emplace(p.fingerprint, &p);
     }
     const u32 program_count = r.Get<u32>();
+    if (program_count > (r.bytes.size() - r.at) / 12) {
+        throw std::runtime_error("recipe count out of bounds");
+    }
     std::vector<Program> programs(program_count);
     std::vector<Stage> stages(program_count);
     for (u32 i = 0; i < program_count; ++i) {
@@ -707,7 +712,7 @@ std::vector<u8> Assemble(std::span<const u8> recipe, const X::Result& extracted,
         }
     }
     ParallelFor(program_count, threads, [&](size_t i) {
-        if (programs[i].source) {
+        if (!stop.stop_requested() && programs[i].source) {
             programs[i].lowered =
                 Lower(stages[i], programs[i].source->control, programs[i].source->code,
                       programs[i].error);
@@ -719,6 +724,9 @@ std::vector<u8> Assemble(std::span<const u8> recipe, const X::Result& extracted,
 
     // Environments: the facts with the program's code and header put back.
     const u32 fact_count = r.Get<u32>();
+    if (fact_count > (r.bytes.size() - r.at) / 12) {
+        throw std::runtime_error("recipe count out of bounds");
+    }
     struct Env {
         s64 program = -1;
         std::vector<u8> bytes;
@@ -728,6 +736,9 @@ std::vector<u8> Assemble(std::span<const u8> recipe, const X::Result& extracted,
     };
     std::vector<Env> envs(fact_count);
     for (u32 i = 0; i < fact_count; ++i) {
+        if (stop.stop_requested()) {
+            return {};
+        }
         const u32 program = r.Get<u32>();
         const u8 flags = r.Get<u8>();
         r.Take(3);
@@ -764,6 +775,9 @@ std::vector<u8> Assemble(std::span<const u8> recipe, const X::Result& extracted,
     }
 
     const u32 state_count = r.Get<u32>();
+    if (state_count > (r.bytes.size() - r.at) / 1008) {
+        throw std::runtime_error("recipe count out of bounds");
+    }
     std::vector<Bytes> states(state_count);
     for (auto& state : states) {
         state = r.Take(StateSize);
@@ -771,6 +785,9 @@ std::vector<u8> Assemble(std::span<const u8> recipe, const X::Result& extracted,
 
     // Records, and the environments they use, renumbered.
     const u32 record_count = r.Get<u32>();
+    if (record_count > (r.bytes.size() - r.at) / 4) {
+        throw std::runtime_error("recipe count out of bounds");
+    }
     Writer records;
     std::vector<s64> env_slot(fact_count, -1);
     std::vector<u32> env_list;

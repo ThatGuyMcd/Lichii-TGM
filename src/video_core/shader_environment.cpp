@@ -1346,6 +1346,13 @@ bool FileEnvironment::AnswersHoldFor(Shader::Environment& live, const char** why
         live.LocalMemorySize() != local_memory_size) {
         return fail("program");
     }
+    if (live.TextureBoundBuffer() != texture_bound) {
+        return fail("texture bound buffer");
+    }
+    if (stage == Shader::Stage::Compute &&
+        (live.WorkgroupSize() != workgroup_size || live.SharedMemorySize() != shared_memory_size)) {
+        return fail("compute launch");
+    }
     // Only a vertex program asks (PositionPass).
     if (stage == Shader::Stage::VertexB &&
         live.ReadViewportTransformState() != viewport_transform_state) {

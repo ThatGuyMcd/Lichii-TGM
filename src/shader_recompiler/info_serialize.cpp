@@ -20,7 +20,7 @@ static_assert(sizeof(ConstantBufferDescriptor) == 8 && sizeof(StorageBufferDescr
                   sizeof(TextureBufferDescriptor) == 40 && sizeof(ImageBufferDescriptor) == 28 &&
                   sizeof(TextureDescriptor) == 48 && sizeof(ImageDescriptor) == 36,
               "A Shader::Info descriptor changed: list the new fields in its Visit function below, "
-              "then update these sizes and PrecompiledInfosMagic (vk_pipeline_cache.cpp)");
+              "then update these sizes; source revision invalidates old prepared journals");
 static_assert(sizeof(StorageWriteExtent) == 60,
               "StorageWriteExtent changed: list the new fields in VisitWriteExtent below");
 #endif
@@ -91,6 +91,11 @@ struct Reader {
         if (in.size() < sizeof(T)) {
             throw std::out_of_range{"shader info"};
         }
+        if constexpr (std::is_same_v<T, bool>) {
+            if (in.front() > 1) {
+                throw std::out_of_range{"shader info"};
+            }
+        }
         std::memcpy(&value, in.data(), sizeof(T));
         in = in.subspan(sizeof(T));
     }
@@ -117,6 +122,9 @@ struct Reader {
     void operator()(std::map<K, V>& map) {
         u32 count{};
         (*this)(count);
+        if (count > in.size() / (sizeof(K) + sizeof(V))) {
+            throw std::out_of_range{"shader info"};
+        }
         map.clear();
         for (u32 i = 0; i < count; ++i) {
             K key{};
@@ -129,7 +137,7 @@ struct Reader {
     void operator()(std::vector<std::vector<u32>>& lists) {
         u32 count{};
         (*this)(count);
-        if (count > in.size()) {
+        if (count > in.size() / sizeof(u32) || count > 4096) {
             throw std::out_of_range{"shader info"};
         }
         lists.assign(count, {});
@@ -150,7 +158,7 @@ struct Reader {
     void operator()(Container& descriptors) {
         u32 count{};
         (*this)(count);
-        if (count > descriptors.max_size() || count > in.size()) {
+        if (count > descriptors.max_size() || count > in.size() / 8 || count > 4096) {
             throw std::out_of_range{"shader info"};
         }
         descriptors.clear();

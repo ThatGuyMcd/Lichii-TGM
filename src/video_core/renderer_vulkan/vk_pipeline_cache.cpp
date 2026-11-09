@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <zstd.h>
+#include "native_preparation_revision.h"
+#include "video_core/shader_warm/prepared_store.h"
 #include <algorithm>
 #include <bitset>
 #include <atomic>
@@ -433,10 +436,6 @@ void CountPrecompiledReason(std::string_view reason) {
     ++precompiled_reasons[std::string{reason}];
 }
 
-// NX2INFO5 includes OOT motion and descriptor-array fields, with stage-local recorded answers.
-// A file of another version is prepared again.
-constexpr std::string_view PrecompiledInfosMagic{"NX2INFO5"};
-
 /// Most recorded environments a stage's lookup checks against the game's state: a program kept
 /// in many environments (other texture types, pointer states) is checked against the first ones.
 constexpr size_t MaxStageCandidates = 16;
@@ -482,42 +481,25 @@ std::atomic<u32> audit_differ{};
 
 /// The words of a kept SPIR-V blob, on the GPU thread.
 std::vector<u32> ReadKeptSpirv(std::ifstream& file, std::pair<u64, u32> blob) {
-    std::vector<u8> compressed(blob.second);
-    file.clear();
-    file.seekg(static_cast<std::streamoff>(blob.first));
-    file.read(reinterpret_cast<char*>(compressed.data()), blob.second);
-    const std::vector<u8> bytes = Common::Compression::DecompressDataZSTD(compressed);
-    std::vector<u32> words(bytes.size() / sizeof(u32));
-    std::memcpy(words.data(), bytes.data(), words.size() * sizeof(u32));
+    const auto compressed =
+        VideoCommon::ShaderWarm::PreparedStore::ReadBlob(file, {blob.first, blob.second});
+    const auto size = ZSTD_getFrameContentSize(compressed.data(), compressed.size());
+    if (size < 20 || size > VideoCommon::ShaderWarm::PreparedStore::MaxPayloadBytes ||
+        size % 4 != 0) {
+        throw Shader::LogicError("Invalid prepared SPIR-V size");
+    }
+    std::vector<u32> words(size / sizeof(u32));
+    if (ZSTD_decompress(words.data(), size, compressed.data(), compressed.size()) != size ||
+        words[0] != 0x07230203 || words[4] != 0) {
+        throw Shader::LogicError("Invalid prepared SPIR-V");
+    }
     return words;
 }
 
-/// A shader stage from the SPIR-V the preparation step kept (precompiled_infos), on a worker.
 vk::ShaderModule BuildKeptSpirv(const Device& device, const std::filesystem::path& path,
-                                std::pair<u64, u32> blob, u64 pipeline_hash) {
-    thread_local std::ifstream file;
-    thread_local std::filesystem::path file_path;
-    thread_local std::vector<u8> compressed;
-    if (!file.is_open() || file_path != path) {
-        file.close();
-        file.clear();
-        file.open(path, std::ios::binary);
-        file_path = path;
-    }
-    const auto [offset, size] = blob;
-    compressed.resize(size);
-    file.clear();
-    file.seekg(static_cast<std::streamoff>(offset));
-    file.read(reinterpret_cast<char*>(compressed.data()), size);
-    const std::vector<u8> words =
-        file ? Common::Compression::DecompressDataZSTD(compressed) : std::vector<u8>{};
-    if (words.empty() || words.size() % sizeof(u32) != 0) {
-        file.close();
-        throw Shader::LogicError("Precompiled pipeline {:016x}: kept SPIR-V unreadable",
-                                 pipeline_hash);
-    }
-    return BuildShader(device, std::span<const u32>(reinterpret_cast<const u32*>(words.data()),
-                                                    words.size() / sizeof(u32)));
+                                std::pair<u64, u32> blob, [[maybe_unused]] u64 pipeline_hash) {
+    std::ifstream file(path, std::ios::binary);
+    return BuildShader(device, ReadKeptSpirv(file, blob));
 }
 constexpr u32 NoInfo = ~0U;
 
@@ -2015,7 +1997,7 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
     records.clear();
     log.reset();
 
-    PreparePrecompiled(pipeline_cache_filename.parent_path(), stop_loading, callback);
+    PreparePrecompiled(pipeline_cache_filename.parent_path(), precache, stop_loading, callback);
 
     if (use_vulkan_pipeline_cache) {
         SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
@@ -2740,662 +2722,701 @@ bool DriverCachesPipelines(const Device& device) {
 }
 } // Anonymous namespace
 
-void PipelineCache::PreparePrecompiled(const std::filesystem::path& base_dir,
+namespace {
+/// Rechecked on a pipeline miss, so live settings changes cannot draw old prepared translations.
+std::string PreparedTranslationPolicy() {
+    std::string result;
+    const auto add = [&](auto value) { result += fmt::format(" {}", value); };
+    add(Settings::GetCurrentProgramID());
+    add(Settings::values.resolution_info.active);
+    add(Settings::values.resolution_info.up_scale);
+    add(Settings::values.resolution_info.down_shift);
+    add(Settings::values.resolution_info.up_factor);
+    add(Settings::values.resolution_info.down_factor);
+    add(Settings::values.disable_shader_loop_safety_checks.GetValue());
+    add(Settings::values.fix_bloom_effects.GetValue());
+    add(Settings::values.renderer_debug.GetValue());
+    add(static_cast<u32>(Settings::values.tensor_programs.GetValue()));
+    add(Settings::values.shader_calls_not_inlined.GetValue());
+    add(VideoCommon::OotDlss::Requested());
+    add(VideoCommon::OotDlss::ObjectMotionRequested());
+    for (const char* name : {"EDEN_NX2_UNDEF_ZERO", "EDEN_NX2_NO_TENSOR",
+                             "EDEN_NX2_GRAPHICS_NOINLINE", "EDEN_NX2_COMPUTE_NOINLINE",
+                             "EDEN_OOT_MESH_SIGNATURE", "EDEN_OOT_MESH_MOTION",
+                             "EDEN_OOT_OBJECT_MOTION", "LICHII_BINDLESS_TABLE"}) {
+        const char* value = std::getenv(name);
+        result += fmt::format(" {}={}", name, value ? value : "<unset>");
+    }
+    return result;
+}
+} // namespace
+
+std::string PipelineCache::NativePreparationStamp(const std::filesystem::path& path) const {
+    // The file is assembled locally from the player's game files; foreign caches are not read.
+    const auto content = VideoCommon::ShaderWarm::ContentHash(path);
+    if (content.empty()) {
+        return {};
+    }
+    const auto properties = device.GetPhysical().GetProperties();
+    std::string stamp = fmt::format(
+        "lichii-2 {} {} {} {} {} {} {}", content, LICHII_PREPARATION_REVISION, CACHE_VERSION,
+        properties.vendorID, properties.deviceID, properties.driverVersion, properties.apiVersion);
+    for (const auto byte : properties.pipelineCacheUUID) {
+        stamp += fmt::format("{:02x}", byte);
+    }
+    const auto setting = [&](auto value) { stamp += fmt::format(" {}", value); };
+    setting(profile.supported_spirv);
+    setting(profile.unified_descriptor_binding);
+    setting(profile.support_descriptor_aliasing);
+    setting(profile.support_int8);
+    setting(profile.support_uniform_and_storage_buffer_8bit);
+    setting(profile.support_storage_buffer_8bit);
+    setting(profile.support_int16);
+    setting(profile.support_uniform_and_storage_buffer_16bit);
+    setting(profile.support_storage_buffer_16bit);
+    setting(profile.support_int64);
+    setting(profile.support_vertex_instance_id);
+    setting(profile.support_float_controls);
+    setting(profile.support_separate_denorm_behavior);
+    setting(profile.support_separate_rounding_mode);
+    setting(profile.support_fp16_denorm_preserve);
+    setting(profile.support_fp32_denorm_preserve);
+    setting(profile.support_fp16_denorm_flush);
+    setting(profile.support_fp32_denorm_flush);
+    setting(profile.support_fp16_signed_zero_nan_preserve);
+    setting(profile.support_fp32_signed_zero_nan_preserve);
+    setting(profile.support_fp64_signed_zero_nan_preserve);
+    setting(profile.support_explicit_workgroup_layout);
+    setting(profile.support_workgroup_layout_8bit_access);
+    setting(profile.support_workgroup_layout_16bit_access);
+    setting(profile.support_shader_quad_control);
+    setting(profile.support_quad_shuffles);
+    setting(profile.support_vote);
+    setting(profile.support_shuffle_relative);
+    setting(profile.supported_subgroup_stages);
+    setting(profile.support_viewport_index_layer_non_geometry);
+    setting(profile.support_viewport_mask);
+    setting(profile.support_typeless_image_loads);
+    setting(profile.support_demote_to_helper_invocation);
+    setting(profile.support_int64_atomics);
+    setting(profile.support_shared_int64_atomics);
+    setting(profile.support_derivative_control);
+    setting(profile.support_geometry_shader_passthrough);
+    setting(profile.support_native_ndc);
+    setting(profile.support_gl_nv_gpu_shader_5);
+    setting(profile.support_gl_amd_gpu_shader_half_float);
+    setting(profile.support_gl_texture_shadow_lod);
+    setting(profile.support_gl_warp_intrinsics);
+    setting(profile.support_gl_variable_aoffi);
+    setting(profile.support_gl_sparse_textures);
+    setting(profile.support_gl_derivative_control);
+    setting(profile.support_scaled_attributes);
+    setting(profile.support_multi_viewport);
+    setting(profile.support_geometry_streams);
+    setting(profile.support_sampled_image_array_nonuniform_indexing);
+    setting(profile.support_storage_image_array_nonuniform_indexing);
+    setting(profile.support_uniform_texel_buffer_array_nonuniform_indexing);
+    setting(profile.support_storage_texel_buffer_array_nonuniform_indexing);
+    setting(profile.warp_size_potentially_larger_than_guest);
+    setting(profile.lower_left_origin_mode);
+    setting(profile.need_declared_frag_colors);
+    setting(profile.need_fastmath_off);
+    setting(profile.need_gather_subpixel_offset);
+    setting(profile.has_broken_spirv_clamp);
+    setting(profile.has_broken_spirv_position_input);
+    setting(profile.has_broken_unsigned_image_offsets);
+    setting(profile.has_broken_signed_operations);
+    setting(profile.has_broken_fp16_float_controls);
+    setting(profile.max_compute_shared_memory_size);
+    setting(profile.has_broken_fp32_denorm_flush);
+    setting(profile.has_gl_component_indexing_bug);
+    setting(profile.has_gl_precise_bug);
+    setting(profile.has_gl_cbuf_ftou_bug);
+    setting(profile.has_gl_bool_ref_bug);
+    setting(profile.ignore_nan_fp_comparisons);
+    setting(profile.has_broken_spirv_subgroup_mask_vector_extract_dynamic);
+    setting(profile.has_broken_spirv_subgroup_shuffle);
+    setting(profile.has_broken_spirv_fragment_shuffle);
+    setting(profile.support_cooperative_hmma);
+    setting(profile.support_cooperative_hmma_16x16x16);
+    setting(profile.support_cooperative_hmma_8x16x16);
+    setting(profile.max_subgroup_size);
+    setting(profile.gl_max_compute_smem_size);
+    setting(profile.has_broken_robust);
+    setting(profile.min_ssbo_alignment);
+    setting(profile.max_user_clip_distances);
+    setting(host_info.min_ssbo_alignment);
+    setting(host_info.max_per_stage_descriptor_sampled_images);
+    setting(host_info.max_per_stage_resources);
+    setting(host_info.max_per_stage_descriptor_storage_buffers);
+    setting(host_info.max_per_stage_descriptor_samplers);
+    setting(host_info.max_descriptor_set_samplers);
+    setting(host_info.max_descriptor_set_uniform_buffers);
+    setting(host_info.max_descriptor_set_uniform_buffers_dynamic);
+    setting(host_info.max_descriptor_set_storage_buffers);
+    setting(host_info.max_descriptor_set_storage_buffers_dynamic);
+    setting(host_info.max_descriptor_set_sampled_images);
+    setting(host_info.max_descriptor_set_storage_images);
+    setting(host_info.max_descriptor_set_input_attachements);
+    setting(host_info.support_float64);
+    setting(host_info.support_float16);
+    setting(host_info.support_int64);
+    setting(host_info.needs_demote_reorder);
+    setting(host_info.support_snorm_render_buffer);
+    setting(host_info.support_viewport_index_layer);
+    setting(host_info.support_viewport_mask);
+    setting(host_info.support_geometry_shader_passthrough);
+    setting(host_info.support_conditional_barrier);
+    setting(host_info.single_lane_geometry_subgroups);
+    setting(host_info.support_byte_addressed_r16);
+    setting(host_info.needs_lrz_disable);
+    setting(host_info.support_handle_table_arrays);
+    setting(Settings::values.resolution_info.active);
+    setting(Settings::values.resolution_info.up_scale);
+    setting(Settings::values.resolution_info.down_shift);
+    setting(Settings::values.resolution_info.up_factor);
+    setting(Settings::values.resolution_info.down_factor);
+    setting(Settings::values.disable_shader_loop_safety_checks.GetValue());
+    setting(Settings::values.fix_bloom_effects.GetValue());
+    setting(Settings::values.renderer_debug.GetValue());
+    for (const char* name : {"EDEN_NX2_UNDEF_ZERO", "EDEN_NX2_NO_TENSOR"}) {
+        const char* value = std::getenv(name);
+        stamp += fmt::format(" {}={}", name, value ? value : "<unset>");
+    }
+    return stamp + PreparedTranslationPolicy();
+}
+
+void PipelineCache::PreparePrecompiled(const std::filesystem::path& base_dir, bool prepare,
                                        std::stop_token stop_loading,
                                        const VideoCore::DiskResourceLoadCallback& callback) {
+    namespace Warm = VideoCommon::ShaderWarm;
+    auto path = base_dir / "native-preparation.bin";
+    std::error_code exists_error;
+    if (!std::filesystem::exists(path, exists_error)) {
+        path = base_dir / fmt::format("precompiled.fork-v{}.nx2prep", CACHE_VERSION);
+    }
+    std::error_code error;
+    if (!std::filesystem::exists(path, error)) {
+        return;
+    }
     const char* enabled = std::getenv("EDEN_NX2_PRECOMPILED");
     if (enabled && enabled[0] == '0') {
         return;
     }
-    // The prepared pipelines are kept by the driver's own cache. Without one they would go to the
-    // emulator's pipeline cache file, which is loaded whole at boot: only on request there.
-    if (!DriverCachesPipelines(device) && !(enabled && enabled[0] == '1')) {
-        LOG_INFO(Render_Vulkan, "Precompiled pipelines skipped: the driver keeps no pipeline cache "
-                                "of its own (EDEN_NX2_PRECOMPILED=1 prepares them anyway)");
+    const std::string stamp = NativePreparationStamp(path);
+    const auto infos_path = base_dir / "native-prepared.journal";
+    if (const char* force = std::getenv("EDEN_NX2_PRECOMPILED_FORCE"); force && force[0] == '1') {
+        std::filesystem::remove(infos_path, error);
+    }
+    Warm::PreparedStore store;
+    if (stamp.empty() || !store.Open(infos_path, stamp)) {
+        LOG_WARNING(Render_Vulkan, "Cannot open the native shader preparation journal");
         return;
     }
-    // Layout (tools/nx2-precompile/README.md): "NX2PREP1", u32 cache version, u32 environment
-    // count, u32 record count, u32 reserved; per environment u64 offset and u64 size of a
-    // GenericEnvironment::Serialize blob; per record u8 kind (0 graphics, 1 compute), u8
-    // environment count, u16 reserved, u32 environment indices in stage order, then the key.
-    const auto path = base_dir / fmt::format("precompiled.fork-v{}.nx2prep", CACHE_VERSION);
-    std::error_code error;
-    const auto file_size = std::filesystem::file_size(path, error);
-    if (error) {
-        // A file built for an older cache version is not read: it has to be built again.
-        for (u32 version = CACHE_VERSION; version-- > 50;) {
-            const auto older = base_dir / fmt::format("precompiled.fork-v{}.nx2prep", version);
-            if (std::filesystem::exists(older, error)) {
-                LOG_WARNING(Render_Vulkan,
-                            "Precompiled pipelines skipped: {} is for cache version {}, this "
-                            "build uses {}",
-                            older.filename().string(), version, CACHE_VERSION);
-                break;
-            }
-        }
-        return;
+    // Without a driver cache of its own the prepared pipelines would only warm this session.
+    if (prepare && !DriverCachesPipelines(device) && !(enabled && enabled[0] == '1')) {
+        LOG_INFO(Render_Vulkan, "Native shader preparation skipped: the driver keeps no pipeline "
+                                "cache of its own (EDEN_NX2_PRECOMPILED=1 prepares anyway)");
+        prepare = false;
     }
-    const auto modified = std::filesystem::last_write_time(path, error).time_since_epoch().count();
-    // The driver keeps what it compiled; the step runs again for another file, driver or build.
-    const auto stamp_path =
-        base_dir / fmt::format("precompiled_prepared.fork-v{}.txt", CACHE_VERSION);
-    const auto infos_path =
-        base_dir / fmt::format("precompiled_infos.fork-v{}.bin", CACHE_VERSION);
-    const std::string stamp = fmt::format("{} {} {:#x} {} {}\n", file_size, modified,
-                                          device.GetDriverVersion(), Common::g_scm_rev,
-                                          device.GetModelName());
-    const char* force = std::getenv("EDEN_NX2_PRECOMPILED_FORCE");
-    if (!(force && force[0] == '1')) {
-        std::ifstream stamp_file(stamp_path, std::ios::binary);
-        const std::string previous{std::istreambuf_iterator<char>(stamp_file), {}};
-        if (previous == stamp) {
-            if (LoadPrecompiledInfos(path, infos_path, stamp)) {
-                LOG_INFO(Render_Vulkan, "Precompiled pipelines already prepared for this driver");
-                return;
-            }
-            LOG_INFO(Render_Vulkan, "Precompiled pipelines were prepared without keeping their "
-                                    "shader infos: preparing them again");
-        }
+    LoadPrecompiledInfos(path, infos_path, store);
+    if (prepare) {
+        RunNativePreparation(path, store, stop_loading, callback);
     }
+    LoadPrecompiledInfos(path, infos_path, store);
+}
 
-    struct Record {
-        bool compute{};
-        std::vector<u32> envs;
-        GraphicsPipelineCacheKey graphics_key{};
-        ComputePipelineCacheKey compute_key{};
+void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
+                                         VideoCommon::ShaderWarm::PreparedStore& store,
+                                         std::stop_token stop_loading,
+                                         const VideoCore::DiskResourceLoadCallback& callback) {
+    namespace Warm = VideoCommon::ShaderWarm;
+    std::unordered_set<u32> done_before;
+    done_before = precompiled_record_ids;
+    std::ifstream file(path, std::ios::binary);
+    file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+    const auto get = [&file](auto& value) {
+        file.read(reinterpret_cast<char*>(&value), sizeof(value));
     };
-    std::vector<std::pair<u64, u64>> env_index;
-    std::vector<Record> records;
-    try {
-        std::ifstream file(path, std::ios::binary);
-        file.exceptions(std::ifstream::failbit);
-        std::array<char, 8> magic{};
-        u32 version{}, env_count{}, record_count{}, reserved{};
-        file.read(magic.data(), magic.size())
-            .read(reinterpret_cast<char*>(&version), sizeof(version))
-            .read(reinterpret_cast<char*>(&env_count), sizeof(env_count))
-            .read(reinterpret_cast<char*>(&record_count), sizeof(record_count))
-            .read(reinterpret_cast<char*>(&reserved), sizeof(reserved));
-        if (std::string_view{magic.data(), magic.size()} != "NX2PREP1" || version != CACHE_VERSION) {
-            LOG_WARNING(Render_Vulkan, "Precompiled pipeline file {} has another format or version",
-                        Common::FS::PathToUTF8String(path));
-            return;
-        }
-        // Counts the file is too small for are damage, caught before anything is allocated: an
-        // index entry is 16 bytes and a record at least 8.
-        constexpr u64 HeaderSize = 24;
-        if (file_size < HeaderSize ||
-            u64{env_count} * sizeof(env_index[0]) + u64{record_count} * 8 >
-                file_size - HeaderSize) {
-            LOG_ERROR(Render_Vulkan, "Precompiled pipeline file {} is damaged",
-                      Common::FS::PathToUTF8String(path));
-            return;
-        }
-        env_index.resize(env_count);
-        file.read(reinterpret_cast<char*>(env_index.data()), env_count * sizeof(env_index[0]));
-        records.reserve(record_count);
-        for (u32 i = 0; i < record_count; ++i) {
-            u8 kind{}, count{};
-            u16 pad{};
-            file.read(reinterpret_cast<char*>(&kind), 1)
-                .read(reinterpret_cast<char*>(&count), 1)
-                .read(reinterpret_cast<char*>(&pad), 2);
-            Record record;
-            record.compute = kind == 1;
-            record.envs.resize(count);
-            file.read(reinterpret_cast<char*>(record.envs.data()), count * sizeof(u32));
-            if (record.compute) {
-                file.read(reinterpret_cast<char*>(&record.compute_key), sizeof(record.compute_key));
-            } else {
-                file.read(reinterpret_cast<char*>(&record.graphics_key), sizeof(record.graphics_key));
-            }
-            if (kind > 1 || count == 0 || (record.compute && count != 1) ||
-                std::ranges::any_of(record.envs, [&](u32 env) { return env >= env_count; })) {
-                LOG_ERROR(Render_Vulkan, "Precompiled pipeline file {} is damaged",
-                          Common::FS::PathToUTF8String(path));
-                return;
-            }
-            if (!record.compute) {
-                // One environment per stage the key names, as for the disk cache's records.
-                VideoCommon::CheckGraphicsRecord(record.graphics_key.unique_hashes, count);
-            }
-            records.push_back(std::move(record));
-        }
-    } catch (const std::ios_base::failure& e) {
-        LOG_ERROR(Render_Vulkan, "Cannot read precompiled pipelines: {}", e.what());
-        return;
-    }
-
-    const size_t total = records.size();
-    // Environments are read from the file by each job; this bounds the records submitted and not
-    // finished, so the checkpoint below stays close to the work done.
-    const size_t max_in_flight = 256;
-
-    // A checkpoint lets an interrupted step (closed, or a crash) continue where it stopped. A boot
-    // that starts twice from the same record without getting further skips past it.
-    const auto progress_path =
-        base_dir / fmt::format("precompiled_progress.fork-v{}.txt", CACHE_VERSION);
-    size_t start_index = 0;
-    u32 restarts = 0;
-    {
-        std::ifstream progress_file(progress_path, std::ios::binary);
-        std::string line;
-        size_t next{};
-        u32 count{};
-        if (std::getline(progress_file, line) && line + '\n' == stamp &&
-            (progress_file >> next >> count)) {
-            start_index = std::min(next, total);
-            restarts = count + 1;
-        }
-    }
-    if (restarts >= 2) {
-        const size_t jump = std::min(total - start_index, max_in_flight * 2);
-        LOG_WARNING(Render_Vulkan,
-                    "Precompiled pipelines stopped twice near record {}: skipping {} records",
-                    start_index, jump);
-        start_index += jump;
-        restarts = 0;
-    }
-    const auto write_progress = [&](size_t next, u32 count) {
-        std::ofstream progress_file(progress_path, std::ios::binary | std::ios::trunc);
-        progress_file << stamp << next << ' ' << count << '\n';
-    };
-    write_progress(start_index, restarts);
-
     struct {
         std::mutex mutex;
         std::condition_variable_any cv;
         size_t in_flight{};
+        size_t done{};
         size_t built{};
         size_t failed{};
-        size_t skipped{};
-        size_t low_water{};      ///< first record not finished yet
-        size_t checkpoint{};
-        std::vector<u8> done;
+        size_t incompatible{};
     } state;
-    state.done.assign(total, 0);
-    // The shader infos and SPIR-V of each graphics pipeline built, kept once each (most
-    // pipelines share their programs' infos with others, and stages their SPIR-V), written to
-    // the file as they come.
-    // NX2INFO4: magic, u32 stamp size, the stamp, u64 index offset, the blobs (an info:
-    // Shader::SerializeInfo; SPIR-V: one zstd frame of its words); at the index: u32 record
-    // count, u32 blob count, per record u64 key hash, u8 environment count, u8 kind (0
-    // graphics, 1 compute: its info and SPIR-V are stage 0's), 2 bytes 0, u32
-    // environments[5], u32 info blobs[5] and u32 SPIR-V blobs[5] (per pipeline stage, ~0 for
-    // none), per blob u64 offset, u32 size, u32 0; then u32 stage count, per stage u64 program
-    // hash, u8 pipeline stage, 3 bytes 0, u32 environment, u32 info blob (graphics only).
-    struct {
-        std::mutex mutex;
-        std::ofstream file;
-        u64 offset{};
-        std::unordered_map<u64, u32> infos_by_hash;
-        std::unordered_map<u64, u32> spirv_by_hash;
-        std::vector<std::pair<u64, u32>> blobs;
-        std::vector<std::array<u32, 5>> record_infos;
-        std::vector<std::array<u32, 5>> record_spirv;
-        std::unordered_set<u32> legacy_loads; ///< Info blobs with legacy attribute loads
-        u64 spirv_bytes{};
-    } kept;
-    kept.record_infos.assign(total, {NoInfo, NoInfo, NoInfo, NoInfo, NoInfo});
-    kept.record_spirv.assign(total, {NoInfo, NoInfo, NoInfo, NoInfo, NoInfo});
-    auto kept_temporary = infos_path;
-    kept_temporary += ".tmp";
-    kept.file.open(kept_temporary, std::ios::binary | std::ios::trunc);
-    const auto put = [](std::ofstream& file, const auto& value) {
-        file.write(reinterpret_cast<const char*>(&value), sizeof(value));
-    };
-    kept.file.write(PrecompiledInfosMagic.data(), PrecompiledInfosMagic.size());
-    put(kept.file, static_cast<u32>(stamp.size()));
-    kept.file.write(stamp.data(), static_cast<std::streamsize>(stamp.size()));
-    const u64 index_offset_at = static_cast<u64>(kept.file.tellp());
-    put(kept.file, u64{0});
-    kept.offset = static_cast<u64>(kept.file.tellp());
-    // Under kept.mutex: the blob's id, written once.
-    const auto keep_blob = [&kept](std::unordered_map<u64, u32>& by_hash, u64 hash,
-                                   std::span<const u8> bytes) -> u32 {
-        const auto [it, added] = by_hash.try_emplace(hash, static_cast<u32>(kept.blobs.size()));
-        if (added) {
-            kept.file.write(reinterpret_cast<const char*>(bytes.data()),
-                            static_cast<std::streamsize>(bytes.size()));
-            kept.blobs.emplace_back(kept.offset, static_cast<u32>(bytes.size()));
-            kept.offset += bytes.size();
-        }
-        return it->second;
-    };
-    // A compute pipeline's info and SPIR-V are its stage 0.
-    const auto keep_infos = [&kept, &keep_blob](
-                                size_t index, const Shader::Info* compute_info,
-                                const GraphicsPipeline* graphics,
-                                const std::array<std::vector<u32>, Maxwell::MaxShaderStage>& spirv) {
-        if (graphics && graphics->IsEmulatedMesh()) {
-            return;
-        }
-        std::array<std::vector<u8>, 5> infos;
-        std::array<std::vector<u8>, 5> compressed;
-        std::array<u64, 5> info_hash{};
-        std::array<u64, 5> spirv_hash{};
-        std::array<bool, 5> legacy_loads{};
-        for (size_t stage = 0; stage < infos.size(); ++stage) {
-            const Shader::Info* const info =
-                graphics ? graphics->StageInfo(stage) : (stage == 0 ? compute_info : nullptr);
-            if (!info) {
-                continue;
-            }
-            Shader::SerializeInfo(*info, infos[stage]);
-            legacy_loads[stage] = info->loads.Legacy();
-            info_hash[stage] = Common::CityHash64(reinterpret_cast<const char*>(infos[stage].data()),
-                                                  infos[stage].size());
-            if (!spirv[stage].empty()) {
-                const auto* const words = reinterpret_cast<const u8*>(spirv[stage].data());
-                const size_t size = spirv[stage].size() * sizeof(u32);
-                spirv_hash[stage] =
-                    Common::CityHash64(reinterpret_cast<const char*>(words), size);
-                compressed[stage] = Common::Compression::CompressDataZSTD(words, size, 3);
-            }
-        }
-        std::scoped_lock lock{kept.mutex};
-        for (size_t stage = 0; stage < infos.size(); ++stage) {
-            if (infos[stage].empty()) {
-                continue;
-            }
-            kept.record_infos[index][stage] =
-                keep_blob(kept.infos_by_hash, info_hash[stage], infos[stage]);
-            if (legacy_loads[stage]) {
-                kept.legacy_loads.insert(kept.record_infos[index][stage]);
-            }
-            if (!compressed[stage].empty()) {
-                const size_t before = kept.blobs.size();
-                kept.record_spirv[index][stage] =
-                    keep_blob(kept.spirv_by_hash, spirv_hash[stage], compressed[stage]);
-                if (kept.blobs.size() != before) {
-                    kept.spirv_bytes += compressed[stage].size();
-                }
-            }
-        }
-    };
-    state.low_water = state.checkpoint = start_index;
+    std::atomic<bool> cancel{};
+    const auto batch = shader_jobs->CreateBatch();
+    // Each worker holds one pipeline at a time; it is dropped once its translation is kept.
+    const size_t max_in_flight = std::max<size_t>(GetTotalPipelineWorkers() * 2, 4);
     const auto begin = std::chrono::steady_clock::now();
-    const auto complete = [&](size_t index) {
-        // Under state.mutex.
-        state.done[index] = 1;
-        while (state.low_water < total && state.done[state.low_water]) {
-            ++state.low_water;
+    u32 count{};
+    try {
+        const u64 file_size = std::filesystem::file_size(path);
+        std::array<char, 8> magic{};
+        u32 version{}, env_count{}, reserved{};
+        get(magic);
+        get(version);
+        get(env_count);
+        get(count);
+        get(reserved);
+        // Layout (tools/nx2-precompile/README.md): "NX2PREP1", u32 cache version, u32 environment
+        // count, u32 record count, u32 reserved; per environment u64 offset and u64 size; per
+        // record u8 kind (0 graphics, 1 compute), u8 environment count, u16 reserved, u32
+        // environment indices in stage order, then the key.
+        if (std::string_view(magic.data(), magic.size()) != "NX2PREP1" ||
+            file_size < 24 || version != CACHE_VERSION || reserved != 0 ||
+            env_count > Warm::PreparedStore::MaxEntries ||
+            count > Warm::PreparedStore::MaxEntries || env_count > (file_size - 24) / 16) {
+            throw std::runtime_error("invalid native preparation header");
         }
-        if (state.low_water >= state.checkpoint + 512) {
-            state.checkpoint = state.low_water;
-            write_progress(state.low_water, 0);
-        }
-        const size_t done = start_index + state.built + state.failed + state.skipped;
-        if (done % 64 == 0 || done == total) {
-            callback(VideoCore::LoadCallbackStage::Build, done, total);
-        }
-    };
-    const auto finish = [&](size_t index, bool ok) {
-        std::scoped_lock lock{state.mutex};
-        --state.in_flight;
-        ++(ok ? state.built : state.failed);
-        complete(index);
-        state.cv.notify_all();
-    };
-    const auto skip = [&](size_t index) {
-        std::scoped_lock lock{state.mutex};
-        ++state.skipped;
-        complete(index);
-    };
-    const auto read_envs = [&path, &env_index](const std::vector<u32>& ids) {
-        std::ifstream file(path, std::ios::binary);
-        file.exceptions(std::ifstream::failbit);
-        std::vector<FileEnvironment> envs(ids.size());
-        for (size_t i = 0; i < ids.size(); ++i) {
-            file.clear();
-            const auto [offset, size] = env_index[ids[i]];
-            file.seekg(static_cast<std::streamoff>(offset));
-            envs[i].Deserialize(file, static_cast<std::streamoff>(offset + size));
-        }
-        return envs;
-    };
-    // Each record is a job of the shader job scheduler, as the boot's and the precache's builds
-    // are: its CPU stage reads the environments and translates, and returns the driver build, so
-    // the IR is freed before the driver compiles. The scheduler's memory budget bounds the stages
-    // that run at once. Soon: the game waits for this step, while the background prebuild doesn't.
-    const VideoCommon::ShaderJobBatch batch = shader_jobs->CreateBatch();
-    LOG_INFO(Render_Vulkan, "Preparing {} precompiled pipelines from {}, from record {}", total,
-             Common::FS::PathToUTF8String(path), start_index);
-    if (start_index != 0) {
-        LOG_WARNING(Render_Vulkan,
-                    "Continuing after a crash: the {} records before {} are drawn after translating "
-                    "them, without kept infos",
-                    start_index, start_index);
-    }
-    callback(VideoCore::LoadCallbackStage::Build, start_index, total);
-    for (size_t index = start_index; index < total; ++index) {
-        if (stop_loading.stop_requested()) {
-            break;
-        }
-        auto& record = records[index];
-        u64 env_bytes = 0;
-        for (const u32 id : record.envs) {
-            env_bytes += env_index[id].second;
-        }
-        // A compute record is built even when the disk cache built its key: a key has a record for
-        // each storage pointer state the program can be translated in, and the boot built one.
-        if (!record.compute) {
-            auto& key = record.graphics_key;
-            // Keys leave the driver out (as the cache's records do), so a record made before a
-            // driver update keys the pipeline as draws will.
-            ClearDriverFields(key);
-            // Made for a device with other dynamic state. (Pipelines also in the disk cache are
-            // built too: their shader infos are kept like the others'.)
-            if (!KeyFitsDevice(key)) {
-                skip(index);
-                continue;
+        auto env_index = std::make_shared<std::vector<std::pair<u64, u64>>>(env_count);
+        for (auto& [offset, size] : *env_index) {
+            get(offset);
+            get(size);
+            if (offset > file_size || size > file_size - offset ||
+                size > Warm::PreparedStore::MaxPayloadBytes) {
+                throw std::runtime_error("invalid native preparation environment");
             }
         }
-        {
-            std::unique_lock lock{state.mutex};
-            // Stopping cancels the jobs, so the slots would never free up.
-            if (!state.cv.wait(lock, stop_loading,
-                               [&] { return state.in_flight < max_in_flight; })) {
+        LOG_INFO(Render_Vulkan, "Preparing native pipelines: {} records, {} already prepared",
+                 count, done_before.size());
+        callback(VideoCore::LoadCallbackStage::Warm, 0, count);
+        const auto report = [&] {
+            size_t done;
+            {
+                std::scoped_lock lock{state.mutex};
+                done = state.done;
+            }
+            callback(VideoCore::LoadCallbackStage::Warm, done, count);
+        };
+        for (u32 index = 0; index < count; ++index) {
+            if (stop_loading.stop_requested() || Warm::SkipWarmRequested()) {
+                cancel = true;
                 break;
             }
-            ++state.in_flight;
-        }
-        shader_jobs->Submit(
-            {.priority = VideoCommon::ShaderJobPriority::Soon,
-             .cpu_bytes = TranslationBytes(env_bytes),
-             .driver_bytes = DriverCompileBytes,
-             .cpu = [this, index, &record, &read_envs, &finish,
-                     &keep_infos](VideoCommon::ShaderJobContext& context) -> VideoCommon::ShaderDriverStage {
-                 if (context.StopRequested()) {
-                     finish(index, false);
-                     return {};
-                 }
-                 Common::UniqueFunction<bool> build;
-                 try {
-                     auto envs = read_envs(record.envs);
-                     ShaderPools pools;
-                     if (record.compute) {
-                         std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv;
-                         auto entry{CreateComputePipeline(pools, record.compute_key, envs.front(),
-                                                          nullptr, false, nullptr, &spirv[0])};
-                         if (entry.pipeline) {
-                             build = [index, &keep_infos, spirv = std::move(spirv),
-                                      pipeline = std::move(entry.pipeline)] {
-                                 pipeline->Build();
-                                 keep_infos(index, &pipeline->StageInfo(), nullptr, spirv);
-                                 return true;
-                             };
-                         }
-                     } else {
-                         boost::container::static_vector<Shader::Environment*,
-                                                         Maxwell::MaxShaderProgram>
-                             env_ptrs;
-                         for (auto& env : envs) {
-                             env_ptrs.push_back(&env);
-                         }
-                         std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv;
-                         auto pipeline{CreateGraphicsPipeline(pools, record.graphics_key,
-                                                              MakeSpan(env_ptrs), nullptr, false,
-                                                              nullptr, nullptr, false, false, nullptr, &spirv)};
-                         if (pipeline) {
-                             build = [index, &keep_infos, spirv = std::move(spirv),
-                                      pipeline = std::move(pipeline)] {
-                                 pipeline->Build();
-                                 if (pipeline->Failed()) {
-                                     return false;
-                                 }
-                                 keep_infos(index, nullptr, pipeline.get(), spirv);
-                                 return true;
-                             };
-                         }
-                     }
-                 } catch (const std::exception& e) {
-                     LOG_DEBUG(Render_Vulkan, "Precompiled pipeline failed: {}", e.what());
-                 }
-                 if (!build) {
-                     finish(index, false);
-                     return {};
-                 }
-                 return [index, &finish, build = std::move(build)]() mutable {
-                     bool ok = false;
-                     try {
-                         ok = build();
-                     } catch (const std::exception& e) {
-                         LOG_DEBUG(Render_Vulkan, "Precompiled pipeline failed: {}", e.what());
-                     }
-                     finish(index, ok);
-                 };
-             }},
-            &batch);
-    }
-    while (!batch.Idle()) {
-        if (stop_loading.stop_requested()) {
-            shader_jobs->Cancel(batch);
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    }
-    batch.Wait();
-    const double seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
-    LOG_INFO(Render_Vulkan, "Precompiled pipelines: {} prepared, {} failed, {} skipped, in {:.1f} s",
-             state.built, state.failed, state.skipped, seconds);
-    if (stop_loading.stop_requested()) {
-        kept.file.close();
-        std::filesystem::remove(kept_temporary, error);
-        // The next boot prepares from the first record again, so the infos it keeps are
-        // complete; only a crash (which leaves the checkpoint) continues from the checkpoint.
-        std::filesystem::remove(progress_path, error);
-        return;
-    }
-    {
-        std::vector<size_t> kept_records;
-        for (size_t index = 0; index < total; ++index) {
-            // An entry holds 5 environments: a record with both vertex programs (6) is drawn
-            // after translating it, as without the file.
-            if (records[index].envs.size() <= 5 &&
-                std::ranges::any_of(kept.record_infos[index], [](u32 id) { return id != NoInfo; })) {
-                kept_records.push_back(index);
+            u8 kind{}, env_total{};
+            u16 pad{};
+            get(kind);
+            get(env_total);
+            get(pad);
+            if (kind > 1 || env_total == 0 || env_total > 5 || (kind == 1 && env_total != 1) ||
+                pad != 0) {
+                throw std::runtime_error("invalid native preparation record");
             }
-        }
-        const u64 index_offset = kept.offset;
-        put(kept.file, static_cast<u32>(kept_records.size()));
-        put(kept.file, static_cast<u32>(kept.blobs.size()));
-        for (const size_t index : kept_records) {
-            const auto& record = records[index];
-            put(kept.file, record.compute ? record.compute_key.Hash() : record.graphics_key.Hash());
-            put(kept.file, static_cast<u8>(record.envs.size()));
-            put(kept.file, std::array<u8, 3>{static_cast<u8>(record.compute ? 1 : 0)});
-            std::array<u32, 5> envs{NoInfo, NoInfo, NoInfo, NoInfo, NoInfo};
-            std::ranges::copy(record.envs, envs.begin());
-            put(kept.file, envs);
-            put(kept.file, kept.record_infos[index]);
-            put(kept.file, kept.record_spirv[index]);
-        }
-        for (const auto& [offset, size] : kept.blobs) {
-            put(kept.file, offset);
-            put(kept.file, size);
-            put(kept.file, u32{0});
-        }
-        // Each graphics stage's info by its program and recorded environment, for pipelines
-        // whose key was not predicted: a stage's translation depends on its own program and
-        // environment, except where legacy attribute loads are mapped to the previous stage's
-        // outputs (ConvertLegacyToGeneric), so those infos are left out. So is a program and
-        // environment whose infos differ between pipelines (an info that depends on the pipeline).
-        constexpr u32 Differs = ~0U - 1;
-        std::map<std::tuple<u64, u8, u32>, u32> stage_infos;
-        for (const size_t index : kept_records) {
-            const auto& record = records[index];
-            if (record.compute || record.graphics_key.unique_hashes[0] != 0) {
+            auto record = std::make_shared<PrecompiledRecord>();
+            record->env_count = env_total;
+            record->envs.fill(NoInfo);
+            for (u8 i = 0; i < env_total; ++i) {
+                get(record->envs[i]);
+                if (record->envs[i] >= env_count) {
+                    throw std::runtime_error("invalid native preparation environment index");
+                }
+            }
+            GraphicsPipelineCacheKey graphics{};
+            ComputePipelineCacheKey compute{};
+            if (kind == 1) {
+                get(compute);
+            } else {
+                get(graphics);
+            }
+            bool skip = done_before.contains(index);
+            if (!skip && kind == 0) {
+                ClearDriverFields(graphics);
+                const bool other_device = !KeyFitsDevice(graphics);
+                if (other_device) {
+                    std::scoped_lock lock{state.mutex};
+                    ++state.incompatible;
+                    skip = true;
+                }
+            }
+            if (skip) {
+                std::scoped_lock lock{state.mutex};
+                ++state.done;
                 continue;
             }
-            size_t position = 0;
-            for (size_t program = 1; program < Maxwell::MaxShaderProgram; ++program) {
-                const u64 program_hash = record.graphics_key.unique_hashes[program];
-                if (program_hash == 0) {
-                    continue;
-                }
-                if (position >= record.envs.size()) {
+            {
+                std::unique_lock lock{state.mutex};
+                if (!state.cv.wait(lock, stop_loading,
+                                   [&] { return state.in_flight < max_in_flight; })) {
+                    cancel = true;
                     break;
                 }
-                const u32 env = record.envs[position++];
-                const u8 stage = static_cast<u8>(program - 1);
-                const u32 info = kept.record_infos[index][stage];
-                if (info == NoInfo || kept.legacy_loads.contains(info)) {
-                    continue;
-                }
-                const auto [it, added] = stage_infos.try_emplace({program_hash, stage, env}, info);
-                if (!added && it->second != info) {
-                    it->second = Differs;
-                }
+                ++state.in_flight;
+            }
+            u64 captured_bytes{};
+            for (u8 i = 0; i < record->env_count; ++i) {
+                captured_bytes += (*env_index)[record->envs[i]].second;
+            }
+            const auto finish = [&state](bool ok) {
+                std::scoped_lock lock{state.mutex};
+                --state.in_flight;
+                ++state.done;
+                ++(ok ? state.built : state.failed);
+                state.cv.notify_all();
+            };
+            shader_jobs->Submit({
+                .priority = VideoCommon::ShaderJobPriority::Soon,
+                .cpu_bytes = TranslationBytes(captured_bytes),
+                .driver_bytes = DriverCompileBytes,
+                .cpu = [this, &path, &store, &cancel, &stop_loading, env_index,
+                        record, index, kind, graphics, compute, finish](
+                           VideoCommon::ShaderJobContext& context) -> VideoCommon::ShaderDriverStage {
+                    if (cancel || stop_loading.stop_requested() || context.StopRequested()) {
+                        finish(false);
+                        return {};
+                    }
+                    Common::UniqueFunction<bool> build;
+                    try {
+                        build = PrepareNativeRecord(path, *env_index, store, index, kind == 1,
+                                                    *record, graphics, compute, context);
+                    } catch (const std::exception& e) {
+                        LOG_DEBUG(Render_Vulkan, "Native preparation record {}: {}", index, e.what());
+                    } catch (...) {
+                        LOG_DEBUG(Render_Vulkan, "Native preparation record {} failed", index);
+                    }
+                    if (!build) {
+                        finish(false);
+                        return {};
+                    }
+                    return [build = std::move(build), finish]() mutable {
+                        bool ok = false;
+                        try {
+                            ok = build();
+                        } catch (const std::exception& e) {
+                            LOG_DEBUG(Render_Vulkan, "Native preparation driver build: {}", e.what());
+                        } catch (...) {
+                            LOG_DEBUG(Render_Vulkan, "Native preparation driver build failed");
+                        }
+                        finish(ok);
+                    };
+                }}, &batch);
+            if (index % 64 == 0) {
+                report();
             }
         }
-        const auto differing = static_cast<size_t>(std::ranges::count_if(
-            stage_infos, [](const auto& entry) { return entry.second == Differs; }));
-        put(kept.file, static_cast<u32>(stage_infos.size() - differing));
-        for (const auto& [stage_key, info] : stage_infos) {
-            if (info == Differs) {
-                continue;
-            }
-            const auto& [program_hash, stage, env] = stage_key;
-            put(kept.file, program_hash);
-            put(kept.file, std::array<u8, 4>{stage});
-            put(kept.file, env);
-            put(kept.file, info);
-        }
-        LOG_INFO(Render_Vulkan,
-                 "Precompiled stage infos: {} by program and environment, {} left out (their "
-                 "infos differ between pipelines)",
-                 stage_infos.size() - differing, differing);
-        kept.file.seekp(static_cast<std::streamoff>(index_offset_at));
-        put(kept.file, index_offset);
-        kept.file.close();
-        std::filesystem::rename(kept_temporary, infos_path, error);
-        LOG_INFO(Render_Vulkan,
-                 "Precompiled shader infos and SPIR-V kept for {} pipelines: {} distinct infos, "
-                 "{} distinct stages of SPIR-V ({} MiB compressed), {} MiB in all",
-                 kept_records.size(), kept.infos_by_hash.size(), kept.spirv_by_hash.size(),
-                 kept.spirv_bytes >> 20, kept.offset >> 20);
+        // The queued jobs reference this frame: wait for all of them, stopped or not.
+        batch.Wait();
+        report();
+    } catch (const std::exception& e) {
+        cancel = true;
+        batch.Wait();
+        LOG_WARNING(Render_Vulkan, "Native shader preparation stopped: {}", e.what());
     }
-    std::ofstream stamp_file(stamp_path, std::ios::binary | std::ios::trunc);
-    stamp_file << stamp;
-    stamp_file.close();
-    std::filesystem::remove(progress_path, error);
-    LoadPrecompiledInfos(path, infos_path, stamp);
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+    LOG_INFO(Render_Vulkan,
+             "Native shader preparation{}: {} of {} records done ({} built now, {} prepared "
+             "before, {} failed, {} for another device) in {:.1f} s; completed entries are kept",
+             cancel ? " stopped" : "", state.done, count, state.built, done_before.size(),
+             state.failed, state.incompatible, seconds);
+}
+
+Common::UniqueFunction<bool> PipelineCache::PrepareNativeRecord(const std::filesystem::path& path,
+                                        std::span<const std::pair<u64, u64>> env_index,
+                                        VideoCommon::ShaderWarm::PreparedStore& store, u32 index,
+                                        bool compute, const PrecompiledRecord& record,
+                                        const GraphicsPipelineCacheKey& graphics,
+                                        const ComputePipelineCacheKey& compute_key,
+                                        VideoCommon::ShaderJobContext& context) {
+    namespace Warm = VideoCommon::ShaderWarm;
+    std::ifstream file(path, std::ios::binary);
+    file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+    std::vector<FileEnvironment> environments(record.env_count);
+    boost::container::static_vector<Shader::Environment*, Maxwell::MaxShaderProgram> pointers;
+    for (size_t i = 0; i < record.env_count; ++i) {
+        const auto [offset, size] = env_index[record.envs[i]];
+        file.seekg(static_cast<std::streamoff>(offset));
+        environments[i].Deserialize(file, static_cast<std::streamoff>(offset + size));
+        pointers.push_back(&environments[i]);
+    }
+    ShaderPools pools;
+    std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv;
+    std::array<std::vector<u8>, 5> infos;
+    std::unique_ptr<ComputePipeline> compute_pipeline;
+    std::unique_ptr<GraphicsPipeline> graphics_pipeline;
+    if (compute) {
+        auto entry =
+            CreateComputePipeline(pools, compute_key, environments[0], nullptr, false, nullptr, &spirv[0]);
+        if (!entry.pipeline || entry.pipeline->BuildFailed()) {
+            throw std::runtime_error("compute pipeline build failed");
+        }
+        Shader::SerializeInfo(entry.pipeline->StageInfo(), infos[0]);
+        compute_pipeline = std::move(entry.pipeline);
+    } else {
+        auto pipeline = CreateGraphicsPipeline(pools, graphics, MakeSpan(pointers), nullptr,
+                                                     false, nullptr, nullptr, false, false, nullptr, &spirv);
+        if (!pipeline || pipeline->Failed()) {
+            throw std::runtime_error("graphics pipeline build failed");
+        }
+        // Emulated mesh pipelines are warmed in the driver but always translated at runtime.
+        if (pipeline->IsEmulatedMesh()) {
+            return {};
+        }
+        for (size_t stage = 0; stage < infos.size(); ++stage) {
+            if (const auto* const info = pipeline->StageInfo(stage)) {
+                Shader::SerializeInfo(*info, infos[stage]);
+            }
+        }
+        context.SetDriverBytes(GraphicsDriverBytes(pipeline->IsMeshPipeline()));
+        graphics_pipeline = std::move(pipeline);
+    }
+    // A translation that asked what the recipe did not record is not one runtime can reproduce.
+    for (const auto& env : environments) {
+        if (env.LacksRecordedValue(host_info.EnvironmentReadProperties())) {
+            throw std::runtime_error("recipe lacks translation inputs");
+        }
+    }
+    return [&store, record, index, compute, graphics, compute_key, infos = std::move(infos),
+            spirv = std::move(spirv), compute_pipeline = std::move(compute_pipeline),
+            graphics_pipeline = std::move(graphics_pipeline)]() mutable {
+    if (compute_pipeline) {
+        compute_pipeline->Build();
+        if (compute_pipeline->BuildFailed()) {
+            return false;
+        }
+    } else {
+        graphics_pipeline->Build();
+        if (graphics_pipeline->Failed()) {
+            return false;
+        }
+    }
+    std::vector<u8> payload;
+    const auto put = [&payload](const auto& value) {
+        const auto* const bytes = reinterpret_cast<const u8*>(&value);
+        payload.insert(payload.end(), bytes, bytes + sizeof(value));
+    };
+    put(static_cast<u8>(compute ? 1 : 0));
+    put(record.env_count);
+    put(u16{0});
+    put(record.envs);
+    if (compute) {
+        put(compute_key);
+    } else {
+        put(graphics);
+    }
+    for (size_t stage = 0; stage < infos.size(); ++stage) {
+        if (infos[stage].empty() != spirv[stage].empty()) {
+            throw std::runtime_error("incomplete prepared shader stage");
+        }
+        Warm::PreparedStore::Location info{}, code{};
+        if (!infos[stage].empty()) {
+            const auto compressed = Common::Compression::CompressDataZSTD(
+                reinterpret_cast<const u8*>(spirv[stage].data()), spirv[stage].size() * sizeof(u32),
+                3);
+            const auto info_at = store.AddBlob(infos[stage]);
+            const auto code_at = store.AddBlob(compressed);
+            if (!info_at || !code_at) {
+                throw std::runtime_error("cannot keep prepared shader");
+            }
+            info = *info_at;
+            code = *code_at;
+        }
+        put(info.offset);
+        put(info.size);
+        put(code.offset);
+        put(code.size);
+    }
+    return store.AddRecord(index, payload);
+    };
 }
 
 bool PipelineCache::LoadPrecompiledInfos(const std::filesystem::path& precompiled,
                                          const std::filesystem::path& infos,
-                                         const std::string& stamp) {
+                                         const VideoCommon::ShaderWarm::PreparedStore& store) {
+    namespace Warm = VideoCommon::ShaderWarm;
+    precompiled_record_ids.clear();
+    precompiled_stages.clear();
     precompiled_records.clear();
     precompiled_compute_records.clear();
-    precompiled_stages.clear();
+    precompiled_info_blobs.clear();
+    precompiled_file.close();
+    precompiled_infos_file.close();
+    u32 record_count{};
     try {
-        std::ifstream file(infos, std::ios::binary);
-        file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-        const auto get = [&file](auto& value) {
-            file.read(reinterpret_cast<char*>(&value), sizeof(value));
-        };
-        std::array<char, 8> magic{};
-        u32 stamp_size{}, record_count{}, blob_count{};
-        u64 index_offset{};
-        file.read(magic.data(), magic.size());
-        get(stamp_size);
-        if (std::string_view{magic.data(), magic.size()} != PrecompiledInfosMagic ||
-            stamp_size != stamp.size()) {
-            return false;
-        }
-        std::string file_stamp(stamp_size, '\0');
-        file.read(file_stamp.data(), stamp_size);
-        if (file_stamp != stamp) {
-            return false;
-        }
-        get(index_offset);
-        file.seekg(static_cast<std::streamoff>(index_offset));
-        get(record_count);
-        get(blob_count);
-        precompiled_records.reserve(record_count);
-        for (u32 i = 0; i < record_count; ++i) {
-            u64 key_hash{};
-            u8 env_count{};
-            std::array<u8, 3> pad{};
-            PrecompiledRecord record;
-            get(key_hash);
-            get(env_count);
-            get(pad);
-            get(record.envs);
-            get(record.infos);
-            get(record.spirv);
-            record.env_count = env_count;
-            if (pad[0] == 1) {
-                precompiled_compute_records.emplace(key_hash, record);
-            } else {
-                precompiled_records.emplace(key_hash, record);
-            }
-        }
-        precompiled_info_blobs.resize(blob_count);
-        for (auto& [offset, size] : precompiled_info_blobs) {
-            u32 pad{};
-            get(offset);
-            get(size);
-            get(pad);
-        }
-        u32 stage_count{};
-        get(stage_count);
-        precompiled_stages.reserve(stage_count);
-        for (u32 i = 0; i < stage_count; ++i) {
-            u64 program_hash{};
-            std::array<u8, 4> stage{};
-            PrecompiledStage entry;
-            get(program_hash);
-            get(stage);
-            get(entry.env);
-            get(entry.info);
-            entry.stage = stage[0];
-            if (entry.stage < 5 && entry.info < blob_count) {
-                precompiled_stages.emplace(program_hash, entry);
-            }
-        }
-
         std::ifstream prep(precompiled, std::ios::binary);
         prep.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+        std::array<char, 8> magic{};
         std::array<u32, 4> header{};
         prep.read(magic.data(), magic.size());
         prep.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+        const u64 prep_size = std::filesystem::file_size(precompiled);
+        if (std::string_view(magic.data(), magic.size()) != "NX2PREP1" ||
+            prep_size < 24 || header[0] != CACHE_VERSION || header[3] != 0 ||
+            header[2] > Warm::PreparedStore::MaxEntries || header[1] > Warm::PreparedStore::MaxEntries ||
+            header[1] > (prep_size - 24) / 16) {
+            return false;
+        }
+        record_count = header[2];
         precompiled_env_index.resize(header[1]);
-        prep.read(reinterpret_cast<char*>(precompiled_env_index.data()),
-                  precompiled_env_index.size() * sizeof(precompiled_env_index[0]));
+        for (auto& [offset, size] : precompiled_env_index) {
+            prep.read(reinterpret_cast<char*>(&offset), sizeof(offset));
+            prep.read(reinterpret_cast<char*>(&size), sizeof(size));
+            if (offset > prep_size || size > prep_size - offset ||
+                size > Warm::PreparedStore::MaxPayloadBytes) {
+                precompiled_env_index.clear();
+                return false;
+            }
+        }
     } catch (const std::exception&) {
-        // Unreadable, or a damaged count (a reserve that cannot be met): prepared again.
-        precompiled_records.clear();
-        precompiled_compute_records.clear();
-        precompiled_stages.clear();
+        precompiled_env_index.clear();
         return false;
     }
+    std::ifstream file(infos, std::ios::binary);
+    std::unordered_map<u64, u32> blob_ids;
+    const auto blob_id = [&](const Warm::PreparedStore::Location& at) {
+        const auto [it, added] =
+            blob_ids.try_emplace(at.offset, static_cast<u32>(precompiled_info_blobs.size()));
+        if (added) {
+            precompiled_info_blobs.emplace_back(at.offset, at.size);
+        }
+        return it->second;
+    };
+    size_t rejected = 0;
+    constexpr u32 Differs = ~0U - 1;
+    std::map<std::tuple<u64, u8, u32>, u32> stage_infos;
+    std::unordered_map<u32, bool> validated_legacy_loads;
+    std::unordered_set<u32> validated_spirv;
+    for (const auto& entry : store.Records()) {
+        // A damaged record only loses that pipeline: its draws are translated as usual.
+        const auto bytes = Warm::PreparedStore::ReadFrame(file, entry.at);
+        size_t at = 0;
+        const auto get = [&](auto& value) {
+            if (sizeof(value) > bytes.size() - at) {
+                return false;
+            }
+            std::memcpy(&value, bytes.data() + at, sizeof(value));
+            at += sizeof(value);
+            return true;
+        };
+        PrecompiledRecord record;
+        u8 kind{}, count{};
+        u16 pad{};
+        bool valid = get(kind) && get(count) && get(pad) && get(record.envs) && kind <= 1 &&
+                     count > 0 && count <= 5 && (kind == 0 || count == 1) && pad == 0 &&
+                     entry.id < record_count;
+        for (u8 i = 0; valid && i < count; ++i) {
+            valid = record.envs[i] < precompiled_env_index.size();
+        }
+        u64 hash{};
+        if (valid && kind == 1) {
+            ComputePipelineCacheKey key;
+            valid = get(key);
+            hash = key.Hash();
+            record.key.assign(reinterpret_cast<const u8*>(&key),
+                              reinterpret_cast<const u8*>(&key) + sizeof(key));
+        } else if (valid) {
+            GraphicsPipelineCacheKey key;
+            valid = get(key);
+            hash = key.Hash();
+            record.key.assign(reinterpret_cast<const u8*>(&key),
+                              reinterpret_cast<const u8*>(&key) + sizeof(key));
+        }
+        record.env_count = count;
+        record.infos.fill(NoInfo);
+        record.spirv.fill(NoInfo);
+        size_t stages = 0;
+        for (size_t stage = 0; valid && stage < 5; ++stage) {
+            Warm::PreparedStore::Location info{}, code{};
+            valid = get(info.offset) && get(info.size) && get(code.offset) && get(code.size) &&
+                    (info.size == 0) == (code.size == 0) &&
+                    (info.size == 0 || (store.IsBlob(info) && store.IsBlob(code)));
+            if (valid && info.size != 0) {
+                record.infos[stage] = blob_id(info);
+                record.spirv[stage] = blob_id(code);
+                ++stages;
+            }
+        }
+        if (!valid || stages != count || at != bytes.size()) {
+            ++rejected;
+            continue;
+        }
+        try {
+            for (size_t stage = 0; stage < 5; ++stage) {
+                if (record.infos[stage] == NoInfo) {
+                    continue;
+                }
+                const u32 info_id = record.infos[stage];
+                if (!validated_legacy_loads.contains(info_id)) {
+                    const auto [offset, size] = precompiled_info_blobs.at(info_id);
+                    const auto info_bytes = Warm::PreparedStore::ReadBlob(file, {offset, size});
+                    std::span<const u8> input{info_bytes};
+                    Shader::Info info;
+                    if (!Shader::DeserializeInfo(input, info) || !input.empty()) {
+                        throw std::runtime_error("invalid prepared info");
+                    }
+                    validated_legacy_loads.emplace(info_id, info.loads.Legacy());
+                }
+                if (!validated_spirv.contains(record.spirv[stage])) {
+                    ReadKeptSpirv(file, precompiled_info_blobs.at(record.spirv[stage]));
+                    validated_spirv.insert(record.spirv[stage]);
+                }
+            }
+        } catch (const std::exception&) {
+            ++rejected;
+            continue;
+        }
+        precompiled_record_ids.insert(entry.id);
+        if (kind == 0) {
+            GraphicsPipelineCacheKey key;
+            std::memcpy(&key, record.key.data(), sizeof(key));
+            if (key.unique_hashes[0] == 0) {
+                size_t position{};
+                for (u8 stage = 0; stage < 5; ++stage) {
+                    if (key.unique_hashes[stage + 1] == 0) {
+                        continue;
+                    }
+                    if (position >= record.env_count) {
+                        break;
+                    }
+                    const u32 env = record.envs[position++];
+                    const u32 info = record.infos[stage];
+                    if (info == NoInfo || validated_legacy_loads.at(info)) {
+                        continue;
+                    }
+                    const auto [it, added] = stage_infos.try_emplace(
+                        std::tuple{key.unique_hashes[stage + 1], stage, env}, info);
+                    if (!added && it->second != info) {
+                        it->second = Differs;
+                    }
+                }
+            }
+        }
+        if (kind == 1) {
+            precompiled_compute_records.emplace(hash, std::move(record));
+        } else {
+            precompiled_records.emplace(hash, std::move(record));
+        }
+    }
+    for (const auto& [stage_key, info] : stage_infos) {
+        if (info != Differs) {
+            const auto& [program, stage, env] = stage_key;
+            precompiled_stages.emplace(program, PrecompiledStage{stage, env, info});
+        }
+    }
+    precompiled_translation_policy = PreparedTranslationPolicy();
     precompiled_path = precompiled;
     precompiled_infos_path = infos;
     LOG_INFO(Render_Vulkan,
-             "Precompiled shader infos for {} graphics and {} compute pipelines, and {} graphics "
-             "stages by program",
-             precompiled_records.size(), precompiled_compute_records.size(),
-             precompiled_stages.size());
+             "Prepared native shaders: {} graphics and {} compute pipelines, {} damaged records "
+             "ignored",
+             precompiled_records.size(), precompiled_compute_records.size(), rejected);
     return true;
 }
 
 /// A kept info blob, on the GPU thread; false when it is unreadable or needs layer emulation.
 static bool ReadKeptInfo(std::ifstream& file, std::pair<u64, u32> blob, Shader::Info& info) {
-    std::vector<u8> bytes(blob.second);
-    file.clear();
-    file.seekg(static_cast<std::streamoff>(blob.first));
-    file.read(reinterpret_cast<char*>(bytes.data()), blob.second);
-    std::span<const u8> in{bytes};
+    const auto bytes = VideoCommon::ShaderWarm::PreparedStore::ReadBlob(file, {blob.first, blob.second});
+    std::span<const u8> input{bytes};
     info = {};
-    return Shader::DeserializeInfo(in, info) && !info.requires_layer_emulation;
+    return Shader::DeserializeInfo(input, info) && input.empty() && !info.requires_layer_emulation;
 }
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePrecompiledGraphicsPipeline(
     GraphicsEnvironments& environments, std::optional<PrecompiledRecord>* matched) {
-    if ((precompiled_records.empty() && precompiled_stages.empty()) || !PrecompiledFastPath()) {
+    if ((precompiled_records.empty() && precompiled_stages.empty()) || !PrecompiledFastPath() || precompiled_translation_policy != PreparedTranslationPolicy()) {
         return nullptr;
     }
     const u64 hash = graphics_key.Hash();
@@ -3418,6 +3439,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePrecompiledGraphicsPipeli
         return pipeline;
     }
     const PrecompiledRecord& record = it->second;
+    if (record.key.size() != sizeof(graphics_key) ||
+        std::memcmp(record.key.data(), &graphics_key, sizeof(graphics_key)) != 0) {
+        return nullptr;
+    }
     const auto live = environments.Span();
     if (live.size() != record.env_count) {
         return nullptr;
@@ -3680,7 +3705,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::MakePrecompiledGraphicsPipeline
 ComputePipelineCacheEntry PipelineCache::CreatePrecompiledComputePipeline(
     const ComputePipelineCacheKey& key, ComputeEnvironment& env,
     const PrecompiledRecord** matched) {
-    if (precompiled_compute_records.empty() || !PrecompiledFastPath()) {
+    if (precompiled_compute_records.empty() || !PrecompiledFastPath() || precompiled_translation_policy != PreparedTranslationPolicy()) {
         return {};
     }
     const u64 hash = key.Hash();
@@ -3692,6 +3717,10 @@ ComputePipelineCacheEntry PipelineCache::CreatePrecompiledComputePipeline(
     const char* first_reason = nullptr;
     for (auto it = first; it != last; ++it) {
         const PrecompiledRecord& record = it->second;
+        if (record.key.size() != sizeof(key) ||
+            std::memcmp(record.key.data(), &key, sizeof(key)) != 0) {
+            continue;
+        }
         if (record.env_count != 1 || record.infos[0] == NoInfo || record.spirv[0] == NoInfo ||
             record.spirv[0] >= precompiled_info_blobs.size()) {
             continue;
@@ -3827,10 +3856,8 @@ void PipelineCache::AuditPrecompiled(std::span<Shader::Environment* const> envs,
                 continue;
             }
             const auto [offset, size] = precompiled_info_blobs.at(record.infos[stage]);
-            std::vector<u8> kept_info(size);
-            precompiled_infos_file.clear();
-            precompiled_infos_file.seekg(static_cast<std::streamoff>(offset));
-            precompiled_infos_file.read(reinterpret_cast<char*>(kept_info.data()), size);
+            const auto kept_info = VideoCommon::ShaderWarm::PreparedStore::ReadBlob(
+                precompiled_infos_file, {offset, size});
             if (kept_info != live_info[stage]) {
                 differ(stage, "infos");
                 same = false;

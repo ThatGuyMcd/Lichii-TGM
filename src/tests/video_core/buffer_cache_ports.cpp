@@ -404,6 +404,7 @@ struct BufferCacheTestAccess {
     }
     static void NextFrame(Cache& cache) {
         cache.native_indirect_uniforms_this_frame.clear();
+        cache.native_indirect_uniform_ranges_this_frame.Clear();
     }
     static u32 CpuMarks(Cache& cache) {
         return cache.memory_tracker.cpu_marks;
@@ -2598,9 +2599,12 @@ TEST_CASE("Storage through the GPU page table maps each device run to its buffer
     REQUIRE(table.Translate(base + 0x19000) == Runtime::NULL_PAGE);
     // The same binding again changes no entry.
     const u32 syncs = f.runtime.page_table_syncs;
+    f.runtime.page_table_updates.clear();
     Access::Resident(*f.cache, channel, binding, true);
-    REQUIRE(f.runtime.page_table_syncs == syncs + 1);
+    REQUIRE(f.runtime.page_table_syncs == syncs);
     REQUIRE(f.runtime.page_table_updates.empty());
+    REQUIRE(table.Translate(base + 0x800) == host + 0x20800);
+    REQUIRE(table.Translate(base + 0x10000) == host + 0x40000);
     // A buffer that goes away takes its entries with it.
     const VideoCommon::BufferId second = Access::Find(*f.cache, 0x40000, 0x8800);
     Access::Delete(*f.cache, second);

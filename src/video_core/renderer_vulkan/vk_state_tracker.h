@@ -92,7 +92,6 @@ public:
     void InvalidateCommandBufferState() {
         (*flags) |= invalidation_flags;
         current_topology = INVALID_TOPOLOGY;
-        stencil_reset = true;
         ++command_buffer_epoch;
     }
 
@@ -308,10 +307,6 @@ private:
     Tegra::Engines::Maxwell3D::DirtyState::Flags default_flags;
     Tegra::Engines::Maxwell3D::DirtyState::Flags invalidation_flags;
     Maxwell::PrimitiveTopology current_topology = INVALID_TOPOLOGY;
-    bool two_sided_stencil = false;
-    StencilProperties front{};
-    StencilProperties back{};
-    bool stencil_reset = false;
     u64 command_buffer_epoch = 1;
 };
 

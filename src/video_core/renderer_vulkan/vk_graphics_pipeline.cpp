@@ -440,11 +440,11 @@ GraphicsPipeline::GraphicsPipeline(
       pipeline_cache(pipeline_cache_), scheduler{scheduler_},
       guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, spv_modules{std::move(modules)},
-      binary_cache{binary_cache_},
       library_cache{library_params.library_cache},
-      shader_object_cache{library_params.shader_objects}, spirv_code{std::move(spirv_code_, PipelineBinaryCache* binary_cache_)},
       libraries_only{library_params.library_cache && library_params.libraries_only},
-      spirv_hashes{library_params.spirv_hashes}, build_workers{worker_thread},
+      binary_cache{binary_cache_}, spirv_hashes{library_params.spirv_hashes},
+      shader_object_cache{library_params.shader_objects}, spirv_code{std::move(spirv_code_)},
+      build_workers{worker_thread},
       worker_only_build{worker_thread && static_cast<bool>(emit_stages)},
       mesh_emulation{std::move(mesh_emulation_)} {
     if (shader_notify) {
@@ -541,6 +541,7 @@ GraphicsPipeline::GraphicsPipeline(
     }
 
     heap_mode = texture_cache.GetRuntime().Heap() != nullptr &&
+                texture_cache.GetRuntime().OcarinaFsrLodBias() == 0.0f &&
                 device.IsKhrMaintenance5Supported() &&
                 HeapMappings::Eligible(stage_infos, mesh_emulation.has_value());
     if (heap_mode) {
@@ -1590,6 +1591,14 @@ bool GraphicsPipeline::ConfigureHeapDraw(const RescalingPushConstant& rescaling,
     if (heap == nullptr) {
         return false;
     }
+    if (IsBuilt() && optimized_ready.load(std::memory_order_acquire) && !optimized_bound) {
+        optimized_bound = true;
+        scheduler.ForgetGraphicsPipeline(this);
+        scheduler.Record([this](vk::CommandBuffer) {
+            retired_pipeline = std::move(pipeline);
+            pipeline = std::move(optimized_pipeline);
+        });
+    }
     static_assert(HeapMappings::TABLE_PUSH_OFFSET >=
                   Shader::Backend::SPIRV::PUSH_CONSTANT_LAYOUT_SIZE);
     // Binding the heaps invalidates descriptor buffer bindings.
@@ -2580,7 +2589,7 @@ vk::Pipeline GraphicsPipeline::MakePipeline(VkRenderPass render_pass, bool fast)
         .basePipelineIndex = 0,
     };
     vk::Pipeline built_pipeline =
-        binary_cache ? binary_cache->CreateGraphicsPipeline(pipeline_ci, *pipeline_cache)
+        binary_cache && !heap_mode ? binary_cache->CreateGraphicsPipeline(pipeline_ci, *pipeline_cache)
                      : device.GetLogical().CreateGraphicsPipeline(pipeline_ci, *pipeline_cache);
     TracePipelineBuild("END", "graphics", key.Hash(), key.unique_hashes, unoptimized,
                        std::chrono::duration<double, std::milli>(
@@ -2633,7 +2642,7 @@ void GraphicsPipeline::MakeShaderObjects() {
     ShaderObject::Key so_key{};
     std::array<VkShaderStageFlagBits, NUM_STAGES> stage_flags{};
     for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
-        if (!spv_modules[stage]) {
+        if (!(*spv_modules)[stage]) {
             continue;
         }
         stage_flags[stage] =
@@ -2695,7 +2704,7 @@ void GraphicsPipeline::MakeShaderObjects() {
                     .pNext = ChainHeapMappings(stage,
                                                force_warp_size
                                                    ? &subgroup_size_ci
-                                                   : ExperimentFragmentWave(device, stage_flag),
+                                                   : nullptr,
                                                heap_mapping_infos),
                     .flags = flags,
                     .stage = stage_flag,
@@ -2735,11 +2744,7 @@ bool GraphicsPipeline::RecordBind(vk::CommandBuffer cmdbuf, bool optimized) cons
                               shader_set->bind.data());
         return true;
     }
-    const VkPipeline optimized_pipeline_handle =
-        optimized ? optimized_handle.load(std::memory_order_acquire) : VK_NULL_HANDLE;
-    cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, optimized_pipeline_handle != VK_NULL_HANDLE
-                                                             ? optimized_pipeline_handle
-                                                             : *pipeline);
+    cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline);
     return true;
 }
 

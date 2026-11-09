@@ -632,6 +632,15 @@ std::vector<u32> DriverModuleCode(std::span<const u32> code, u64 hash, bool comp
     return words;
 }
 
+std::array<std::vector<u32>, 5> DriverGraphicsCode(
+    const std::array<std::vector<u32>, 5>& code) {
+    std::array<std::vector<u32>, 5> words;
+    for (size_t stage = 0; stage < words.size(); ++stage) {
+        words[stage] = DriverModuleCode(code[stage], 0, false);
+    }
+    return words;
+}
+
 /// The words of a kept SPIR-V blob, on the GPU thread.
 std::vector<u32> ReadKeptSpirv(std::ifstream& file, std::pair<u64, u32> blob) {
     const auto compressed =
@@ -2967,7 +2976,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePrecompiledGraphicsPipeli
             descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, &workers, nullptr,
             render_pass_cache, graphics_key,
             std::shared_ptr<const GraphicsShaderModules>{}, info_ptrs,
-            std::move(build_kept), std::nullopt);
+            std::move(build_kept), std::nullopt, GraphicsPipeline::LibraryParams{},
+            std::array<std::vector<u32>, 5>{}, &binary_cache);
         pipeline->MarkPrecompiled();
         return pipeline;
     }
@@ -3013,7 +3023,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePrecompiledGraphicsPipeli
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, &workers, nullptr,
         render_pass_cache, graphics_key, std::shared_ptr<const GraphicsShaderModules>{},
-        info_ptrs, std::move(emit_stages), std::nullopt);
+        info_ptrs, std::move(emit_stages), std::nullopt, GraphicsPipeline::LibraryParams{},
+        std::array<std::vector<u32>, 5>{}, &binary_cache);
     pipeline->MarkPrecompiled();
     return pipeline;
 }
@@ -3098,7 +3109,7 @@ ComputePipelineCacheEntry PipelineCache::CreatePrecompiledComputePipeline(
             .pipeline = std::make_unique<ComputePipeline>(
                 device, scheduler, vulkan_pipeline_cache, descriptor_pool, guest_descriptor_queue,
                 descriptor_buffer_ring, deferred ? &deferred_workers : &workers, nullptr, &shader_notify, info, vk::ShaderModule{},
-                key.unique_hash, std::move(emit_module), deferred),
+                key.unique_hash, std::move(emit_module), deferred, &binary_cache),
             // The live environment answered the same questions, as the translation would have.
             .null_pointer_slots = env.IsNativeProgram() ? env.NullStoragePointerSlots()
                                                         : std::vector<std::pair<u32, u32>>{},
@@ -4239,7 +4250,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             GraphicsPipeline::LibraryParams{reused->libraries ? &graphics_libraries : nullptr,
                                            reused->spirv_hashes, false,
                                            reused->shader_objects ? &shader_objects_cache : nullptr},
-            reused->shader_objects ? reused->spirv : std::array<std::vector<u32>, 5>{});
+            reused->shader_objects ? DriverGraphicsCode(reused->spirv)
+                                   : std::array<std::vector<u32>, 5>{}, &binary_cache);
     }
     if (!reused && !allow_translation) return nullptr;
     boost::container::static_vector<RecordingEnvironment, Maxwell::MaxShaderProgram> recorders;
@@ -4269,10 +4281,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             (stage == 4 ? fragment_images : pre_images) +=
                 Shader::NumDescriptors(infos[stage]->image_descriptors);
         }
-        return pre_textures <= GPL_FRAGMENT_TEXTURE_SCALING_BASE &&
-               fragment_textures <= GPL_FRAGMENT_TEXTURE_SCALING_BASE &&
-               pre_images <= GPL_FRAGMENT_IMAGE_SCALING_BASE &&
-               fragment_images <= GPL_FRAGMENT_IMAGE_SCALING_BASE;
+        return FitsLibraryRescalingBits(pre_textures, pre_images, fragment_textures,
+                                        fragment_images);
     }();
     auto reusable = std::make_shared<ReusableShaders>();
     reusable->libraries = use_libraries;
@@ -4313,20 +4323,20 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                          (shader_objects || VideoCommon::Nx2Perf::Verify()) ? &reusable->spirv[stage] : nullptr,
                                          (use_libraries || shader_objects) ? &reusable->spirv_hashes[stage] : nullptr);
                 }
-                auto completed_pools = std::move(job->pools);
-                job.reset();
-                completed_pools->ReleaseContents();
-                {
-                    std::scoped_lock lock{spare_pools_mutex};
-                    if (spare_pools.size() < 4) {
-                        spare_pools.push_back(std::move(completed_pools));
-                    }
+            }
+            auto completed_pools = std::move(job->pools);
+            job.reset();
+            completed_pools->ReleaseContents();
+            {
+                std::scoped_lock lock{spare_pools_mutex};
+                if (spare_pools.size() < 4) {
+                    spare_pools.push_back(std::move(completed_pools));
                 }
             }
             AddRuntimeSpirvTime(1, begin);
             reusable->modules = stage_modules;
             emitted_hashes = reusable->spirv_hashes;
-            if (shader_objects) emitted_code = reusable->spirv;
+            if (shader_objects) emitted_code = DriverGraphicsCode(reusable->spirv);
             if (reused) VerifyReusedShaders(*reused, reusable->spirv, hash);
             if (publish) shader_reuse.Add(translation_key, reusable);
             return stage_modules;
@@ -4374,7 +4384,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         GraphicsPipeline::LibraryParams{use_libraries ? &graphics_libraries : nullptr,
                                        reusable->spirv_hashes, false,
                                        shader_objects ? &shader_objects_cache : nullptr},
-        shader_objects ? reusable->spirv : std::array<std::vector<u32>, 5>{}, &binary_cache);
+        shader_objects ? DriverGraphicsCode(reusable->spirv)
+                       : std::array<std::vector<u32>, 5>{}, &binary_cache);
 
 } catch (const Shader::Exception& exception) {
     auto hash = key.Hash();

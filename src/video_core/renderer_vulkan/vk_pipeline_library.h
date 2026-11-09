@@ -50,6 +50,14 @@ namespace Vulkan {
 constexpr u32 GPL_FRAGMENT_TEXTURE_SCALING_BASE = 64;
 constexpr u32 GPL_FRAGMENT_IMAGE_SCALING_BASE = 32;
 
+constexpr bool FitsLibraryRescalingBits(size_t pre_textures, size_t pre_images,
+                                        size_t fragment_textures, size_t fragment_images) {
+    return pre_textures <= GPL_FRAGMENT_TEXTURE_SCALING_BASE &&
+           fragment_textures <= GPL_FRAGMENT_TEXTURE_SCALING_BASE &&
+           pre_images <= GPL_FRAGMENT_IMAGE_SCALING_BASE &&
+           fragment_images <= GPL_FRAGMENT_IMAGE_SCALING_BASE;
+}
+
 /// EDEN_NX2_GPL_OPTIMIZE=1 (with EDEN_NX2_GPL=1): after the fast link, an optimized link
 /// (VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT) is built on a worker and swapped in at a
 /// later draw, like the fast first build. The shader libraries are then created with

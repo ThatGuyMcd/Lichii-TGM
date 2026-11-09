@@ -83,7 +83,7 @@ struct ShaderTranslationKey {
     bool tess_clockwise;
     bool dual_source_blend;
     /// Always zero: makes the padding explicit, so the key can be compared and hashed as bytes.
-    std::array<u8, 2> zero_padding;
+    std::array<u8, 6> zero_padding;
 
     bool operator==(const ShaderTranslationKey& rhs) const noexcept;
 };

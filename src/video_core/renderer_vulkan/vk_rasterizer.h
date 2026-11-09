@@ -22,7 +22,6 @@
 #include "common/dkb_frame_trace.h"
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/engines/maxwell_dma.h"
-#include "video_core/hazard_tracker.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/oot_network.h"
 #include "video_core/ocarina_upscale.h"

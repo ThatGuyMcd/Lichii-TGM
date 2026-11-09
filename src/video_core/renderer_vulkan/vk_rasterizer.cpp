@@ -81,6 +81,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/host_logic_op.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_drain_check.h"
 #include "video_core/nx2_fast_draw.h"
@@ -5716,19 +5717,14 @@ size_t RasterizerVulkan::VertexInputKeyHash::operator()(const VertexInputKey& ke
     for (const u32 word : key) {
         hash = (hash ^ word) * 0x100000001b3ULL;
     }
-    dirty[Dirty::VertexInput] = false;
+    return static_cast<size_t>(hash ^ (hash >> 32));
+}
 
-    boost::container::static_vector<VkVertexInputBindingDescription2EXT, 32> bindings;
-    boost::container::static_vector<VkVertexInputAttributeDescription2EXT, 32> attributes;
-
-    const u32 max_attributes =
-        static_cast<u32>(std::min<size_t>(Maxwell::NumVertexAttributes,
-                                          device.GetMaxVertexInputAttributes()));
-    const u32 max_bindings =
-        static_cast<u32>(std::min<size_t>(Maxwell::NumVertexArrays,
-                                          device.GetMaxVertexInputBindings()));
-
-
+void RasterizerVulkan::BuildVertexInputLayout(const Tegra::Engines::Maxwell3D::Regs& regs,
+                                             u32 max_attributes, u32 max_bindings,
+                                             VertexInputLayout& layout) const {
+    auto& bindings = layout.bindings;
+    auto& attributes = layout.attributes;
     for (u32 index = 0; index < max_attributes; ++index) {
         const Maxwell::VertexAttribute attribute{regs.vertex_attrib_format[index]};
         const u32 binding{attribute.buffer};

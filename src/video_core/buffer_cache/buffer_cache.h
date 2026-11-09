@@ -2918,8 +2918,7 @@ void BufferCache<P>::VerifyBankEntry(size_t table_stage, u32 index, DAddr device
                  page < device_addr + size; page += DEVICE_PAGESIZE) {
                 const DAddr begin = (std::max)(page, device_addr);
                 const DAddr end = (std::min)(page + DEVICE_PAGESIZE, device_addr + size);
-                dirty |= !hot_pages.contains(page) &&
-                         memory_tracker.IsRegionCpuModified(begin, end - begin);
+                dirty |= memory_tracker.IsRegionCpuModified(begin, end - begin);
             }
             NativeVerify::Check(NativeVerify::Layer::Uniforms, !dirty,
                                 "stage {} bank {} at {:#x}+{:#x} read in place while CPU-dirty",

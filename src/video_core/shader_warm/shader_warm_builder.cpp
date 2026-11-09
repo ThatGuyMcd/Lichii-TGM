@@ -409,14 +409,17 @@ bool WriteWarmMarker(const fs::path& warm_file, const WarmStamp& stamp) {
 }
 
 bool WarmPending(u64 title_id) {
-    const auto file = ComputeWarmPath(title_id);
     std::error_code ec;
-    if (!fs::exists(file, ec) || !fs::exists(WarmMarkerPath(file), ec)) {
-        return true;
-    }
-    const auto mesh = MeshWarmPath(title_id);
-    if (Settings::values.use_mesh_shader_warmup.GetValue() && fs::exists(mesh, ec) &&
-        !fs::exists(WarmMarkerPath(mesh), ec)) {
+    const auto pending = [&ec](const fs::path& file) {
+        const auto bytes = fs::file_size(file, ec);
+        if (ec || bytes <= 8 + sizeof(u32)) {
+            ec.clear();
+            return false;
+        }
+        return !fs::exists(WarmMarkerPath(file), ec);
+    };
+    if (pending(ComputeWarmPath(title_id)) ||
+        (Settings::values.use_mesh_shader_warmup.GetValue() && pending(MeshWarmPath(title_id)))) {
         return true;
     }
     return !fs::exists(NativePreparationPath(title_id), ec) && !FindNativeRecipe(title_id).empty();

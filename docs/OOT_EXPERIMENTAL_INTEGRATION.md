@@ -1,6 +1,8 @@
 # Ocarina GPU and CPU integration manifest
 
-Base: `986a2b684`. Integration branch: `oot-gpu-stack`.
+Upstream base: `986a2b684`. Final integration branch: `oot-experimental`.
+The initial GPU/CPU port was developed on `oot-gpu-stack`; later shader and native backend
+reconciliations are recorded below.
 
 ## Authoritative implementations
 

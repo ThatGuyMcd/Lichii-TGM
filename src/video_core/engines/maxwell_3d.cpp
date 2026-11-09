@@ -1901,10 +1901,17 @@ std::optional<Maxwell3D::GpuArgumentDraw> Maxwell3D::FrontGpuArgumentDraw(u32 st
         }
         return GpuArgumentDraw{.begin = writes[0].second, .end = writes[3].second};
     };
+    // Also the edges: a macro that branches on its parameters (no draw for a count of 0, a
+    // clamped value) behaves differently there and does not qualify.
+    static constexpr std::array<std::pair<u32, u32>, 4> probes{{
+        {0x5a5a5, 0xa5a5a}, {0, 0}, {1, 0xffffffffU}, {0xffffffffU, 1}}};
     std::optional<GpuArgumentDraw> draw = run(0x13579, 0x2468a);
-    if (const auto again = run(0x5a5a5, 0xa5a5a);
-        !draw || !again || draw->begin != again->begin || draw->end != again->end) {
-        draw.reset();
+    for (const auto& [count, first] : probes) {
+        const auto again = draw ? run(count, first) : std::nullopt;
+        if (!again || draw->begin != again->begin || draw->end != again->end) {
+            draw.reset();
+            break;
+        }
     }
     if (draw) {
         LOG_INFO(HW_GPU, "Native macro at {:#x} draws with its two parameters as vertex count "

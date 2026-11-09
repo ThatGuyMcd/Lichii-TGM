@@ -119,6 +119,7 @@ add_library(video_core STATIC
     nx2_debug_control.h
     nx2_fast_draw.cpp
     nx2_fast_draw.h
+    oot_dlss.h
     nx2_profile.h
     nx2_stutter_trace.cpp
     nx2_stutter_trace.h
@@ -196,8 +197,6 @@ add_library(video_core STATIC
     renderer_vulkan/vk_fsr3_upscaler.h
     renderer_vulkan/vk_dlss_network_probe.cpp
     renderer_vulkan/vk_dlss_network_probe.h
-    renderer_vulkan/vk_ocarina_camera_motion.cpp
-    renderer_vulkan/vk_ocarina_camera_motion.h
     renderer_vulkan/vk_compute_pipeline.cpp
     renderer_vulkan/vk_compute_pipeline.h
     renderer_vulkan/vk_cooperative_hmma_test.cpp
@@ -216,6 +215,10 @@ add_library(video_core STATIC
     renderer_vulkan/vk_multi_range_buffer.h
     renderer_vulkan/vk_master_semaphore.cpp
     renderer_vulkan/vk_master_semaphore.h
+    renderer_vulkan/vk_oot_motion_vectors.cpp
+    renderer_vulkan/vk_oot_motion_vectors.h
+    renderer_vulkan/vk_oot_object_motion.cpp
+    renderer_vulkan/vk_oot_object_motion.h
     renderer_vulkan/vk_pipeline_cache.cpp
     renderer_vulkan/vk_pipeline_cache.h
     renderer_vulkan/vk_pipeline_cache_records.cpp

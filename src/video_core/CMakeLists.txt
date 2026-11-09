@@ -69,6 +69,8 @@ add_library(video_core STATIC
     fsr4_support.h
     game_dlss_status.cpp
     game_dlss_status.h
+    photo_mode_state.cpp
+    photo_mode_state.h
     host1x/codecs/decoder.cpp
     host1x/codecs/decoder.h
     host1x/codecs/h264.cpp

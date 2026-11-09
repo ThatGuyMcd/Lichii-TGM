@@ -307,6 +307,10 @@ const ShaderInfo* ShaderCache::ComputeShader() {
                                             shader->lowered_native->native_program_key)) {
         kepler_compute->TraceDlssContract(shader->lowered_native->native_program_key);
     }
+    if (kepler_compute->IsNativeMode() &&
+        kepler_compute->ProcessOcarinaPhotoPass(program_id, shader->unique_hash)) {
+        throw FireEmblemUpscale::DispatchReplaced{};
+    }
     if (shader->lowered_native) {
         kepler_compute->TraceComputeHandles(shader->lowered_native->native_program_key,
                                             shader->unique_hash);

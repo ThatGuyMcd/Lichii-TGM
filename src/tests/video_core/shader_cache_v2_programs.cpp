@@ -20,6 +20,7 @@
 #include <fmt/format.h>
 
 #include "common/page_table.h"
+#include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "core/hle/kernel/k_process.h"
@@ -437,14 +438,6 @@ struct NativeComputeFixture {
     }
 };
 
-void SetEnvironment(const char* name, const std::string& value) {
-#ifdef _WIN32
-    _putenv_s(name, value.c_str());
-#else
-    setenv(name, value.c_str(), 1);
-#endif
-}
-
 } // Anonymous namespace
 
 TEST_CASE("Shader cache v2: compute environments take recorded programs with every check",
@@ -453,10 +446,11 @@ TEST_CASE("Shader cache v2: compute environments take recorded programs with eve
     TestProgram& traps = programs[6];
     TestProgram& texture = programs[8];
     TestProgram rejected{"rejected", Shader::Stage::Compute, {{{0x00007918, 0, 0, 0}}, Exit}, {}};
-    // EDEN_NX2_REJECT_HASH is read at the first lowering in the process: no other test lowers
-    // in an environment.
-    SetEnvironment("EDEN_NX2_REJECT_HASH",
-                   fmt::format("{:016x}", Shader::Ampere::NativeProgramKey(rejected.native)));
+    // The environment option is cached at first use; use the live registry so this case is
+    // independent of which other shader tests have already run.
+    const std::array rejected_hashes{Shader::Ampere::NativeProgramKey(rejected.native)};
+    (void)VideoCore::Nx2Debug::SetRejected(rejected_hashes, true);
+    SCOPE_EXIT { (void)VideoCore::Nx2Debug::SetRejected(rejected_hashes, false); };
 
     NativeComputeFixture fixture;
     traps.inputs.native_code_address = fixture.Place(0x1000, traps.native);
@@ -519,6 +513,7 @@ TEST_CASE("Shader cache v2: compute environments take recorded programs with eve
                           Shader::RuntimeError);
         (void)VideoCore::Nx2Debug::SetRejected(hashes, false);
     }
+    (void)VideoCore::Nx2Debug::SetRejected(rejected_hashes, false);
     REQUIRE_FALSE(VideoCore::Nx2Debug::AnyRejected());
     REQUIRE(fixture.Environment(texture.inputs.native_code_address, &cache).LoweredNative() ==
             texture_code);

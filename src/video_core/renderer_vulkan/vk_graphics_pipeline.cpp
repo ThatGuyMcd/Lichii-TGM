@@ -740,17 +740,15 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             }
         }
         const auto& cbufs{maxwell3d->state.shader_stages[stage].const_buffers};
+        const auto cbuf_address{[&cbufs](u32 cbuf) -> GPUVAddr {
+            return cbuf < cbufs.size() && cbufs[cbuf].enabled ? cbufs[cbuf].address : GPUVAddr{};
+        }};
         const auto read_handle{[&](const auto& desc, u32 index) {
             if (desc.handle_program != ~0U) {
                 // Read by the shader from a storage buffer: computed for this draw.
                 return TexturePair(VideoCommon::EvaluateTextureHandle(
-                                       info, desc.handle_program, *gpu_memory,
-                                       [&](u32 cbuf) -> GPUVAddr {
-                                           return cbuf < cbufs.size() && cbufs[cbuf].enabled
-                                                      ? cbufs[cbuf].address
-                                                      : GPUVAddr{};
-                                       },
-                                       device.GetStorageBufferAlignment()),
+                                       info, desc.handle_program, *gpu_memory, cbuf_address,
+                                       device.GetStorageBufferAlignment(), index),
                                    via_header_index);
             }
             ASSERT(cbufs[desc.cbuf_index].enabled);
@@ -794,12 +792,40 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             }
         }
         if (resolve_in_full) {
-            for (const auto& desc : info.texture_descriptors) {
-                for (u32 index = 0; index < desc.count; ++index) {
-                    const auto handle{VideoCommon::HandleIsStoragePointer(info, desc, index)
-                                          ? VideoCommon::NULL_TEXTURE_HANDLE
-                                          : read_handle(desc, index)};
-                    views.push_back({handle.first});
+        u32 texture{};
+        for (const auto& desc : info.texture_descriptors) {
+            if (desc.count > 1 && desc.handle_program != ~0U) {
+                // A table of handles the shader indexes (one shadow map per light, say), read
+                // in one go; elements repeating a sampler share its lookup.
+                const size_t first{views.size()};
+                u32 last_sampler_index{~0U};
+                VideoCommon::SamplerId sampler{};
+                VideoCommon::EvaluateTextureHandles(
+                    info, desc.handle_program, *gpu_memory, cbuf_address,
+                    device.GetStorageBufferAlignment(), desc.count, [&](u32, u32 raw) {
+                        const auto handle{TexturePair(raw, via_header_index)};
+                        views.push_back({handle.first});
+                        if (handle.second != last_sampler_index) {
+                            sampler = texture_cache.GetSamplerId(handle.second, false);
+                            last_sampler_index = handle.second;
+                        }
+                        samplers.push_back(sampler);
+                    });
+                if (VideoCommon::HandleTableNotes::Wanted()) [[unlikely]] {
+                    std::vector<u32> tics(desc.count);
+                    for (u32 index = 0; index < desc.count; ++index) {
+                        tics[index] = views[first + index].index;
+                    }
+                    VideoCommon::HandleTableNotes::Note(key.unique_hashes[stage + 1], texture,
+                                                        tics);
+                }
+                ++texture;
+                continue;
+            }
+            for (u32 index = 0; index < desc.count; ++index) {
+                const auto handle{VideoCommon::HandleIsStoragePointer(info, desc, index)
+                                      ? VideoCommon::NULL_TEXTURE_HANDLE : read_handle(desc, index)};
+                views.push_back({handle.first});
 
                     VideoCommon::SamplerId sampler{texture_cache.GetSamplerId(handle.second, false)};
                     samplers.push_back(sampler);
@@ -809,6 +835,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                              via_header_index ? handle.first : handle.first | (handle.second << 20)});
                     }
                 }
+                ++texture;
             }
         }
         if constexpr (Spec::has_images) {

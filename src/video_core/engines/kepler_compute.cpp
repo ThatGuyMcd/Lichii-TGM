@@ -31,6 +31,7 @@
 #include "video_core/nx2_drain_check.h"
 #include "video_core/nx2_list_indirect.h"
 #include "video_core/nx2_list_indirect_stats.h"
+#include "video_core/tensor_program_policy.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/native_upscale.h"
@@ -1103,11 +1104,9 @@ bool KeplerCompute::FinishDlssEvaluation() {
 bool KeplerCompute::EmulatesNativeTensorPrograms() const {
     // Donkey Kong Bananza's programs must run: rejected, they write nothing and the screen is
     // purple from its mode select on.
-    constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
-    const auto mode = Settings::values.tensor_programs.GetValue();
-    return Settings::GetCurrentProgramID() == DonkeyKongBananzaProgramId ||
-           mode == Settings::TensorPrograms::Native ||
-           (mode == Settings::TensorPrograms::Auto && rasterizer->EmulatesNativeTensorPrograms());
+    return VideoCommon::EmulatesNativeTensorPrograms(
+        Settings::values.tensor_programs.GetValue(), Settings::GetCurrentProgramID(),
+        rasterizer->EmulatesNativeTensorPrograms());
 }
 
 // Title 4's upscaler reads the tonemapped frame through the texture handle at cbuf0+0x90 and

@@ -71,6 +71,7 @@
 #include "video_core/shader_cache_v2/cache_file.h"
 #include "video_core/shader_cache_v2/records.h"
 #include "video_core/shader_environment.h"
+#include "video_core/tensor_program_policy.h"
 #include "video_core/shader_notify.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
 #include "video_core/surface.h"
@@ -3036,6 +3037,20 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
 
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
     const VkDriverIdKHR driver_id = device.GetDriverID();
+    // Portable caches already contain lowered native code, bypassing the SASS rejection policy.
+    // Cache loading precedes engine binding; use the same device/title policy without an engine.
+    const bool uses_tensor_stand_in = !VideoCommon::EmulatesNativeTensorPrograms(
+        Settings::values.tensor_programs.GetValue(), Settings::GetCurrentProgramID(),
+        SupportsCooperativeHmma());
+    if (env.IsNativeProgram() && uses_tensor_stand_in) {
+        for (const auto* block : program.blocks) {
+            for (const auto& inst : block->Instructions()) {
+                if (inst.GetOpcode() == Shader::IR::Opcode::TensorMulAdd) {
+                    return {.failure = "Native matrix multiply uses this host's upscale stand-in"};
+                }
+            }
+        }
+    }
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
         driver_id == VK_DRIVER_ID_ARM_PROPRIETARY || driver_id == VK_DRIVER_ID_MOLTENVK;

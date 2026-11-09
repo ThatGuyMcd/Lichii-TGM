@@ -14,7 +14,8 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
-if(YUZU_TESTS)
+option(YUZU_QT_TESTS "Build Qt frontend tests (requires the Qt Test module)" ON)
+if(YUZU_TESTS AND YUZU_QT_TESTS)
     add_subdirectory(../tests/qt_compatibility ${CMAKE_BINARY_DIR}/qt_compatibility_tests)
 endif()
 

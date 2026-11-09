@@ -55,6 +55,11 @@ Check these before filing a new one.
   ([#403]).
 - The first run compiles every shader and can stall for minutes; later runs load the pipeline
   cache.
+- On Windows with 16 GB of RAM, enlarge the page file. GPUs without matrix cores emulate
+  Ocarina's tensor-core shaders, which need gigabytes each to compile, and the game's 14 GiB of
+  guest memory is committed from the start. A small page file makes the driver fail pipelines
+  with `VK_ERROR_OUT_OF_HOST_MEMORY` ([#462]); see
+  [Troubleshoot](../user/Troubleshoot.md#shaders-fail-with-out-of-host-memory-on-windows).
 
 ## Investigating an AMD-only bug
 
@@ -95,3 +100,4 @@ Check these before filing a new one.
 [#432]: https://github.com/zortos293/Lichii/pull/432
 [#569]: https://github.com/zortos293/Lichii/pull/569
 [#871]: https://github.com/zortos293/Lichii/issues/871
+[#462]: https://github.com/zortos293/Lichii/issues/462

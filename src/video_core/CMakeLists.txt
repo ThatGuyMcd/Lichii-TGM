@@ -181,6 +181,8 @@ add_library(video_core STATIC
     renderer_vulkan/maxwell_to_vk.h
     renderer_vulkan/pipeline_build.h
     renderer_vulkan/heavy_build_slots.h
+    renderer_vulkan/pipeline_build_failure.cpp
+    renderer_vulkan/pipeline_build_failure.h
     renderer_vulkan/pipeline_build_trace.h
     renderer_vulkan/pipeline_eviction_policy.h
     renderer_vulkan/precache_journal.h

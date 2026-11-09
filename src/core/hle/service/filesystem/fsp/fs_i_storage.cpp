@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 
 #include "common/settings.h"
@@ -37,18 +38,20 @@ Result IStorage::Read(
     R_UNLESS(length >= 0, FileSys::ResultInvalidSize);
     R_UNLESS(offset >= 0, FileSys::ResultInvalidOffset);
 
-    // The 40 MB/s throttle emulates a Switch 1 card (Eden cbd4cf2d8c, Mario Strikers' intro).
-    // Switch 2 storage is many times faster, and a Switch 2 title that streams a movie with
-    // hundreds of reads a second (Ocarina of Time's opening: 300-460) sleeps most of each second
-    // on the thread that also hands decoder images back, so its video falls seconds behind.
-    if (!Settings::CurrentProgramIsSwitch2()) {
+    static const s64 forced_rate = [] {
+        const char* value = std::getenv("EDEN_NX2_FS_READ_MBPS");
+        return value ? std::clamp<s64>(std::strtoll(value, nullptr, 10), 0, 1'000'000) * 1'000'000 : -1;
+    }();
+    const s64 bytes_per_second = forced_rate >= 0 ? forced_rate :
+        Settings::CurrentProgramIsSwitch2() ? 0 : ReadBytesPerSecond;
+    if (bytes_per_second > 0) {
         const auto now = std::chrono::steady_clock::now();
         if (now < next_read_tick) {
             std::this_thread::sleep_for(next_read_tick - now);
         }
         next_read_tick = std::chrono::steady_clock::now() +
                          std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
-                                                  1'000'000'000 / ReadBytesPerSecond};
+                                                  1'000'000'000 / bytes_per_second};
     }
 
     // Read the data from the Storage backend

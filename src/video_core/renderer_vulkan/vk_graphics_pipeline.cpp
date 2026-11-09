@@ -42,6 +42,7 @@
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/renderer_vulkan/vk_oot_object_motion.h"
+#include "video_core/renderer_vulkan/heavy_build_slots.h"
 
 #if defined(__clang__) && defined(NDEBUG)
 #define LAMBDA_FORCEINLINE __attribute__((always_inline))
@@ -2024,6 +2025,13 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
     }
 
     const bool unoptimized = (flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) != 0;
+    // Native task/mesh pipelines take a heavy-build slot (heavy_build_slots.h): minutes and
+    // gigabytes each in Mesa's Intel driver. HeavyBuildSlots' own threads (one per slot) wait
+    // here only while builds run by their callers hold slots; those callers wait here too.
+    std::optional<HeavyBuildSlots::Guard> heavy_slot;
+    if (is_mesh && !mesh_emulation) {
+        heavy_slot.emplace(HeavyBuildSlots::Instance());
+    }
     const auto trace_begin = std::chrono::steady_clock::now();
     TracePipelineBuild("BEGIN", "graphics", key.Hash(), key.unique_hashes, unoptimized);
     pipeline = device.GetLogical().CreateGraphicsPipeline({

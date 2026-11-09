@@ -8,6 +8,7 @@
 #include <bitset>
 #include <atomic>
 #include <charconv>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
@@ -17,18 +18,17 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <thread>
 #include <unordered_set>
 #include <vector>
-#include <bit>
-#include <numeric>
 #include "common/cityhash.h"
-#include "common/scope_exit.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/memory_detect.h"
+#include "common/scope_exit.h"
 #include "common/thread.h"
 #include "common/thread_worker.h"
 #include "core/core.h"
@@ -42,6 +42,7 @@
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
@@ -49,9 +50,10 @@
 #include "video_core/pipeline_cache_files.h"
 #include "video_core/renderer_vulkan/async_draw_policy.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
-#include "video_core/renderer_vulkan/mesh_fallback_limits.h"
+#include "video_core/renderer_vulkan/heavy_build_slots.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_eviction_policy.h"
+#include "video_core/renderer_vulkan/mesh_fallback_limits.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_shader_emission.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
@@ -71,7 +73,6 @@
 #include "video_core/surface.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
-#include "video_core/gpu_logging/gpu_logging.h"
 
 #ifdef __ANDROID__
 #include "../../android/app/src/main/jni/android_settings.h"
@@ -842,6 +843,7 @@ PipelineCache::~PipelineCache() {
     serialization_stop.request_stop();
     background_pipelines.Stop();
     workers.WaitForRequests();
+    HeavyBuildSlots::Instance().WaitForBuilds();
     serialization_thread.WaitForRequests();
     SaveUsedPipelines();
     if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {
@@ -1064,6 +1066,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (!pipeline_cache_filename.empty()) {
         background_pipelines.Stop();
         workers.WaitForRequests();
+        HeavyBuildSlots::Instance().WaitForBuilds();
         serialization_thread.WaitForRequests();
         if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {
             SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
@@ -1163,6 +1166,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         size_t built{};
         bool has_loaded{};
         std::unique_ptr<PipelineStatistics> statistics;
+        /// Pipelines whose heavy build runs on HeavyBuildSlots' threads; counted as built when it
+        /// ends. The load waits for them: their builds use `statistics`.
+        std::vector<GraphicsPipeline*> heavy;
         /// Records the load never chooses: those lacking a value the translator reads (graphics
         /// ones with their key hash), and copies of a compute translation that stays
         std::vector<VideoCommon::PipelineRecord> incomplete;
@@ -1330,17 +1336,31 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 env_ptrs.push_back(&env);
             }
             auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs),
-                                                 state.statistics.get(), false)};
+                                                 state.statistics.get(), false, nullptr, nullptr,
+                                                 true)};
             const bool incomplete{!pipeline && std::ranges::any_of(envs_, [this](const auto& env) {
                 return env.LacksRecordedValue(host_info.EnvironmentReadProperties());
             })};
 
             std::scoped_lock lock{state.mutex};
+            bool building{};
             if (pipeline) {
-                graphics_cache.emplace(key, std::move(pipeline));
+                GraphicsPipeline* const built_later{pipeline->IsBuilt() ? nullptr : pipeline.get()};
+                if (graphics_cache.try_emplace(key, std::move(pipeline)).second) {
+                    if (built_later) {
+                        state.heavy.push_back(built_later);
+                        building = true;
+                    }
+                } else if (built_later) {
+                    // A key already loaded: drop the copy without waiting for its heavy build.
+                    pipeline->CancelBuild();
+                }
             }
             if (incomplete) {
                 state.incomplete_graphics.emplace_back(key.Hash(), record);
+            }
+            if (building) {
+                return;
             }
             ++state.built;
             if (state.has_loaded) {
@@ -1373,7 +1393,22 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     lock.unlock();
 
     workers.WaitForRequests(stop_loading);
-
+    // The heavy builds began on their own threads as the workers reached them; the loading screen
+    // counts each when it ends. A stopped load drops those not started.
+    bool cancelled{};
+    for (GraphicsPipeline* const pipeline : state.heavy) {
+        while (!pipeline->WaitBuilt(std::chrono::milliseconds{100})) {
+            if (!cancelled && stop_loading.stop_requested()) {
+                cancelled = true;
+                for (GraphicsPipeline* const unstarted : state.heavy) {
+                    unstarted->CancelBuild();
+                }
+            }
+        }
+        std::scoped_lock lock{state.mutex};
+        ++state.built;
+        callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
+    }
     AddIncompleteGraphics(state.incomplete_graphics, graphics_duplicates, disk_pipelines,
                           state.incomplete);
     // Records the load never chooses are read again at every boot. The serialization thread
@@ -2045,7 +2080,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
     bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools,
-    std::unique_ptr<EmissionBudget::Reservation> reservation) try {
+    std::unique_ptr<EmissionBudget::Reservation> reservation, bool heavy_on_own_threads) try {
     auto hash = key.Hash();
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
     size_t env_index{0};
@@ -2554,7 +2589,16 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             return stage_modules;
         };
     }
-    Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
+    // Heavy builds go to their own threads wherever the build may leave this thread: a build in
+    // parallel, or one the boot load waits for itself (heavy_on_own_threads).
+    Common::ThreadWorker* const heavy_workers{
+        (build_in_parallel || heavy_on_own_threads) &&
+                GraphicsPipeline::IsHeavyBuild(infos[0], mesh_emulation.has_value())
+            ? HeavyBuildSlots::Instance().Workers()
+            : nullptr};
+    Common::ThreadWorker* const thread_worker{heavy_workers != nullptr ? heavy_workers
+                                              : build_in_parallel      ? &workers
+                                                                       : nullptr};
     return std::make_unique<GraphicsPipeline>(
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, thread_worker, statistics,

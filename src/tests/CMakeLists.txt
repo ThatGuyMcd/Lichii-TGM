@@ -25,6 +25,7 @@ add_executable(tests
     core/nx2_streamplay.cpp
     core/nx2_video_ready.cpp
     core/nx2_debug_server.cpp
+    core/general_channel.cpp
     core/nx2_auto_resolution.cpp
     core/nx2_present_pacer.cpp
     common/dkb_cpu_trace.cpp

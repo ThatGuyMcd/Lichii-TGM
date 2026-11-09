@@ -4812,8 +4812,8 @@ void RasterizerVulkan::PushOotObjectMotion(u32 base_vertex, u32 num_vertices, u3
                 mix(draw_state.index_buffer.first);
             }
             for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
-                mix(regs.vertex_streams[index].IsEnabled() ? regs.vertex_streams[index].stride
-                                                           : 0);
+                mix(regs.vertex_streams[index].IsEnabled() ? regs.vertex_streams[index].stride.Value()
+                                                         : 0U);
             }
             data = oot_object_motion->Allocate(identity, static_cast<u32>(range), num_instances,
                                                vertex_bias, base_instance);

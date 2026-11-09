@@ -43,6 +43,7 @@
 #include "core/loader/nso.h"
 #include "core/memory/cheat_engine.h"
 #include "core/oot_ultrawide.h"
+#include "video_core/oot_dlss.h"
 
 namespace FileSys {
 namespace {
@@ -929,8 +930,8 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
             continue;
         }
         if (patch.render_scale) {
-#ifdef EGLANTINE_STREAMLINE
-            if (!Settings::values.nvidia_dlss.GetValue() ||
+#ifdef EGLANTINE_NVIDIA_DLSS
+            if (VideoCommon::OotDlss::Requested() || !Settings::values.nvidia_dlss.GetValue() ||
                 *patch.render_scale != Settings::values.ocarina_dlss_mode.GetValue()) {
                 continue;
             }

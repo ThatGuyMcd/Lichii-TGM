@@ -16,6 +16,7 @@
 #include "common/common_funcs.h"
 #include "common/fs/path_util.h"
 #include "common/hex_util.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/file_sys/patch_manager.h"
@@ -150,6 +151,48 @@ u32 PatchMain(PatchManagerTestContext& context, const FileSys::PatchManager::Bui
 }
 
 } // Anonymous namespace
+
+TEST_CASE("Built-in DLSS render scales follow the selected upscaler on both platforms",
+          "[patch_manager]") {
+    PatchManagerTestContext context;
+    const auto previous_enabled = Settings::values.nvidia_dlss.GetValue();
+    const auto previous_mode = Settings::values.oot_anti_aliasing.GetValue();
+    const auto previous_scale = Settings::values.ocarina_dlss_mode.GetValue();
+    SCOPE_EXIT {
+        Settings::values.nvidia_dlss.SetValue(previous_enabled);
+        Settings::values.oot_anti_aliasing.SetValue(previous_mode);
+        Settings::values.ocarina_dlss_mode.SetValue(previous_scale);
+    };
+    constexpr size_t offset = sizeof(Loader::NSOHeader) + 0x806420;
+    constexpr u32 original = 0x52A7F009;
+    auto nso = MakeMain(OcarinaBuildId, TbzInstruction);
+    nso.resize(offset + sizeof(u32));
+    std::memcpy(nso.data() + offset, &original, sizeof(original));
+    using Mode = Settings::OotAntiAliasing;
+    using Scale = Settings::OcarinaDlssMode;
+    constexpr std::array scales{
+        std::pair{Scale::Quality, original}, std::pair{Scale::Balanced, 0x52A7EBE9U},
+        std::pair{Scale::Performance, 0x52A7E809U},
+        std::pair{Scale::UltraPerformance, 0x52A7E009U}};
+    for (const bool enabled : {false, true}) {
+        Settings::values.nvidia_dlss.SetValue(enabled);
+        for (const auto mode : {Mode::Game, Mode::NoSharpening, Mode::NvidiaDlss,
+                                Mode::NvidiaDlaa}) {
+            Settings::values.oot_anti_aliasing.SetValue(mode);
+            for (const auto& [scale, word] : scales) {
+                Settings::values.ocarina_dlss_mode.SetValue(scale);
+#ifdef EGLANTINE_NVIDIA_DLSS
+                const bool legacy = enabled && (mode == Mode::Game || mode == Mode::NoSharpening);
+#else
+                const bool legacy = false;
+#endif
+                CAPTURE(enabled, mode, scale);
+                REQUIRE(WordAt(context.Manager().PatchNSO(nso, "main"), offset) ==
+                        (legacy ? word : original));
+            }
+        }
+    }
+}
 
 TEST_CASE("Built-in Max Resolution patch is gated on build id and original word",
           "[patch_manager]") {

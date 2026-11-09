@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <mutex>
 #include <thread>
@@ -15,10 +16,18 @@
 
 namespace VideoCore {
 
+/// The cache that reported a flush area (GetFlushArea), for statistics (GpuWaitStats).
+enum class DownloadAreaSource : u8 {
+    None,
+    TextureCache,
+    BufferCache,
+};
+
 struct RasterizerDownloadArea {
     VAddr start_address;
     VAddr end_address;
     bool preemtive;
+    DownloadAreaSource source{};
     /// What guest memory lacks there is on its way for an earlier read: nothing to flush, only to
     /// wait for (RasterizerInterface::FinishRead).
     bool in_flight{};
@@ -49,6 +58,7 @@ struct DownloadLandingState {
     std::atomic<DAddr> begin{};
     std::atomic<DAddr> end{};
     std::atomic<u64> waits{};
+    std::atomic<u64> wait_ns{}; ///< TEST (EDEN_NX2_READ_CHECK)
 };
 
 /// The buffer cache writing downloaded GPU bytes to guest memory [begin, end). A download keeps the
@@ -92,6 +102,11 @@ public:
         return state.waits.load(std::memory_order_relaxed);
     }
 
+    /// TEST (EDEN_NX2_READ_CHECK): how long they waited, in total.
+    [[nodiscard]] static u64 WaitNs() noexcept {
+        return state.wait_ns.load(std::memory_order_relaxed);
+    }
+
 private:
     static void Wait(u64 sequence, DAddr addr, u64 size) noexcept {
         const DAddr begin = state.begin.load(std::memory_order_relaxed);
@@ -104,9 +119,15 @@ private:
             return;
         }
         state.waits.fetch_add(1, std::memory_order_relaxed);
+        const auto start = std::chrono::steady_clock::now();
         while (state.sequence.load(std::memory_order_acquire) == sequence) {
             std::this_thread::yield();
         }
+        state.wait_ns.fetch_add(
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now() - start)
+                                 .count()),
+            std::memory_order_relaxed);
     }
 
     static inline DownloadLandingState state;

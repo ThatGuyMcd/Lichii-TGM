@@ -90,7 +90,7 @@ public:
     void ApplyOpOnPAddr(PAddr address, Common::ScratchBuffer<u32>& buffer, Func&& operation) {
         DAddr subbits = DAddr(address & page_mask);
         const u32 base = compressed_device_addr[(address >> page_bits)];
-        if ((base >> MULTI_FLAG_BITS) == 0) [[likely]] {
+        if ((base >> MULTI_FLAG_BITS) == 0) {
             const DAddr d_address = (DAddr(base) << page_bits) + subbits;
             operation(d_address);
             return;
@@ -251,11 +251,15 @@ private:
         tracked_entries.GetUnchecked(page_index).cpu_backing_address = address | (asid.id << asid_start_bit);
     }
 
-    /// Starts past every earlier manager's: one built where a destroyed one was must not match
-    /// the translations a thread kept for that one (Translations compares owner and generation).
-    static inline std::atomic<u64> next_generation_base{1};
-    /// Bumped by Map and Unmap
-    std::atomic<u64> translation_generation{next_generation_base.fetch_add(1ULL << 32)};
+    /// Generations come from one counter shared by every manager. A thread's translations name
+    /// their manager by address, and a manager made where a destroyed one was (a test fixture
+    /// on the stack, a System made again in the same process) would otherwise start with the
+    /// same generation and take the old manager's host pointers for its own.
+    static u64 NextTranslationGeneration() {
+        static std::atomic<u64> next{1};
+        return next.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::atomic<u64> translation_generation{NextTranslationGeneration()}; ///< New at Map and Unmap
     using CounterType = u8;
     using CounterAtomicType = std::atomic_uint8_t;
     static constexpr size_t subentries = 8 / sizeof(CounterType);

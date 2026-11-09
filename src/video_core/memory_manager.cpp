@@ -266,11 +266,11 @@ void MemoryManager::Unmap(GPUVAddr gpu_addr, std::size_t size) {
 }
 
 std::optional<DAddr> MemoryManager::GpuToCpuAddress(GPUVAddr gpu_addr) const {
-    if (!IsWithinGPUAddressRange(gpu_addr)) [[unlikely]] {
+    if (!IsWithinGPUAddressRange(gpu_addr)) {
         return std::nullopt;
     }
     DAddr dev_addr;
-    if (GetEntry(gpu_addr, true) != EntryType::Mapped) [[unlikely]] {
+    if (GetEntry(gpu_addr, true) != EntryType::Mapped) {
         if (GetEntry(gpu_addr, false) != EntryType::Mapped)
             return std::nullopt;
         dev_addr = (DAddr(page_table[PageEntryIndex(gpu_addr, false)]) << cpu_page_bits) +
@@ -421,7 +421,7 @@ inline void MemoryManager::MemoryOperation(GPUVAddr gpu_src_addr, std::size_t si
         const std::size_t copy_amount{
             (std::min)(static_cast<std::size_t>(used_page_size) - page_offset, remaining_size)};
         auto entry = GetEntry(current_address, is_big_page);
-        if (entry == EntryType::Mapped) [[likely]] {
+        if (entry == EntryType::Mapped) {
             if constexpr (BOOL_BREAK_MAPPED) {
                 if (func_mapped(page_index, page_offset, copy_amount)) {
                     return;
@@ -439,7 +439,7 @@ inline void MemoryManager::MemoryOperation(GPUVAddr gpu_src_addr, std::size_t si
                 func_reserved(page_index, page_offset, copy_amount);
             }
 
-        } else [[unlikely]] {
+        } else {
             if constexpr (BOOL_BREAK_UNMAPPED) {
                 if (func_unmapped(page_index, page_offset, copy_amount)) {
                     return;
@@ -471,7 +471,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
             rasterizer->FlushRegion(dev_addr_base, copy_amount, which);
         }
         // A device page without memory (a sparse block nobody wrote yet) reads zero.
-        if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+        if (const u8* physical = memory.GetPointer<u8>(dev_addr_base)) {
             std::memcpy(dest_buffer, physical, copy_amount);
         } else {
             std::memset(dest_buffer, 0, copy_amount);
@@ -487,7 +487,7 @@ void MemoryManager::ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std:
         // written, while its backing is pending): the per-page copy handles that.
         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
                                                              : nullptr;
-        if (physical != nullptr) [[likely]] {
+        if (physical != nullptr) {
             std::memcpy(dest_buffer, physical, copy_amount);
         } else {
             memory.ReadBlockUnsafe(dev_addr_base, dest_buffer, copy_amount, caller);
@@ -561,7 +561,7 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         if (!unsafe) {
             rasterizer->PrepareRegionWrite(dev_addr_base, copy_amount, which);
         }
-        if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) [[likely]] {
+        if (u8* physical = memory.GetPointer<u8>(dev_addr_base)) {
             std::memcpy(physical, src_buffer, copy_amount);
         }
         // After the copy: the buffer cache may upload the written bytes from guest memory.
@@ -578,7 +578,7 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         }
         u8* const physical = IsBigPageContinuous(page_index) ? memory.GetPointer<u8>(dev_addr_base)
                                                              : nullptr;
-        if (physical != nullptr) [[likely]] {
+        if (physical != nullptr) {
             std::memcpy(physical, src_buffer, copy_amount);
         } else {
             memory.WriteBlockUnsafe(dev_addr_base, src_buffer, copy_amount);
@@ -893,9 +893,9 @@ bool MemoryManager::IsGranularRange(GPUVAddr gpu_addr, std::size_t size) const {
     if (!IsWithinGPUAddressRange(gpu_addr) || size > address_space_size - gpu_addr) {
         return false;
     }
-    if (GetEntry(gpu_addr, true) == EntryType::Mapped) [[likely]] {
+    if (GetEntry(gpu_addr, true) == EntryType::Mapped) {
         size_t page_index = gpu_addr >> big_page_bits;
-        if (IsBigPageContinuous(page_index)) [[likely]] {
+        if (IsBigPageContinuous(page_index)) {
             const std::size_t page{(page_index & big_page_mask) + size};
             return page <= big_page_size;
         }

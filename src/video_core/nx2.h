@@ -298,7 +298,7 @@ inline void Nx2AddSparseSpan(u64 gpu_address, u64 size) {
 
 inline void Nx2BackSparseWrite(u64 gpu_address, u64 size, const void* data) {
     if (gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
-        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) {
         return;
     }
     std::scoped_lock lk{g_nx2_sparse_backing_mutex};
@@ -413,7 +413,7 @@ inline std::vector<std::pair<u64, u64>> Nx2SparseDataRanges(u64 gpu_address, u64
 /// True when [gpu_address, +size) lies in one sparse region.
 inline bool Nx2InSparseRegion(u64 gpu_address, u64 size) {
     if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
-        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) {
         return false;
     }
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
@@ -429,7 +429,7 @@ inline bool Nx2InSparseRegion(u64 gpu_address, u64 size) {
 /// later get memory (their contents live in the host image, not in guest memory).
 inline void Nx2SparseMarkWritten(u64 gpu_address, u64 size) {
     if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
-        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) {
         return;
     }
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
@@ -449,7 +449,7 @@ inline void Nx2SparseMarkWritten(u64 gpu_address, u64 size) {
 /// True when [gpu_address, +size) lies in one sparse region and none of it has been written.
 inline bool Nx2SparseUnwritten(u64 gpu_address, u64 size) {
     if (size == 0 || gpu_address + size <= g_nx2_sparse_low.load(std::memory_order_relaxed) ||
-        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) [[likely]] {
+        gpu_address >= g_nx2_sparse_high.load(std::memory_order_relaxed)) {
         return false;
     }
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
@@ -491,6 +491,16 @@ public:
     /// One per channel suspended at once.
     static constexpr size_t MaxWaiters = 64;
 
+    /// TEST (EDEN_NX2_ACQUIRE_STATS): the writer that latched a waiter (OnWrite).
+    enum class Source : u8 {
+        Unknown,
+        PayloadRelease, ///< The query cache's payload releases (puller, 3D, compute, copy, QMD)
+        QueryResult,    ///< A report the query cache wrote once its fence passed
+        QmdReduction,
+        QmdMax,
+        Count,
+    };
+
     static Nx2SemaphoreWaiters& Get() {
         static Nx2SemaphoreWaiters waiters;
         return waiters;
@@ -516,6 +526,7 @@ public:
         free_slot->address = device_address;
         free_slot->value = value;
         free_slot->operation = operation;
+        free_slot->source = Source::Unknown;
         free_slot->latched.store(false, std::memory_order_relaxed);
         free_slot->owner.store(owner, std::memory_order_relaxed);
         count.fetch_add(1, std::memory_order_release);
@@ -548,8 +559,19 @@ public:
         return false;
     }
 
-    /// A GPU write of value to the u32 at device_address.
-    void OnWrite(u64 device_address, u32 value) {
+    /// TEST: what latched `owner`'s waiter.
+    [[nodiscard]] Source LatchSource(const void* owner) {
+        std::scoped_lock lk{mutex};
+        for (const Slot& w : slots) {
+            if (w.owner.load(std::memory_order_relaxed) == owner && w.latched.load(std::memory_order_acquire)) {
+                return w.source;
+            }
+        }
+        return Source::Unknown;
+    }
+
+    /// A GPU write of `value` to the u32 at `device_address` (by `source`, TEST).
+    void OnWrite(u64 device_address, u32 value, Source source = Source::Unknown) {
         if (count.load(std::memory_order_acquire) == 0) {
             return;
         }
@@ -557,6 +579,7 @@ public:
         for (Slot& slot : slots) {
             if (slot.owner.load(std::memory_order_relaxed) != nullptr &&
                 slot.address == device_address && Matches(slot, value)) {
+                slot.source = source;
                 slot.latched.store(true, std::memory_order_release);
             }
         }
@@ -569,6 +592,7 @@ private:
         u32 value{};
         u32 operation{};
         std::atomic<bool> latched{};
+        Source source{};
     };
 
     static bool Matches(const Slot& slot, u32 current) {

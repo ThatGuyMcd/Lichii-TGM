@@ -21,9 +21,9 @@ class System;
 
 namespace VideoCommon::ShaderWarm {
 
-/// Where the shader precache file of a title lives: next to its pipeline cache
-/// (<shader dir>/<title id>/warm-compute.bin). It holds the compute programs found in the game
-/// files, in pipeline cache format with no recorded reads.
+/// Where the warm-up files of a title live: next to its pipeline cache
+/// (<shader dir>/<title id>/warm-compute.bin, warm-graphics.bin and warm-mesh.bin).
+/// EDEN_NX2_COMPUTE_WARM / EDEN_NX2_GRAPHICS_WARM / EDEN_NX2_MESH_WARM override these paths.
 std::filesystem::path ComputeWarmPath(u64 title_id);
 
 /// The title's graphics precache file (<shader dir>/<title id>/warm-graphics.bin): the vertex
@@ -31,6 +31,7 @@ std::filesystem::path ComputeWarmPath(u64 title_id);
 /// guessed draw state. Built as pipeline libraries, so it needs graphics pipeline library
 /// support.
 std::filesystem::path GraphicsWarmPath(u64 title_id);
+std::filesystem::path MeshWarmPath(u64 title_id);
 
 /// "Already precached" marker of a precache file (same folder, extension .done), written by the
 /// emulator after the precache ran to the end. A matching marker skips the precache at boot.
@@ -61,13 +62,15 @@ struct WarmStamp {
     u32 cache_version{};
     u32 no_inline{};
     u32 link_mode{};
+    std::string configuration{"persist1"};
 
     /// True when `other` was written for the same file, driver, device, cache version, shader
     /// calls mode and link mode (the entry count is informative).
     [[nodiscard]] bool Matches(const WarmStamp& other) const noexcept {
         return size == other.size && write_time == other.write_time && driver == other.driver &&
                device_id == other.device_id && cache_version == other.cache_version &&
-               no_inline == other.no_inline && link_mode == other.link_mode;
+               no_inline == other.no_inline && link_mode == other.link_mode &&
+               configuration == other.configuration;
     }
 };
 
@@ -142,30 +145,33 @@ struct Result {
     bool ok{};
     std::string error;           ///< Empty when ok
     size_t archives{};           ///< Shader archives found in the game files
-    size_t compute_programs{};   ///< Entries written to the precache file
-    size_t vertex_programs{};    ///< Vertex entries written to the graphics precache file
-    size_t fragment_programs{};  ///< Fragment entries written to the graphics precache file
+    size_t compute_programs{};   ///< Entries written to the compute file
+    size_t vertex_programs{};    ///< Vertex entries written to the graphics file
+    size_t fragment_programs{};  ///< Fragment entries written to the graphics file
+    size_t mesh_pipelines{};     ///< Speculative paired task/mesh/fragment entries
     size_t skipped{};            ///< Programs that failed to extract or convert
 };
 
-/// Builds the precache files for the game at `game_path` (any format the loader opens, Switch 2
+/// Builds warm-up files for the game at `game_path` (any format the loader opens, Switch 2
 /// .nup first), from the user's own copy and keys, with no external tools. Runs on the calling
 /// thread; `progress` is called from it; stops early when `stop` is requested. The game's
-/// existing pipeline cache, when present, is used for the graphics draw state guesses; otherwise
-/// built-in defaults are used.
+/// existing pipeline cache, when present, is used for the draw state guesses; otherwise built-in
+/// defaults are used. Mesh predictions require captured templates and verified archive pairing.
 Result BuildWarmFiles(Core::System& system, const std::filesystem::path& game_path, u64 title_id,
                       const std::function<void(const Progress&)>& progress,
                       std::stop_token stop);
 
 /// Overrides for BuildWarmFilesWith (tests and tools).
 struct BuildOptions {
-    /// Folder for warm-compute.bin and warm-graphics.bin; empty: <shader dir>/<title id>.
+    /// Folder for the three warm-up files; empty: <shader dir>/<title id>.
     std::filesystem::path output_dir;
     /// Pipeline caches used for the draw state guesses. Unset: the title's own pipeline cache
     /// when it exists, else the built-in defaults. Set but empty: always the built-in defaults.
     std::optional<std::vector<std::filesystem::path>> runtime_caches;
     /// Conversion threads, 0: a quarter of the CPU threads, 2 to 6.
     size_t threads{};
+    /// Bound speculative mesh combinations; 0 disables generation. Requires runtime templates.
+    size_t mesh_candidates = 512;
 };
 
 /// BuildWarmFiles with explicit output folder and draw state sources.

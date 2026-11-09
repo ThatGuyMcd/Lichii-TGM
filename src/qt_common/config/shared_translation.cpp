@@ -409,6 +409,15 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "instead of copying them into every place. Driver compiles of such shaders get "
               "several times faster (compute precache about 3x); the game may run slightly "
               "slower.\nApplies to shaders built after the change."));
+    INSERT(Settings, use_mesh_shader_warmup,
+           tr("Prewarm predicted mesh shaders (experimental)"),
+           tr("Prepares predicted mesh shaders to reduce first-visit stutters. Benefits vary by "
+              "game and GPU; it can add startup time.\n"
+              "Uses the 'Precache shaders before game start' timing setting and requires "
+              "prepared shader data. Uses mesh shader libraries when shader libraries are "
+              "enabled and supported. Does not skip draws or effects.\n"
+              "Takes effect after restarting the game. Turning it off stops future mesh "
+              "prewarming and mesh shader libraries; existing caches are kept."));
     INSERT(Settings, shader_warm_threads, tr("Shader precache threads:"),
            tr("CPU threads the shader precache uses on the loading screen. 0 uses every CPU "
               "thread.\nTakes effect at the next game start."));

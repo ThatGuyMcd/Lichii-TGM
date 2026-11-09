@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -77,6 +78,7 @@
 #include "video_core/shader_environment.h"
 #include "video_core/tensor_program_policy.h"
 #include "video_core/shader_notify.h"
+#include "video_core/shader_warm/mesh_warm_validation.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
 #include "video_core/spirv_inline_control.h"
 #include "video_core/surface.h"
@@ -656,6 +658,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
                                 !device_.DriverCachesPipelines()},
+      mesh_warm_enabled{Settings::values.use_mesh_shader_warmup.GetValue()},
       serialization_thread(1, "VkPipelineSerialization", {}, Common::ThreadPlacement::Background) {
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
@@ -1739,7 +1742,9 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                             pipeline->Build();
                         }
                         std::scoped_lock lock{state.mutex};
-                        graphics_cache.emplace(key, std::move(pipeline));
+                        if (!pipeline->Failed()) {
+                            graphics_cache.emplace(key, std::move(pipeline));
+                        }
                         built_one();
                     };
                 },
@@ -2084,7 +2089,8 @@ size_t PipelineCache::PrecacheGraphicsWarm(u64 title_id, size_t num_threads, siz
     }
     const bool complete =
         !reader.failed && reader.end == reader.position && reader.driver_failures == 0;
-    if (complete && !skipped && !stop_loading.stop_requested()) {
+    if (complete && !skipped && !stop_loading.stop_requested() &&
+        SaveVulkanPipelineCacheAndWait()) {
         // A precache with driver failures writes no marker, so the next start tries again.
         if (const auto stamp_done = stamp(reader.read)) {
             ShaderWarm::WriteWarmMarker(warm_file, *stamp_done);
@@ -2197,7 +2203,7 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
         return !(graphics_current && graphics_marker &&
                  graphics_marker->Matches(*graphics_current));
     }();
-    if (jobs.empty() && !compute_pending && !graphics_warm_pending) {
+    if (jobs.empty() && !compute_pending && !graphics_warm_pending && !mesh_warm_enabled) {
         LOG_INFO(Render_Vulkan, "Shader precache: nothing to precache");
         return;
     }
@@ -2270,7 +2276,11 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
         batch.Wait();
     }
     const size_t total_built = static_cast<size_t>(std::count(built.begin(), built.end(), u8{1}));
-    if (compute_pending && !skipped) {
+    const bool cache_ready = !skipped && !stop_loading.stop_requested() &&
+                             SaveVulkanPipelineCacheAndWait();
+    const bool compute_ok = std::all_of(built.begin() + graphics_jobs, built.end(),
+                                      [](u8 value) { return value != 0; });
+    if (compute_pending && compute_ok && cache_ready) {
         if (const auto stamp_done = stamp(file_entries)) {
             ShaderWarm::WriteWarmMarker(warm_file, *stamp_done);
         }
@@ -2308,6 +2318,195 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
         if (!stop_loading.stop_requested() && graphics_built != 0) {
             QueueVulkanPipelineCacheSave();
         }
+    }
+    if (!skipped && !stop_loading.stop_requested()) {
+        PrecacheMeshWarm(title_id, stop_loading, callback, skipped);
+    }
+}
+
+void PipelineCache::PrecacheMeshWarm(u64 title_id, std::stop_token stop_loading,
+                                    const VideoCore::DiskResourceLoadCallback& callback,
+                                    bool& skipped) {
+    namespace ShaderWarm = VideoCommon::ShaderWarm;
+    if (!mesh_warm_enabled || !device.IsExtMeshShaderSupported()) {
+        return;
+    }
+    const auto warm_file = [&] {
+        const char* override = std::getenv("EDEN_NX2_MESH_WARM");
+        return override && *override ? std::filesystem::path{override}
+                                     : ShaderWarm::MeshWarmPath(title_id);
+    }();
+    std::error_code error;
+    if (!std::filesystem::exists(warm_file, error)) {
+        return;
+    }
+    const auto stamp = [&](u64 entries) {
+        auto value = ShaderWarm::CurrentWarmStamp(
+            warm_file, entries, device.GetDriverVersion(), device.GetDeviceID(), CACHE_VERSION,
+            NoInlineBits(), LinkModeBits(device));
+        if (value) {
+            value->configuration = fmt::format(
+                "mesh4-{}-{}-{}-{}-{}-{}-{}-{}", u32(device.GetDriverID()),
+                profile.supported_spirv, profile.need_fastmath_off,
+                profile.ignore_nan_fp_comparisons, profile.support_native_ndc,
+                profile.support_cooperative_hmma, profile.support_cooperative_hmma_16x16x16,
+                device.IsExtGraphicsPipelineLibrarySupported());
+        }
+        return value;
+    };
+    const auto initial = stamp(0);
+    const auto marker = ShaderWarm::ReadWarmMarker(warm_file);
+    if ((device.DriverCachesPipelines() ||
+         (use_vulkan_pipeline_cache &&
+          std::filesystem::exists(vulkan_pipeline_cache_filename, error))) &&
+        initial && marker && marker->Matches(*initial)) {
+        return;
+    }
+    size_t built{}, rejected{}, driver_failed{}, read{};
+    bool complete{};
+    const auto cancelled = [&] {
+        skipped = skipped || ShaderWarm::TakeSkipWarm();
+        return skipped || stop_loading.stop_requested();
+    };
+    try {
+        std::ifstream file(warm_file, std::ios::binary | std::ios::ate);
+        file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+        const std::streamoff end = file.tellg();
+        file.seekg(0);
+        std::array<char, 8> magic{};
+        u32 version{};
+        file.read(magic.data(), magic.size());
+        file.read(reinterpret_cast<char*>(&version), sizeof(version));
+        constexpr std::array<char, 8> expected{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
+        if (magic != expected || version != CACHE_VERSION) {
+            throw std::runtime_error("Unsupported mesh precache file header");
+        }
+        const size_t total = ShaderWarm::ReadWarmCount(warm_file);
+        while (!cancelled() && file.tellg() < end) {
+            u32 count{};
+            file.read(reinterpret_cast<char*>(&count), sizeof(count));
+            if (count != 2 && count != 3) {
+                throw std::runtime_error("Mesh precache record needs two or three stages");
+            }
+            std::array<FileEnvironment, 3> environments;
+            u64 budget = ShaderWarm::MaxMeshWarmRecordBytes -
+                         sizeof(GraphicsPipelineCacheKey) - sizeof(count);
+            for (u32 i = 0; i < count; ++i) {
+                const u32 stage = i + 1 == count ? 4 : (count == 3 && i == 0 ? 7 : 8);
+                const std::streamoff offset = file.tellg();
+                const u64 bytes = ShaderWarm::InspectMeshWarmEnvironment(
+                    file, stage, std::min(budget, static_cast<u64>(end - offset)));
+                budget -= bytes;
+                file.seekg(offset);
+                environments[i].Deserialize(file, end);
+                if (std::streamoff{file.tellg()} != offset + static_cast<std::streamoff>(bytes) ||
+                    !environments[i].IsNativeProgram()) {
+                    throw std::runtime_error("Invalid native mesh precache environment");
+                }
+            }
+            if (count == 3 && environments[0].MeshRegisters() != environments[1].MeshRegisters()) {
+                throw std::runtime_error("Inconsistent task and mesh register context");
+            }
+            GraphicsPipelineCacheKey key{};
+            file.read(reinterpret_cast<char*>(&key), sizeof(key));
+            if (!ShaderWarm::ValidMeshWarmKey(key.unique_hashes, count)) {
+                throw std::runtime_error("Invalid mesh precache stage slots");
+            }
+            ++read;
+            if (!KeyFitsDevice(key) || build_journal->Skip(key.Hash())) {
+                ++rejected;
+                continue;
+            }
+            // One detached candidate at a time, charged to the same driver budget as native
+            // mesh draws. All descriptor banks and libraries die before the job completes.
+            auto batch = shader_jobs->CreateBatch();
+            shader_jobs->Submit(
+                {.priority = VideoCommon::ShaderJobPriority::Background,
+                 .driver_bytes = GraphicsDriverBytes(true),
+                 .driver = [this, key, count, &built, &rejected, &driver_failed,
+                            environments = std::move(environments)]() mutable {
+                     GraphicsPipelineLibraryCache::SetNoRetainOnThisThread(true);
+                     SCOPE_EXIT { GraphicsPipelineLibraryCache::SetNoRetainOnThisThread(false); };
+                     try {
+                         static const GuessMissing guess{};
+                         std::array<Shader::Environment*, 3> pointers{};
+                         for (u32 i = 0; i < count; ++i) {
+                             environments[i].SetGuessMissing(&guess);
+                             pointers[i] = &environments[i];
+                         }
+                         ShaderPools pools;
+                         DescriptorPool descriptors{device, scheduler};
+                         auto pipeline = CreateGraphicsPipeline(
+                             pools, key, std::span{pointers.data(), count}, nullptr, false,
+                             nullptr, nullptr, false, false, &descriptors);
+                         if (!pipeline) {
+                             ++rejected;
+                             return;
+                         }
+                         const DriverBuildJournal::Scope recorded{&*build_journal, key.Hash()};
+                         pipeline->Build();
+                         if (pipeline->Failed()) {
+                             ++driver_failed;
+                         } else {
+                             ++built;
+                         }
+                     } catch (const vk::Exception& exception) {
+                         ++driver_failed;
+                         LOG_DEBUG(Render_Vulkan, "mesh precache: {}", exception.what());
+                     } catch (const std::exception& exception) {
+                         ++rejected;
+                         LOG_DEBUG(Render_Vulkan, "mesh precache: {}", exception.what());
+                     }
+                 }},
+                &batch);
+            while (!batch.Idle()) {
+                if (cancelled()) {
+                    shader_jobs->Cancel(batch);
+                    break;
+                }
+                if (callback) {
+                    callback(VideoCore::LoadCallbackStage::Warm, read - 1,
+                             std::max(total, read));
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            }
+            batch.Wait();
+        }
+        complete = file.tellg() == end && !cancelled() && driver_failed == 0 && rejected == 0;
+    } catch (const std::exception& exception) {
+        LOG_WARNING(Render_Vulkan, "Mesh precache stopped: {}", exception.what());
+    }
+    const bool cache_ready = complete && SaveVulkanPipelineCacheAndWait();
+    const auto final = stamp(read);
+    if (cache_ready && !cancelled() && initial && final && initial->Matches(*final)) {
+        ShaderWarm::WriteWarmMarker(warm_file, *final);
+    }
+    LOG_INFO(Render_Vulkan, "Mesh precache: {} built, {} rejected, {} driver failures, complete={}",
+             built, rejected, driver_failed, complete && cache_ready);
+}
+
+bool PipelineCache::SaveVulkanPipelineCacheAndWait() {
+    if (device.DriverCachesPipelines()) {
+        return true;
+    }
+    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty()) {
+        return false;
+    }
+    auto saved = std::make_shared<std::promise<bool>>();
+    auto result = saved->get_future();
+    serialization_thread.QueueWork([this, saved] {
+        try {
+            saved->set_value(SerializeVulkanPipelineCache(
+                vulkan_pipeline_cache_filename, vulkan_pipeline_cache, CACHE_VERSION));
+        } catch (...) {
+            saved->set_exception(std::current_exception());
+        }
+    });
+    try {
+        return result.get();
+    } catch (const std::exception& exception) {
+        LOG_WARNING(Render_Vulkan, "Shader precache cache save failed: {}", exception.what());
+        return false;
     }
 }
 
@@ -2912,7 +3111,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
     bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools,
-    ParallelTranslation* parallel, bool libraries_only) try {
+    ParallelTranslation* parallel, bool libraries_only, bool notify_runtime_build,
+    DescriptorPool* transient_descriptors) try {
     auto hash = key.Hash();
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
     // Declared before the programs, whose IR they hold
@@ -3426,7 +3626,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 continue;
             }
             const Shader::IR::Program& program{programs[index]};
-            if (program.stage == Shader::Stage::Task || program.stage == Shader::Stage::Mesh) {
+            if (!mesh_warm_enabled &&
+                (program.stage == Shader::Stage::Task || program.stage == Shader::Stage::Mesh)) {
                 return false;
             }
             const bool fragment = index + 1 == Maxwell::MaxShaderProgram;
@@ -3574,7 +3775,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                     native_mesh);
     auto pipeline = std::make_unique<GraphicsPipeline>(
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, pipeline_binaries.get(),
-        libraries_only ? nullptr : &shader_notify, device, descriptor_pool,
+        libraries_only || !notify_runtime_build ? nullptr : &shader_notify, device,
+        transient_descriptors ? *transient_descriptors : descriptor_pool,
         guest_descriptor_queue, descriptor_buffer_ring, build_queue, statistics,
         render_pass_cache, key, std::move(modules), infos, std::move(emit_stages),
         std::move(mesh_emulation), library_params);
@@ -3899,53 +4101,51 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
     return {.failure = exception.what()};
 }
 
-void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& filename,
+bool PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& filename,
                                                  const vk::PipelineCache& pipeline_cache,
                                                  u32 cache_version) {
-    // Written beside the cache and renamed over it: the emulator stopped mid-write left the cache
-    // empty, and every later boot failed to read it.
     auto temporary = filename;
     temporary += ".tmp";
-    std::ofstream file(temporary, std::ios::binary);
-    if (!file.is_open()) {
-        LOG_ERROR(Common_Filesystem, "Failed to open Vulkan driver pipeline cache file {}",
-                  Common::FS::PathToUTF8String(temporary));
-        return;
-    }
     try {
-        file.exceptions(std::ifstream::failbit);
-        file.write(VULKAN_CACHE_MAGIC_NUMBER.data(), VULKAN_CACHE_MAGIC_NUMBER.size())
-            .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
-
-        size_t cache_size = 0;
-        std::vector<char> cache_data;
-        if (pipeline_cache) {
-            pipeline_cache.Read(&cache_size, nullptr);
-            cache_data.resize(cache_size);
-            pipeline_cache.Read(&cache_size, cache_data.data());
+        if (!pipeline_cache) {
+            return false;
         }
-        file.write(cache_data.data(), cache_size);
+        std::vector<char> cache_data;
+        size_t cache_size{};
+        VkResult result = VK_INCOMPLETE;
+        // Runtime builds can grow the cache between its size query and the data read.
+        for (size_t attempt = 0; attempt < 3 && result == VK_INCOMPLETE; ++attempt) {
+            result = pipeline_cache.Read(&cache_size, nullptr);
+            if (result != VK_SUCCESS || cache_size == 0) {
+                break;
+            }
+            cache_data.resize(cache_size);
+            result = pipeline_cache.Read(&cache_size, cache_data.data());
+        }
+        if (result != VK_SUCCESS || cache_size == 0 || cache_size > cache_data.size()) {
+            LOG_ERROR(Render_Vulkan, "Failed to read Vulkan driver pipeline cache: {}",
+                      static_cast<int>(result));
+            return false;
+        }
+        // Publish only a complete snapshot. A failed write leaves the previous cache intact.
+        std::ofstream file;
+        file.exceptions(std::ofstream::failbit | std::ofstream::badbit);
+        file.open(temporary, std::ios::binary | std::ios::trunc);
+        file.write(VULKAN_CACHE_MAGIC_NUMBER.data(), VULKAN_CACHE_MAGIC_NUMBER.size())
+            .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version))
+            .write(cache_data.data(), cache_size);
         file.close();
-    } catch (const std::ios_base::failure& e) {
-        // The cache stays as it was: only the file being written goes.
-        LOG_ERROR(Common_Filesystem, "{}", e.what());
-        file.exceptions(std::ios::goodbit);
-        file.close();
-        std::error_code remove_error;
-        std::filesystem::remove(temporary, remove_error);
-        return;
-    }
-    std::error_code error;
-    std::filesystem::rename(temporary, filename, error);
-    if (error) {
-        LOG_ERROR(Common_Filesystem, "Failed to replace Vulkan driver pipeline cache file {}: {}",
-                  Common::FS::PathToUTF8String(filename), error.message());
+        std::filesystem::rename(temporary, filename);
+        LOG_INFO(Render_Vulkan, "Vulkan driver pipelines cached at: {}",
+                 Common::FS::PathToUTF8String(filename));
+        return true;
+    } catch (const std::exception& exception) {
+        LOG_ERROR(Common_Filesystem, "Failed to save Vulkan driver pipeline cache {}: {}",
+                  Common::FS::PathToUTF8String(filename), exception.what());
+        std::error_code error;
         std::filesystem::remove(temporary, error);
-        return;
+        return false;
     }
-
-    LOG_INFO(Render_Vulkan, "Vulkan driver pipelines cached at: {}",
-             Common::FS::PathToUTF8String(filename));
 }
 
 vk::PipelineCache PipelineCache::LoadVulkanPipelineCache(const std::filesystem::path& filename,

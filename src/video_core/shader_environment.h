@@ -259,6 +259,10 @@ public:
     /// Reads an environment that must end before `end`, the end of the file
     void Deserialize(std::istream& file, std::streampos end);
 
+    std::streamoff FileOffset() const {
+        return file_offset;
+    }
+
     [[nodiscard]] size_t MemorySize() const;
 
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
@@ -319,6 +323,7 @@ public:
     }
 
 private:
+    std::streamoff file_offset{};
     std::vector<u64> code;
     ::Common::unordered_map<u32, Shader::TextureType> texture_types;
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;

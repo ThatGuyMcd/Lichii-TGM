@@ -204,7 +204,8 @@ private:
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
         bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools = nullptr,
-        ParallelTranslation* parallel = nullptr, bool libraries_only = false);
+        ParallelTranslation* parallel = nullptr, bool libraries_only = false,
+        bool notify_runtime_build = true, DescriptorPool* transient_descriptors = nullptr);
 
     /// Released IR pools for a build, or new ones
     [[nodiscard]] std::shared_ptr<ShaderPools> TakeSparePools();
@@ -257,7 +258,7 @@ private:
     /// Cancels the v2 prebuild and waits for its running stages
     void StopBackgroundJobs();
 
-    void SerializeVulkanPipelineCache(const std::filesystem::path& filename,
+    bool SerializeVulkanPipelineCache(const std::filesystem::path& filename,
                                       const vk::PipelineCache& pipeline_cache, u32 cache_version);
 
     vk::PipelineCache LoadVulkanPipelineCache(const std::filesystem::path& filename,
@@ -293,6 +294,11 @@ private:
                          std::unordered_set<u64> precached, std::stop_token stop_loading,
                          const VideoCore::DiskResourceLoadCallback& callback);
 
+    // Predicted mesh pipelines only populate the driver cache; they never serve draws.
+    void PrecacheMeshWarm(u64 title_id, std::stop_token stop_loading,
+                         const VideoCore::DiskResourceLoadCallback& callback, bool& skipped);
+    bool SaveVulkanPipelineCacheAndWait();
+
     /// The graphics part of the shader precache, after PrecacheShaders' builds: the vertex and
     /// fragment programs of the title's warm-graphics.bin (made from the game files, missing
     /// reads guessed; needs graphics pipeline libraries) are built as single-stage libraries on
@@ -317,6 +323,7 @@ private:
     VideoCore::ShaderNotify& shader_notify;
     bool use_asynchronous_shaders{};
     bool use_vulkan_pipeline_cache{};
+    bool mesh_warm_enabled{};
     /// The pipelines' builds, the prebuild and the precache. Declared before the pipelines, whose
     /// builds it runs.
     std::optional<VideoCommon::ShaderJobScheduler> shader_jobs;

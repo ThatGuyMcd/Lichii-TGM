@@ -28,7 +28,8 @@ bool ShaderWarmFilesExist(u64 title_id) {
     }
     std::error_code ec;
     return std::filesystem::exists(ShaderWarm::ComputeWarmPath(title_id), ec) ||
-           std::filesystem::exists(ShaderWarm::GraphicsWarmPath(title_id), ec);
+           std::filesystem::exists(ShaderWarm::GraphicsWarmPath(title_id), ec) ||
+           std::filesystem::exists(ShaderWarm::MeshWarmPath(title_id), ec);
 }
 
 bool DeleteShaderWarmFiles(u64 title_id, std::string& error) {
@@ -194,7 +195,7 @@ void ShaderWarmDialog::OnFinished(const ShaderWarm::Result& result, bool stopped
     if (result.ok) {
         stage_label->setText(tr("Shader precache is ready."));
         const size_t graphics_programs = result.vertex_programs + result.fragment_programs;
-        if (result.compute_programs == 0 && graphics_programs == 0) {
+        if (result.compute_programs == 0 && graphics_programs == 0 && result.mesh_pipelines == 0) {
             text = result.archives == 0
                        ? tr("This game keeps its shaders in a format Lichii can't read, so none "
                             "are prepared from the game files.")
@@ -202,10 +203,11 @@ void ShaderWarmDialog::OnFinished(const ShaderWarm::Result& result, bool stopped
             text += QLatin1Char(' ') +
                     tr("The shaders your earlier play sessions saved are still precached.");
         } else {
-            text = tr("Compute programs: %L1\nVertex programs: %L2\nFragment programs: %L3")
+            text = tr("Compute programs: %L1\nVertex programs: %L2\nFragment programs: %L3\nMesh candidates: %L4")
                        .arg(static_cast<qulonglong>(result.compute_programs))
                        .arg(static_cast<qulonglong>(result.vertex_programs))
-                       .arg(static_cast<qulonglong>(result.fragment_programs));
+                       .arg(static_cast<qulonglong>(result.fragment_programs))
+                       .arg(static_cast<qulonglong>(result.mesh_pipelines));
         }
         if (result.skipped > 0) {
             text += QLatin1Char('\n') +

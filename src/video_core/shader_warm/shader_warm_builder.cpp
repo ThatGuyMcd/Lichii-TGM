@@ -23,6 +23,7 @@
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/file_sys/nup_container.h"
@@ -32,6 +33,7 @@
 #include "core/loader/loader.h"
 #include "video_core/pipeline_cache_files.h"
 #include "video_core/shader_warm/shader_archives.h"
+#include "video_core/shader_warm/mesh_warm_builder.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
 #include "video_core/shader_warm/warm_records.h"
 
@@ -157,6 +159,7 @@ struct GraphicsProgram {
     std::vector<u32> archives;
     bool built{};
     u64 hash{};
+    u128 environment{};
 };
 
 struct Job {
@@ -165,6 +168,7 @@ struct Job {
     u32 stage{};
     size_t graphics_index{};
     std::vector<u8> program;
+    std::vector<u8> constants;
     ComputeControl control{};
 };
 
@@ -269,9 +273,10 @@ private:
             }
             if (job.graphics) {
                 result.hash = StageHash(lowered.code);
-                result.bytes = GraphicsEnv(job.stage, lowered, job.program);
+                result.bytes = GraphicsEnv(job.stage, lowered, job.program, job.constants);
             } else {
-                result.bytes = ComputeEntry(lowered, job.control, result.compute_key);
+                result.bytes =
+                    ComputeEntry(lowered, job.control, job.constants, result.compute_key);
             }
             result.ok = true;
         } catch (const std::exception& e) {
@@ -326,6 +331,10 @@ fs::path GraphicsWarmPath(u64 title_id) {
     return TitleDir(title_id) / "warm-graphics.bin";
 }
 
+fs::path MeshWarmPath(u64 title_id) {
+    return TitleDir(title_id) / "warm-mesh.bin";
+}
+
 fs::path WarmMarkerPath(const fs::path& warm_file) {
     fs::path marker = warm_file;
     marker.replace_extension(".done");
@@ -375,6 +384,9 @@ std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
           stamp.device_id >> stamp.cache_version >> stamp.no_inline >> stamp.link_mode)) {
         return std::nullopt;
     }
+    if (!(in >> stamp.configuration)) {
+        stamp.configuration.clear();
+    }
     return stamp;
 }
 
@@ -382,7 +394,7 @@ bool WriteWarmMarker(const fs::path& warm_file, const WarmStamp& stamp) {
     std::ofstream out(WarmMarkerPath(warm_file), std::ios::trunc);
     out << stamp.size << ' ' << stamp.write_time << ' ' << stamp.entries << ' ' << stamp.driver
         << ' ' << stamp.device_id << ' ' << stamp.cache_version << ' ' << stamp.no_inline << ' '
-        << stamp.link_mode << '\n';
+        << stamp.link_mode << ' ' << stamp.configuration << '\n';
     out.close();
     return static_cast<bool>(out);
 }
@@ -390,7 +402,20 @@ bool WriteWarmMarker(const fs::path& warm_file, const WarmStamp& stamp) {
 bool WarmPending(u64 title_id) {
     const auto file = ComputeWarmPath(title_id);
     std::error_code ec;
-    return !fs::exists(file, ec) || !fs::exists(WarmMarkerPath(file), ec);
+    if (!fs::exists(file, ec) || !fs::exists(WarmMarkerPath(file), ec)) {
+        return true;
+    }
+    for (const auto& extra : {GraphicsWarmPath(title_id), MeshWarmPath(title_id)}) {
+        if (extra == MeshWarmPath(title_id) &&
+            !Settings::values.use_mesh_shader_warmup.GetValue()) {
+            continue;
+        }
+        if (fs::exists(extra, ec) && fs::file_size(extra, ec) > 12 && !ec &&
+            !fs::exists(WarmMarkerPath(extra), ec)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void RequestWarmBeforeStart(bool before_start) {
@@ -465,7 +490,8 @@ bool DeleteWarmFiles(u64 title_id, std::string* error) {
             }
         }
     };
-    for (const auto& warm : {ComputeWarmPath(title_id), GraphicsWarmPath(title_id)}) {
+    for (const auto& warm : {ComputeWarmPath(title_id), GraphicsWarmPath(title_id),
+                             MeshWarmPath(title_id)}) {
         fs::path tmp = warm;
         tmp += ".tmp";
         for (const auto& path : {warm, WarmMarkerPath(warm), WarmCountPath(warm), tmp}) {
@@ -501,18 +527,24 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     fs::create_directories(output_dir, ec);
     const fs::path compute_path = output_dir / "warm-compute.bin";
     const fs::path graphics_path = output_dir / "warm-graphics.bin";
+    const fs::path mesh_path = output_dir / "warm-mesh.bin";
+    fs::path mesh_tmp = mesh_path;
+    mesh_tmp += ".tmp";
     fs::path compute_tmp = compute_path;
     compute_tmp += ".tmp";
     fs::path graphics_tmp = graphics_path;
     graphics_tmp += ".tmp";
     std::ofstream compute_out;
     std::ofstream graphics_out;
+    std::ofstream mesh_out;
     const auto fail = [&](std::string error) {
         compute_out.close();
         graphics_out.close();
+        mesh_out.close();
         std::error_code ignored;
         fs::remove(compute_tmp, ignored);
         fs::remove(graphics_tmp, ignored);
+        fs::remove(mesh_tmp, ignored);
         result.ok = false;
         result.error = std::move(error);
         LOG_WARNING(Render_Vulkan, "Shader precache build for {:016x} failed: {}", title_id,
@@ -543,6 +575,7 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
         }
     }
     const RuntimeStats stats = ReadRuntimeStats(caches);
+    MeshWarmRecipes mesh_recipes{caches, options.mesh_candidates};
     const bool use_stats = stats.occurrences != 0;
     const GraphicsKey vertex_template = stats.templates[0] ? *stats.templates[0]
                                                            : DefaultTemplate(true);
@@ -603,19 +636,21 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
 
     compute_out.open(compute_tmp, std::ios::binary | std::ios::trunc);
     graphics_out.open(graphics_tmp, std::ios::binary | std::ios::trunc);
-    if (!compute_out || !graphics_out) {
+    mesh_out.open(mesh_tmp, std::ios::binary | std::ios::trunc);
+    if (!compute_out || !graphics_out || !mesh_out) {
         return fail("Cannot write to " + Common::FS::PathToUTF8String(output_dir));
     }
     WriteHeader(compute_out);
     WriteHeader(graphics_out);
+    WriteHeader(mesh_out);
 
     // Bookkeeping in program order (the order the manifest lists programs).
     std::unordered_set<PairHash, PairHasher> compute_identities;
     std::unordered_map<u128, size_t, U128Hasher> graphics_index; // code -> program
     std::vector<GraphicsProgram> graphics;
-    std::unordered_set<std::string> compute_keys;
-    std::unordered_set<u64> fragment_hashes;
-    std::unordered_set<u64> vertex_hashes;
+    std::unordered_set<u128, U128Hasher> compute_keys;
+    std::unordered_set<u128, U128Hasher> fragment_hashes;
+    std::unordered_set<u128, U128Hasher> vertex_hashes;
     struct WrittenVertex {
         size_t program;
         u64 key_offset;
@@ -646,8 +681,7 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             return;
         }
         if (!is_graphics) {
-            const std::string key(reinterpret_cast<const char*>(r.compute_key.data()),
-                                  r.compute_key.size());
+            const u128 key = Hash128(r.bytes);
             if (compute_keys.insert(key).second) {
                 compute_out.write(reinterpret_cast<const char*>(r.bytes.data()),
                                   static_cast<std::streamsize>(r.bytes.size()));
@@ -658,8 +692,9 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
         GraphicsProgram& program = graphics[index];
         program.built = true;
         program.hash = r.hash;
+        program.environment = Hash128(r.bytes);
         if (program.stage == 4) {
-            if (!fragment_hashes.insert(r.hash).second) {
+            if (!fragment_hashes.insert(program.environment).second) {
                 return; // same key as an earlier entry
             }
             const auto key = GraphicsEntryKey(4, fragment_template, r.hash, 0);
@@ -671,7 +706,7 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             ++result.fragment_programs;
             return;
         }
-        if (!vertex_hashes.insert(r.hash).second) {
+        if (!vertex_hashes.insert(program.environment).second) {
             // Same stage hash: same key only if the attribute guess matches, known at the end.
             held_vertices.push_back({index, std::move(r.bytes)});
             return;
@@ -706,7 +741,9 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             if (record.stage != ProgramStage::Compute && !is_graphics) {
                 return;
             }
-            const u128 code = Hash128(record.code);
+            const std::array program_parts{Hash128(record.code), Hash128(record.constants)};
+            const u128 code = Common::CityHash128(
+                reinterpret_cast<const char*>(program_parts.data()), sizeof(program_parts));
             const u128 control = Hash128(record.control);
             Job job;
             if (is_graphics) {
@@ -738,6 +775,7 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             }
             job.seq = seq++;
             job.program.assign(record.code.begin(), record.code.end());
+            job.constants.assign(record.constants.begin(), record.constants.end());
             job_kinds.emplace_back(job.graphics, job.graphics_index);
             converter->Push(std::move(job));
             while (converter->Pending() > MaxPendingJobs && !stop.stop_requested()) {
@@ -751,7 +789,12 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             LOG_DEBUG(Render_Vulkan, "Shader precache: {}: {}", archive.path, error);
         };
         try {
-            WalkArchive(data, name, &dictionaries, on_record, on_member_error);
+            WalkArchive(data, name, &dictionaries, on_record, on_member_error,
+                        [&](std::span<const ShaderRecord> variation) {
+                            if (!stop.stop_requested()) {
+                                mesh_recipes.AddVariation(variation);
+                            }
+                        });
         } catch (const ArchiveError& e) {
             ++archive_errors;
             LOG_WARNING(Render_Vulkan, "Shader precache: {}: {}", archive.path, e.what());
@@ -845,18 +888,18 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     };
 
     report(StageWriting, 0, written_vertices.size() + held_vertices.size());
-    std::set<std::pair<u64, u64>> vertex_keys; // (stage hash, attribute types)
+    std::set<std::pair<u128, u64>> vertex_keys; // (environment, attribute types)
     std::vector<std::pair<u64, u64>> patches;  // key offset, attribute types
     for (const auto& written : written_vertices) {
         const auto& program = graphics[written.program];
         const u64 types = attribute_types(program);
-        vertex_keys.emplace(program.hash, types);
+        vertex_keys.emplace(program.environment, types);
         patches.emplace_back(written.key_offset + AttributeTypesOffset, types);
     }
     for (auto& held : held_vertices) {
         const auto& program = graphics[held.program];
         const u64 types = attribute_types(program);
-        if (!vertex_keys.emplace(program.hash, types).second) {
+        if (!vertex_keys.emplace(program.environment, types).second) {
             continue;
         }
         const auto key = GraphicsEntryKey(0, vertex_template, program.hash, types);
@@ -868,9 +911,19 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
         held.env = {};
     }
     result.vertex_programs = vertex_keys.size();
+    report("Preparing mesh candidates", 0, mesh_recipes.VariationCount());
+    result.mesh_pipelines = mesh_recipes.Write(mesh_out, stop);
+    result.skipped += mesh_recipes.Skipped();
+    LOG_INFO(Render_Vulkan,
+             "Shader mesh warm-up: {} recorded templates, {} archive variations, {} candidates",
+             mesh_recipes.TemplateCount(), mesh_recipes.VariationCount(), result.mesh_pipelines);
     compute_out.close();
     graphics_out.close();
-    if (!compute_out || !graphics_out) {
+    mesh_out.close();
+    if (stop.stop_requested()) {
+        return fail("Stopped");
+    }
+    if (!compute_out || !graphics_out || !mesh_out) {
         return fail("Writing the precache files failed");
     }
     {
@@ -907,6 +960,13 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     }
     WriteWarmCount(compute_path, result.compute_programs);
     WriteWarmCount(graphics_path, result.vertex_programs + result.fragment_programs);
+    fs::remove(WarmMarkerPath(mesh_path), ignored);
+    fs::remove(WarmCountPath(mesh_path), ignored);
+    fs::rename(mesh_tmp, mesh_path, ec);
+    if (ec) {
+        return fail("Cannot replace " + Common::FS::PathToUTF8String(mesh_path));
+    }
+    WriteWarmCount(mesh_path, result.mesh_pipelines);
     report(StageWriting, patches.size(), patches.size());
     result.ok = true;
     LOG_INFO(Render_Vulkan,

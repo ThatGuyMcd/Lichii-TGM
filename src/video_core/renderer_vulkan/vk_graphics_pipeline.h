@@ -308,6 +308,11 @@ public:
         return writes_images;
     }
 
+    /// Pipelines queued on or building in a worker thread.
+    [[nodiscard]] static u32 PendingBuilds() noexcept {
+        return pending_builds.load(std::memory_order_relaxed);
+    }
+
     [[nodiscard]] bool IsBuilt() const noexcept {
         return build->IsBuilt();
     }
@@ -457,6 +462,7 @@ private:
     u64 last_descriptor_buffer_generation{};
 
     const bool worker_only_build;
+    static inline std::atomic<u32> pending_builds{};
     bool uses_push_descriptor{false};
     bool uses_descriptor_buffer{false};
 

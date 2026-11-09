@@ -7,11 +7,13 @@
 // github.com/tangerineturtle1/NX2navi)
 
 #include <cstring>
+#include <limits>
 #include <string>
 
 #include "common/settings.h"
 #include "common/zstd_compression.h"
 #include "core/oot_ultrawide.h"
+#include "video_core/oot_dlss.h"
 
 namespace Core::OotUltrawide {
 namespace {
@@ -28,7 +30,7 @@ struct Byml {
     u32 keys{};
 
     std::optional<u32> U32(size_t offset) const {
-        if (offset + 4 > data.size()) {
+        if (offset > data.size() || data.size() - offset < sizeof(u32)) {
             return std::nullopt;
         }
         u32 value;
@@ -82,8 +84,11 @@ struct Byml {
 } // Anonymous namespace
 
 bool UltrawideRendering() {
+    const bool legacy_upscaler =
+        Settings::values.oot_anti_aliasing.GetValue() == Settings::OotAntiAliasing::Game &&
+        (Settings::values.nvidia_dlss.GetValue() || Settings::values.ocarina_fsr.GetValue());
     return Settings::values.aspect_ratio.GetValue() == Settings::AspectRatio::R21_9 &&
-           Settings::IsDockedMode();
+           Settings::IsDockedMode() && !VideoCommon::OotDlss::Requested() && !legacy_upscaler;
 }
 
 u64 ApplicationMemoryExtra() {
@@ -117,7 +122,7 @@ std::optional<std::vector<u8>> GrowHeapDef(std::span<const u8> compressed, u32 e
     for (const size_t at : {texture_at, graphics_at}) {
         s32 size;
         std::memcpy(&size, data->data() + at, sizeof(size));
-        if (size <= 0) {
+        if (size <= 0 || extra_kib > static_cast<u32>(std::numeric_limits<s32>::max() - size)) {
             return std::nullopt;
         }
         size += static_cast<s32>(extra_kib);
@@ -213,10 +218,16 @@ std::optional<size_t> PaneX(std::span<const u8> layout, std::string_view pane) {
     if (!names || !records || !count) {
         return std::nullopt;
     }
+    const auto table_fits = [&](u64 offset) {
+        return offset <= layout.size() && *count <= (layout.size() - offset) / sizeof(u64);
+    };
+    if (!table_fits(*names) || !table_fits(*records)) {
+        return std::nullopt;
+    }
     for (u32 i = 0; i < *count; ++i) {
         const auto name_at = Read<u64>(layout, *names + 8 * size_t{i});
         const auto record = Read<u64>(layout, *records + 8 * size_t{i});
-        if (!name_at || !record || *record + 68 > layout.size()) {
+        if (!name_at || !record || *record > layout.size() || layout.size() - *record < 68) {
             return std::nullopt;
         }
         if (CString(layout, *name_at) == pane) {

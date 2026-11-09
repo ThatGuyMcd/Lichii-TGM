@@ -19,7 +19,7 @@ constexpr u64 ProgramId = 0x0400486024DEC000ULL;
 constexpr std::string_view HeapDefPath = "System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs";
 
 /// The aspect ratio setting asks for 21:9 and the console is docked (handheld keeps the 1080p
-/// panel's 16:9).
+/// panel's 16:9), without an upscaler that requires the original 16:9 render targets.
 [[nodiscard]] bool UltrawideRendering();
 
 /// The game's render targets live in the HeapDef's "DynamicTextureAllocatorMem" heap (312320 KiB,

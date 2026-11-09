@@ -954,7 +954,7 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
             continue;
         }
         if (patch.ultrawide && !UltrawideRendering()) {
-            LOG_INFO(Loader, "    - Skipping \"{}\": aspect ratio is not 21:9 or not docked",
+            LOG_INFO(Loader, "    - Skipping \"{}\": requires docked 21:9 without fixed-size upscaling",
                      patch.name);
             continue;
         }

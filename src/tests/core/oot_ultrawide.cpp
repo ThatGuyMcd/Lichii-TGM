@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstring>
+#include <limits>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -106,6 +107,10 @@ TEST_CASE("The HeapDef edit leaves other data alone", "[oot_ultrawide]") {
     REQUIRE_FALSE(GrowHeapDef(text, TextureHeapExtraKiB).has_value());
     // A heap the game does not use (size 0 or the rest, -1) is not grown.
     REQUIRE_FALSE(GrowHeapDef(Compress(HeapDef(-1, 861184)), TextureHeapExtraKiB).has_value());
+    REQUIRE_FALSE(GrowHeapDef(Compress(HeapDef(std::numeric_limits<s32>::max(), 861184)),
+                              TextureHeapExtraKiB).has_value());
+    REQUIRE_FALSE(GrowHeapDef(Compress(HeapDef(312320, 861184)),
+                              std::numeric_limits<u32>::max()).has_value());
 }
 
 TEST_CASE("The 3440x1440 heap growth is the shipped heap's share of the extra pixels",
@@ -265,4 +270,16 @@ TEST_CASE("The HUD edge move refuses unexpected layouts", "[oot_ultrawide]") {
         Common::Compression::TryDecompressDataZSTDWithDictionary(*anchored, dictionary, 1 << 20);
     REQUIRE(back.has_value());
     REQUIRE(PaneXAt(*back, 3, 1) == 2130.0f);
+}
+
+TEST_CASE("The HUD edge move refuses overflowing pane offsets", "[oot_ultrawide]") {
+    using namespace Core::OotUltrawide;
+    for (const size_t slot : {size_t{0x60}, size_t{0x68}, size_t{0xC0}}) {
+        auto layout = Layout({{"N_VRS_00", 1626.0f}});
+        Put64(layout, slot, std::numeric_limits<u64>::max() - 7);
+        auto sarc = Sarc({{"PlayerStatus_00.buil", layout}});
+        const auto original = sarc;
+        REQUIRE_FALSE(ShiftPanes(sarc, std::span{HudEdgeShifts}.first(1)));
+        REQUIRE(sarc == original);
+    }
 }

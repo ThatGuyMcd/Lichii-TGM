@@ -26,6 +26,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
+#include "video_core/macro_hle_oot.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_async_readback.h"
@@ -1870,7 +1871,7 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             ConcretizeListWords(split, rasterizer, *channel, native_data_ram, engine, start);
         }
         engine.native_interpreter.active_dram = &native_data_ram;
-        static const bool native_oot = VideoCommon::Nx2Switch("EDEN_NX2_OOT_MACROS", true);
+        static const bool native_oot = (std::getenv("EDEN_NX2_OOT_MACROS") == nullptr || std::strcmp(std::getenv("EDEN_NX2_OOT_MACROS"), "0") != 0);
         const u32 slot = ((method - MacroRegistersStart) >> 1) % fs.oot_macro.size();
         if (fs.oot_generation != engine.native_code_generation) {
             fs.oot_generation = engine.native_code_generation;

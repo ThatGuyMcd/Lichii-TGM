@@ -15,6 +15,7 @@
 #include "common/settings.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/pipeline_cache_policy.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 
@@ -103,6 +104,26 @@ void RefreshXfbState(VideoCommon::TransformFeedbackState& state, const Maxwell& 
 }
 } // Anonymous namespace
 
+bool FixedPipelineState::UseLastProvokingVertex(const Maxwell& regs,
+                                                const DynamicFeatures& features) noexcept {
+    const bool supports_first_mode = features.has_provoking_vertex_first_mode;
+    const bool supports_last_mode = features.has_provoking_vertex_last_mode;
+    if (!features.has_provoking_vertex || (!supports_first_mode && !supports_last_mode)) {
+        return false;
+    }
+    bool use_last = regs.provoking_vertex == Maxwell::ProvokingVertex::Last;
+    if (regs.transform_feedback_enabled != 0 && !features.has_provoking_vertex_tf_preserve) {
+        use_last = false;
+    }
+    if (use_last && !supports_last_mode) {
+        use_last = false;
+    } else if (!use_last && !supports_first_mode) {
+        use_last = true;
+    }
+    return use_last;
+}
+
+// A register read here must also be in RefreshRegisterRuns (PipelineStateWatch).
 void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFeatures& features) {
     const Maxwell& regs = maxwell3d.regs;
     const auto topology_ = maxwell3d.draw_manager.draw_state.topology;
@@ -118,15 +139,21 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     extended_dynamic_state_3_enables.Assign(features.has_extended_dynamic_state_3_enables ? 1 : 0);
     color_write_enable_dynamic.Assign(features.has_color_write_enable ? 1 : 0);
     dynamic_vertex_input.Assign(features.has_dynamic_vertex_input ? 1 : 0);
+    dynamic_raster_state.Assign(features.has_dynamic_raster_state ? 1 : 0);
     xfb_enabled.Assign(regs.transform_feedback_enabled != 0);
     ndc_minus_one_to_one.Assign(regs.depth_mode == Maxwell::DepthMode::MinusOneToOne ? 1 : 0);
-    polygon_mode.Assign(PackPolygonMode(regs.polygon_mode_front));
+    // State the pipelines take dynamically stays zero in the key: a register write there
+    // records the new value instead of making another pipeline.
+    polygon_mode.Assign(
+        features.has_dynamic_polygon_mode ? 0 : PackPolygonMode(regs.polygon_mode_front));
     tessellation_primitive.Assign(static_cast<u32>(regs.tessellation.params.domain_type.Value()));
     tessellation_spacing.Assign(static_cast<u32>(regs.tessellation.params.spacing.Value()));
     tessellation_clockwise.Assign(regs.tessellation.params.output_primitives.Value() ==
                                   Maxwell::Tessellation::OutputPrimitives::Triangles_CW);
     // The field holds 1..32 points; an unset (0) or oversized register would wrap or truncate.
-    patch_control_points_minus_one.Assign(std::clamp<u32>(regs.patch_vertices, 1, 32) - 1);
+    patch_control_points_minus_one.Assign(features.has_extended_dynamic_state_2_patch_control_points
+                                              ? 0
+                                              : std::clamp<u32>(regs.patch_vertices, 1, 32) - 1);
     const bool can_collapse_topology_class =
         features.has_extended_dynamic_state && features.has_extended_dynamic_state_2;
     topology.Assign(can_collapse_topology_class
@@ -145,39 +172,32 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
     depth_format.Assign(static_cast<u32>(regs.zeta.format));
     y_negate.Assign(regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft ? 1 : 0);
 
-    bool use_last_provoking_vertex = false;
-    const bool provoking_vertex_available = features.has_provoking_vertex;
-    const bool supports_first_mode = features.has_provoking_vertex_first_mode;
-    const bool supports_last_mode = features.has_provoking_vertex_last_mode;
-    const bool transform_feedback_active = regs.transform_feedback_enabled != 0;
-    const bool tf_preserves_provoking_vertex = features.has_provoking_vertex_tf_preserve;
-
-    if (provoking_vertex_available && (supports_first_mode || supports_last_mode)) {
-        use_last_provoking_vertex = regs.provoking_vertex == Maxwell::ProvokingVertex::Last;
-
-        if (transform_feedback_active && !tf_preserves_provoking_vertex) {
-            use_last_provoking_vertex = false;
-        }
-
-        if (use_last_provoking_vertex && !supports_last_mode) {
-            use_last_provoking_vertex = false;
-        } else if (!use_last_provoking_vertex && !supports_first_mode) {
-            use_last_provoking_vertex = true;
-        }
-    }
-
-    provoking_vertex_last.Assign(use_last_provoking_vertex ? 1 : 0);
-    conservative_raster_enable.Assign(regs.conservative_raster_enable != 0 ? 1 : 0);
-    smooth_lines.Assign(regs.line_anti_alias_enable != 0 ? 1 : 0);
-    alpha_to_coverage_enabled.Assign(regs.anti_alias_alpha_control.alpha_to_coverage != 0 ? 1 : 0);
-    alpha_to_one_enabled.Assign(regs.anti_alias_alpha_control.alpha_to_one != 0 ? 1 : 0);
+    provoking_vertex_last.Assign(
+        !features.has_dynamic_provoking_vertex && UseLastProvokingVertex(regs, features) ? 1 : 0);
+    conservative_raster_enable.Assign(!features.has_dynamic_state3_conservative_raster &&
+                                              regs.conservative_raster_enable != 0
+                                          ? 1
+                                          : 0);
+    smooth_lines.Assign(
+        !features.has_dynamic_state3_line_raster_mode && regs.line_anti_alias_enable != 0 ? 1 : 0);
+    alpha_to_coverage_enabled.Assign(!features.has_dynamic_state3_alpha_to_coverage &&
+                                             regs.anti_alias_alpha_control.alpha_to_coverage != 0
+                                         ? 1
+                                         : 0);
+    alpha_to_one_enabled.Assign(!features.has_dynamic_state3_alpha_to_one &&
+                                        regs.anti_alias_alpha_control.alpha_to_one != 0
+                                    ? 1
+                                    : 0);
     app_stage.Assign(maxwell3d.engine_state);
 
-    depth_bounds_min = static_cast<u32>(regs.depth_bounds[0]);
-    depth_bounds_max = static_cast<u32>(regs.depth_bounds[1]);
+    // Depth bounds are dynamic in every pipeline.
+    depth_bounds_min = 0;
+    depth_bounds_max = 0;
 
-    line_stipple_factor = regs.line_stipple_params.factor;
-    line_stipple_pattern = regs.line_stipple_params.pattern;
+    line_stipple_factor =
+        features.has_dynamic_line_stipple ? 0U : regs.line_stipple_params.factor.Value();
+    line_stipple_pattern =
+        features.has_dynamic_line_stipple ? 0U : regs.line_stipple_params.pattern.Value();
 
     for (size_t i = 0; i < regs.rt.size(); ++i) {
         color_formats[i] = static_cast<u8>(regs.rt[i].format);
@@ -415,6 +435,8 @@ void FixedPipelineState::CanonicalizeNative(u32 generic_read_mask) noexcept {
             }
         }
         attribute_types &= keep;
+    } else {
+        VideoCommon::MaskStaticVertexInput(attributes, binding_divisors, generic_read_mask);
     }
     if (!extended_dynamic_state_3_blend) {
         size_t used = 0;

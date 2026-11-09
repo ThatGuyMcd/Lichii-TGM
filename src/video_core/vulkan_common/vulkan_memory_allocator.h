@@ -106,12 +106,20 @@ namespace Vulkan {
 
         MemoryAllocator(const MemoryAllocator &) = delete;
 
+        /// Residency priority of render targets and presented frames (VK_EXT_memory_priority).
+        static constexpr float RenderTargetPriority = 1.0f;
+        /// Residency priority of other images, VMA's and Vulkan's default.
+        static constexpr float ImagePriority = 0.5f;
+
         /// `dedicated`: own device memory, returned to the driver on destruction (short-lived
         /// images would otherwise leave holes in the shared blocks).
-        vk::Image CreateImage(const VkImageCreateInfo &ci, bool dedicated = false) const;
+        /// `priority`: residency priority of the image's dedicated memory (VK_EXT_memory_priority).
+        vk::Image CreateImage(const VkImageCreateInfo &ci, bool dedicated = false,
+                              float priority = ImagePriority) const;
 
         /// CreateImage, but a null image instead of an exception when there is no memory for it.
-        vk::Image TryCreateImage(const VkImageCreateInfo &ci, bool dedicated = false) const;
+        vk::Image TryCreateImage(const VkImageCreateInfo &ci, bool dedicated = false,
+                                 float priority = ImagePriority) const;
 
         /// A sparse resident image with nothing bound (reads return zero, writes are dropped), or
         /// a null image when the device can't make one.
@@ -180,7 +188,7 @@ namespace Vulkan {
         bool AllocateMediumImage(const VkImageCreateInfo &ci, VkImage &handle,
                                  VmaAllocation &allocation) const;
 
-        VkResult AllocateImage(const VkImageCreateInfo &ci, bool dedicated, bool may_fail,
+        VkResult AllocateImage(const VkImageCreateInfo &ci, bool dedicated, bool may_fail, float priority,
                                vk::Image &image) const;
 
         const Device &device;                              ///< Device handle.

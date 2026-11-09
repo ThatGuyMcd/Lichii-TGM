@@ -38,8 +38,13 @@ add_library(video_core STATIC
     control/scheduler.cpp
     control/scheduler.h
     delayed_destruction_ring.h
+    draw_input_watch.cpp
+    draw_input_watch.h
     dirty_flags.cpp
     dirty_flags.h
+    draw_class_stats.cpp
+    draw_class_stats.h
+    host_logic_op.h
     dma_pusher.cpp
     dma_pusher.h
     engines/sw_blitter/blitter.cpp
@@ -112,6 +117,8 @@ add_library(video_core STATIC
     gpu.cpp
     gpu.h
     gpu_timestamp.h
+    gpu_page_table.cpp
+    gpu_page_table.h
     gpu_split.cpp
     gpu_split.h
     gpu_thread.cpp
@@ -124,6 +131,8 @@ add_library(video_core STATIC
     page_filter.h
     native_qmd.h
     native_query_trace.h
+    native_verify.cpp
+    native_verify.h
     nx2.h
     nx2_cmdpage_diag.h
     nx2_debug_control.cpp
@@ -197,6 +206,7 @@ add_library(video_core STATIC
     renderer_vulkan/present/window_adapt_pass.h
     renderer_vulkan/blit_image.cpp
     renderer_vulkan/blit_image.h
+    renderer_vulkan/dynamic_state_delta.h
     renderer_vulkan/fixed_pipeline_state.cpp
     renderer_vulkan/fixed_pipeline_state.h
     renderer_vulkan/framebuffer_clear_layers.h
@@ -205,6 +215,7 @@ add_library(video_core STATIC
     renderer_vulkan/maxwell_to_vk.h
     renderer_vulkan/nx2_list_slots.cpp
     renderer_vulkan/nx2_list_slots.h
+    renderer_vulkan/pipeline_binary_store.h
     renderer_vulkan/pipeline_build.h
     renderer_vulkan/heavy_build_slots.h
     renderer_vulkan/pipeline_build_failure.cpp
@@ -219,6 +230,7 @@ add_library(video_core STATIC
     renderer_vulkan/pipeline_statistics.h
     renderer_vulkan/renderer_vulkan.h
     renderer_vulkan/renderer_vulkan.cpp
+    renderer_vulkan/sampler_class_key.h
     renderer_vulkan/vk_blit_screen.cpp
     renderer_vulkan/vk_blit_screen.h
     renderer_vulkan/vk_buffer_cache_base.cpp
@@ -250,8 +262,11 @@ add_library(video_core STATIC
     renderer_vulkan/vk_gpu_cost.h
     renderer_vulkan/vk_graphics_pipeline.cpp
     renderer_vulkan/vk_graphics_pipeline.h
+    renderer_vulkan/vk_pipeline_binary.cpp
+    renderer_vulkan/vk_pipeline_binary.h
     renderer_vulkan/vk_pipeline_library.cpp
     renderer_vulkan/vk_pipeline_library.h
+    renderer_vulkan/gpl_build_once.h
     renderer_vulkan/vk_multi_range_buffer.cpp
     renderer_vulkan/vk_multi_range_buffer.h
     renderer_vulkan/vk_master_semaphore.cpp
@@ -285,6 +300,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_resource_pool.h
     renderer_vulkan/vk_scheduler.cpp
     renderer_vulkan/vk_scheduler.h
+    renderer_vulkan/vk_shader_object.cpp
+    renderer_vulkan/vk_shader_object.h
     renderer_vulkan/fragment_barrier_state.h
     renderer_vulkan/vk_shader_reuse.cpp
     renderer_vulkan/vk_shader_reuse.h
@@ -298,6 +315,9 @@ add_library(video_core STATIC
     renderer_vulkan/vk_swapchain.h
     renderer_vulkan/vk_texture_cache.cpp
     renderer_vulkan/vk_texture_cache.h
+    renderer_vulkan/heap_mappings.h
+    renderer_vulkan/vk_texture_heap.cpp
+    renderer_vulkan/vk_texture_heap.h
     renderer_vulkan/vk_texture_cache_base.cpp
     renderer_vulkan/vk_turbo_mode.cpp
     renderer_vulkan/vk_turbo_mode.h
@@ -361,6 +381,8 @@ add_library(video_core STATIC
     texture_cache/decode_bc.cpp
     texture_cache/decode_bc.h
     texture_cache/descriptor_table.h
+    texture_cache/pool_page_watch.h
+    texture_cache/pool_mirror.h
     texture_cache/formatter.cpp
     texture_cache/formatter.h
     texture_cache/format_lookup_table.cpp

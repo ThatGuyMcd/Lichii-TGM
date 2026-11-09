@@ -341,6 +341,9 @@ struct Info {
     bool uses_sampled_1d{};
     bool uses_sparse_residency{};
     bool uses_demote_to_helper_invocation{};
+    /// Fragment stage: derivatives, implicit-LOD samples or quad reads may run after a demote
+    /// (UsesQuadAfterDemote).
+    bool uses_quad_after_demote{};
     bool uses_subgroup_vote{};
     bool removed_conditional_barrier{};
     bool uses_subgroup_mask{};
@@ -364,6 +367,12 @@ struct Info {
     bool uses_atomic_s32_max{};
     bool uses_int64_bit_atomics{};
     bool uses_global_memory{};
+    /// Storage buffers and global memory are reached through the GPU page table: the storage
+    /// buffer descriptors are not bound, they name the ranges the draw must have resident.
+    bool storage_by_address{};
+    /// Constant buffers are read by device address from the draw's bank table: the constant
+    /// buffer descriptors are not bound.
+    bool uniforms_by_address{};
     bool requires_coherent_global_memory{};
     bool requires_coherent_image_memory{};
     /// Set by the SPIR-V backend when HMMA runs on cooperative matrices, which need full subgroups
@@ -432,6 +441,25 @@ u32 NumDescriptors(const Descriptors& descriptors) {
     return num;
 }
 
+/// The constant buffer descriptors bound as uniform buffers: none when the program reads them
+/// from the bank table (Info::uniforms_by_address).
+[[nodiscard]] inline std::span<const ConstantBufferDescriptor> BoundConstantBuffers(
+    const Info& info) {
+    if (info.uniforms_by_address) {
+        return {};
+    }
+    return info.constant_buffer_descriptors;
+}
+
+/// The storage buffer descriptors bound as buffers: none when the program reaches storage
+/// through the GPU page table (Info::storage_by_address).
+[[nodiscard]] inline std::span<const StorageBufferDescriptor> BoundStorageBuffers(
+    const Info& info) {
+    if (info.storage_by_address) {
+        return {};
+    }
+    return info.storage_buffers_descriptors;
+}
 
 /// Operations of a handle program, a stack machine over 32-bit words. Operands follow the
 /// operation code in the program; values are popped right operand first.

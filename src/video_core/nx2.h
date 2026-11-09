@@ -44,6 +44,8 @@ static_assert(Nx2GpuAddressSpaceSize == (1ULL << 40));
 // reads the command list. One bit per 4 KiB of the 36-bit device address space (2 MiB).
 inline constexpr u64 Nx2WrittenPageBits = 12;
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_gpu_written_pages{};
+/// Moves whenever a page gets its bit: caches that only trust pages without one compare it.
+inline std::atomic<u64> g_nx2_gpu_written_generation{};
 
 inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     if (size == 0) {
@@ -51,6 +53,7 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     }
     const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
                                    g_nx2_gpu_written_pages.size() * 64 - 1);
+    bool marked = false;
     // A word at a time: storage buffers of several MiB are marked on every draw that binds them.
     for (u64 page = device_address >> Nx2WrittenPageBits; page <= last;) {
         const u64 first_bit = page % 64;
@@ -59,8 +62,12 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
         auto& word = g_nx2_gpu_written_pages[page / 64];
         if ((word.load(std::memory_order_relaxed) & mask) != mask) {
             word.fetch_or(mask, std::memory_order_relaxed);
+            marked = true;
         }
         page += bits;
+    }
+    if (marked) {
+        g_nx2_gpu_written_generation.fetch_add(1, std::memory_order_release);
     }
 }
 

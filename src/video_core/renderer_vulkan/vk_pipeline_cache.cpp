@@ -632,6 +632,15 @@ std::vector<u32> DriverModuleCode(std::span<const u32> code, u64 hash, bool comp
     return words;
 }
 
+std::array<std::vector<u32>, 5> DriverGraphicsCode(
+    const std::array<std::vector<u32>, 5>& code) {
+    std::array<std::vector<u32>, 5> words;
+    for (size_t stage = 0; stage < words.size(); ++stage) {
+        words[stage] = DriverModuleCode(code[stage], 0, false);
+    }
+    return words;
+}
+
 /// The words of a kept SPIR-V blob, on the GPU thread.
 std::vector<u32> ReadKeptSpirv(std::ifstream& file, std::pair<u64, u32> blob) {
     const auto compressed =
@@ -820,7 +829,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       use_shader_reuse{!IsAmdProprietaryWindows(device_.GetDriverID())},
       num_pipeline_workers{device.HasBrokenParallelShaderCompiling() ? 1ULL
                                                                      : GetTotalPipelineWorkers()},
-      emission_budget{num_pipeline_workers},
+      emission_budget{num_pipeline_workers}, binary_cache{device_},
       workers(num_pipeline_workers, "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
       deferred_workers(1, "VkDeferredPipelines", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {}, Common::ThreadPlacement::Background),
@@ -830,6 +839,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                                   : 0},
       translation_workers(num_translation_threads, "VkPipelineTranslator", {},
                           Common::ThreadPlacement::Background) {
+    use_shader_objects = device.IsExtShaderObjectSupported();
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
     const VkShaderStageFlags subgroup_stages{device.GetSubgroupSupportedStages()};
@@ -990,6 +1000,25 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_handle_table_arrays = device.IsSampledImageArrayNonUniformIndexingSupported(),
     };
     host_info.ApplyDescriptorLimitPolicy();
+    // Storage buffers and global memory through the GPU page table (the buffer cache keeps it on
+    // the same condition, BufferCacheRuntime::SupportsGpuPageTable).
+    // EXPERIMENT (do not merge): EDEN_NX2_NATIVE_STORAGE=0 / EDEN_NX2_NATIVE_UNIFORMS=0 turn the
+    // layers off for the A/B.
+    const auto experiment_off = [](const char* name) {
+        const char* const value = std::getenv(name);
+        return value != nullptr && value[0] == '0';
+    };
+    profile.gpu_page_table =
+        device.SupportsGpuPageTable() && !experiment_off("EDEN_NX2_NATIVE_STORAGE");
+    host_info.gpu_page_table = profile.gpu_page_table;
+    // Constant buffers by device address from each draw's bank table (same requirements).
+    profile.uniforms_by_address =
+        device.SupportsGpuPageTable() && !experiment_off("EDEN_NX2_NATIVE_UNIFORMS");
+    host_info.uniforms_by_address = profile.uniforms_by_address;
+    LOG_INFO(Render_Vulkan,
+             "Storage and global memory through the GPU page table: {}, constant buffers by "
+             "device address: {}",
+             profile.gpu_page_table ? "yes" : "no", profile.uniforms_by_address ? "yes" : "no");
 
     {
         // The descriptor arrays of bindless handle tables (HandleTableSize in texture_pass.cpp).
@@ -1034,7 +1063,6 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         device.IsExtExtendedDynamicState2Supported();
     dynamic_features.has_extended_dynamic_state_2_logic_op =
         device.IsExtExtendedDynamicState2ExtrasSupported();
-    dynamic_features.has_extended_dynamic_state_2_patch_control_points = false;
 
     dynamic_features.has_extended_dynamic_state_3_blend =
         device.IsExtExtendedDynamicState3BlendingSupported();
@@ -1051,11 +1079,52 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
     dynamic_features.has_dynamic_state3_line_stipple_enable =
         dynamic_features.has_extended_dynamic_state_3_enables &&
         device.SupportsDynamicState3LineStippleEnable();
+    // As GraphicsPipeline::FillStates makes them dynamic: their key fields stay zero.
+    dynamic_features.has_dynamic_state3_alpha_to_coverage =
+        dynamic_features.has_extended_dynamic_state_3_enables &&
+        device.SupportsDynamicState3AlphaToCoverageEnable();
+    dynamic_features.has_dynamic_state3_alpha_to_one =
+        dynamic_features.has_extended_dynamic_state_3_enables &&
+        device.SupportsDynamicState3AlphaToOneEnable();
+    dynamic_features.has_dynamic_state3_conservative_raster =
+        dynamic_features.has_extended_dynamic_state_3_enables &&
+        device.SupportsDynamicState3ConservativeRasterizationMode();
+    dynamic_features.has_dynamic_state3_line_raster_mode =
+        dynamic_features.has_extended_dynamic_state_3_enables &&
+        device.SupportsDynamicState3LineRasterizationMode();
+    // Polygon mode, provoking vertex, line stipple and patch control points: dynamic where the
+    // device has them (the 9070 XT has all four), recorded through the dynamic-state packet.
+    // EXPERIMENT (do not merge): EDEN_NX2_DYNAMIC_RASTER=0 keeps these four in the pipelines,
+    // for the A/B; the winner ships unconditionally.
+    dynamic_features.has_dynamic_raster_state =
+        dynamic_features.has_extended_dynamic_state_3_enables && [] {
+            const char* const value = std::getenv("EDEN_NX2_DYNAMIC_RASTER");
+            return value == nullptr || std::string_view{value} != "0";
+        }();
+    dynamic_features.has_dynamic_polygon_mode =
+        dynamic_features.has_dynamic_raster_state && device.SupportsDynamicState3PolygonMode();
+    dynamic_features.has_dynamic_provoking_vertex =
+        dynamic_features.has_dynamic_raster_state &&
+        device.SupportsDynamicState3ProvokingVertexMode();
+    dynamic_features.has_dynamic_line_stipple =
+        dynamic_features.has_dynamic_raster_state && device.SupportsDynamicLineStipple();
 
-    // VIDS: Independent toggle (not affected by dyna_state levels)
+    // VIDS: Independent toggle (not affected by dyna_state levels). Not on AMD's driver: dynamic
+    // vertex input makes it compile every vertex shader with its table-driven "uber" fetch
+    // (xgl pipeline_compiler.cpp: enableUberFetchShader whenever VertexInput is dynamic). With
+    // static vertex input, monolithic pipelines and link-time-optimized links of the pipeline
+    // libraries fetch with the pipeline's own formats.
+    // Shader objects take their vertex input only dynamically (vkCmdSetVertexInputEXT), on AMD
+    // with the uber fetch that comes with it.
     dynamic_features.has_dynamic_vertex_input =
         device.IsExtVertexInputDynamicStateSupported() &&
-        Settings::values.vertex_input_dynamic_state.GetValue();
+        (use_shader_objects || Settings::values.vertex_input_dynamic_state.GetValue()) &&
+        (device.GetDriverID() != VK_DRIVER_ID_AMD_PROPRIETARY || use_shader_objects ||
+         // EXPERIMENT (do not merge): EDEN_NX2_EXP_VERTEX_INPUT=dynamic for the A/B.
+         [] {
+             const char* value = std::getenv("EDEN_NX2_EXP_VERTEX_INPUT");
+             return value != nullptr && std::string_view{value} == "dynamic";
+         }());
     dynamic_features.has_static_vertex_repack =
         StaticVertexRepackEnabled(device.GetMinVertexInputBindingStrideAlignment());
 
@@ -1066,6 +1135,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         device.SupportsProvokingVertexLastMode();
     dynamic_features.has_provoking_vertex_tf_preserve =
         device.SupportsTransformFeedbackProvokingVertexPreservation();
+    dynamic_features.has_extended_dynamic_state_2_patch_control_points =
+        dynamic_features.has_dynamic_raster_state &&
+        device.SupportsDynamicState2PatchControlPoints();
 }
 
 namespace {
@@ -1447,6 +1519,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
         return;
     }
+    // Before any pipeline of the title is built: the boot creates its pipelines from these.
+    binary_cache.Open(base_dir / "vulkan_binaries.bin");
     pipeline_cache_filename =
         VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan", CACHE_VERSION);
     used_pipelines_filename =
@@ -2234,6 +2308,11 @@ std::string PipelineCache::NativePreparationStamp(const std::filesystem::path& p
     const auto setting = [&](auto value) { stamp += fmt::format(" {}", value); };
     setting(device.IsExtGraphicsPipelineLibrarySupported());
     setting(mesh_warm_enabled);
+    setting(Shader::Backend::SPIRV::PUSH_CONSTANT_LAYOUT_SIZE);
+    setting(profile.gpu_page_table);
+    setting(profile.uniforms_by_address);
+    setting(device.IsExtDescriptorHeapSupported());
+    setting(use_shader_objects);
     setting(ShaderNoInline(false));
     setting(ShaderNoInline(true));
     setting(device.CanFastLinkGraphicsLibraries());
@@ -2882,7 +2961,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePrecompiledGraphicsPipeli
     }
     if (kept_spirv) {
         auto build_kept = [this, key = graphics_key, path = precompiled_infos_path, spirv_blobs,
-                           present](std::array<u128, 5>&) {
+                           present](std::array<u128, 5>&, std::array<std::vector<u32>, 5>&) {
             std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
             for (size_t stage = 0; stage < modules.size(); ++stage) {
                 if (present[stage]) {
@@ -2897,13 +2976,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePrecompiledGraphicsPipeli
             descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, &workers, nullptr,
             render_pass_cache, graphics_key,
             std::shared_ptr<const GraphicsShaderModules>{}, info_ptrs,
-            std::move(build_kept), std::nullopt);
+            std::move(build_kept), std::nullopt, GraphicsPipeline::LibraryParams{},
+            std::array<std::vector<u32>, 5>{}, &binary_cache);
         pipeline->MarkPrecompiled();
         return pipeline;
     }
     // The worker translates the recorded environments, which give the same programs as the
     // game's state does; the infos drawn with must be the ones that translation gives.
-    auto emit_stages = [this, key = graphics_key, recorded, infos, present](std::array<u128, 5>&) {
+    auto emit_stages = [this, key = graphics_key, recorded, infos, present](std::array<u128, 5>&, std::array<std::vector<u32>, 5>&) {
         ShaderPools pools;
         boost::container::static_vector<Shader::Environment*, Maxwell::MaxShaderProgram> env_ptrs;
         for (auto& env : *recorded) {
@@ -2943,7 +3023,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePrecompiledGraphicsPipeli
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, &workers, nullptr,
         render_pass_cache, graphics_key, std::shared_ptr<const GraphicsShaderModules>{},
-        info_ptrs, std::move(emit_stages), std::nullopt);
+        info_ptrs, std::move(emit_stages), std::nullopt, GraphicsPipeline::LibraryParams{},
+        std::array<std::vector<u32>, 5>{}, &binary_cache);
     pipeline->MarkPrecompiled();
     return pipeline;
 }
@@ -3028,7 +3109,7 @@ ComputePipelineCacheEntry PipelineCache::CreatePrecompiledComputePipeline(
             .pipeline = std::make_unique<ComputePipeline>(
                 device, scheduler, vulkan_pipeline_cache, descriptor_pool, guest_descriptor_queue,
                 descriptor_buffer_ring, deferred ? &deferred_workers : &workers, nullptr, &shader_notify, info, vk::ShaderModule{},
-                key.unique_hash, std::move(emit_module), deferred),
+                key.unique_hash, std::move(emit_module), deferred, &binary_cache),
             // The live environment answered the same questions, as the translation would have.
             .null_pointer_slots = env.IsNativeProgram() ? env.NullStoragePointerSlots()
                                                         : std::vector<std::pair<u32, u32>>{},
@@ -3382,6 +3463,7 @@ void PipelineCache::TickFrame() {
     }
     native_wait_budget_us =
         static_cast<s64>(Settings::values.native_pipeline_wait_ms.GetValue()) * 1000;
+    binary_cache.Report();
     while (!evicted_pipelines.empty() && scheduler.IsFree(evicted_pipelines.front().first)) {
         evicted_pipelines.pop_front();
     }
@@ -3787,8 +3869,8 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
                     }
                 }
             };
-            add(info.constant_buffer_descriptors, nullptr);
-            add(info.storage_buffers_descriptors, &compute_storage_buffers);
+            add(Shader::BoundConstantBuffers(info), nullptr);
+            add(Shader::BoundStorageBuffers(info), &compute_storage_buffers);
             add(info.texture_buffer_descriptors, &compute_sampled_images);
             add(info.image_buffer_descriptors, nullptr);
             add(info.texture_descriptors, &compute_sampled_images);
@@ -4060,7 +4142,7 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
              index < Maxwell::MaxShaderProgram; ++index) {
             if (key.unique_hashes[index] != 0) {
                 storage_buffers +=
-                    Shader::NumDescriptors(programs[index].info.storage_buffers_descriptors);
+                    Shader::NumDescriptors(Shader::BoundStorageBuffers(programs[index].info));
             }
         }
         // The fallback binds its output buffer (and, for task draws, payload,
@@ -4137,6 +4219,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     bool allow_translation, bool speculative, DescriptorPool* transient_descriptors) try {
     LOG_DEBUG(Render_Vulkan, "{:#016x}", key.Hash());
     auto translation_key = MakeShaderTranslationKey(key, envs, device);
+    translation_key.native_context = (use_shader_objects ? 1U : 0U) |
+        (profile.gpu_page_table ? 2U : 0U) | (profile.uniforms_by_address ? 4U : 0U) |
+        (device.IsExtDescriptorHeapSupported() ? 8U : 0U);
     translation_key.motion_context = VideoCommon::OotDlss::ObjectMotionRequested() ? 1U : 0U;
     translation_key.depth_context = (key.state.depth_enabled != 0 ? 0x10000U : 0U) |
                                     static_cast<u32>(key.state.depth_format.Value());
@@ -4163,7 +4248,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             render_pass_cache, key, reused->modules, reused->InfoPointers(),
             GraphicsPipeline::EmitStagesFunc{}, std::nullopt,
             GraphicsPipeline::LibraryParams{reused->libraries ? &graphics_libraries : nullptr,
-                                           reused->spirv_hashes, false});
+                                           reused->spirv_hashes, false,
+                                           reused->shader_objects ? &shader_objects_cache : nullptr},
+            reused->shader_objects ? DriverGraphicsCode(reused->spirv)
+                                   : std::array<std::vector<u32>, 5>{}, &binary_cache);
     }
     if (!reused && !allow_translation) return nullptr;
     boost::container::static_vector<RecordingEnvironment, Maxwell::MaxShaderProgram> recorders;
@@ -4181,8 +4269,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             infos[stage] = &stages.programs[stage + 1].info;
         }
     }
+    const bool shader_objects = use_shader_objects && !stages.mesh_emulation && !spirv_out;
     const bool use_libraries = [&] {
-        if (!translation_key.library_context || spirv_out || stages.mesh_emulation) return false;
+        if (shader_objects || !translation_key.library_context || spirv_out || stages.mesh_emulation) return false;
         size_t pre_textures{}, pre_images{}, fragment_textures{}, fragment_images{};
         for (size_t stage = 0; stage < infos.size(); ++stage) {
             if (!infos[stage]) continue;
@@ -4192,13 +4281,12 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             (stage == 4 ? fragment_images : pre_images) +=
                 Shader::NumDescriptors(infos[stage]->image_descriptors);
         }
-        return pre_textures <= GPL_FRAGMENT_TEXTURE_SCALING_BASE &&
-               fragment_textures <= GPL_FRAGMENT_TEXTURE_SCALING_BASE &&
-               pre_images <= GPL_FRAGMENT_IMAGE_SCALING_BASE &&
-               fragment_images <= GPL_FRAGMENT_IMAGE_SCALING_BASE;
+        return FitsLibraryRescalingBits(pre_textures, pre_images, fragment_textures,
+                                        fragment_images);
     }();
     auto reusable = std::make_shared<ReusableShaders>();
     reusable->libraries = use_libraries;
+    reusable->shader_objects = shader_objects;
     for (size_t stage = 0; stage < infos.size(); ++stage) {
         if (infos[stage]) reusable->infos[stage] = *infos[stage];
     }
@@ -4218,7 +4306,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 infos[stage] = &job->programs[stage + 1].info;
             }
         }
-        emit_stages = [this, job = std::move(job), hashes = key.unique_hashes, reusable, reused, translation_key, publish, hash = key.Hash(), use_libraries](std::array<u128, 5>& emitted_hashes) mutable {
+        emit_stages = [this, job = std::move(job), hashes = key.unique_hashes, reusable, reused, translation_key, publish, hash = key.Hash(), use_libraries, shader_objects](std::array<u128, 5>& emitted_hashes,
+            std::array<std::vector<u32>, 5>& emitted_code) mutable {
             const auto begin = std::chrono::steady_clock::now();
             auto stage_modules = std::make_shared<GraphicsShaderModules>();
             Shader::Backend::Bindings stage_binding;
@@ -4231,8 +4320,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                          hashes[stage + 1], stage,
                                          use_libraries ? std::span<const u32>{}
                                                        : std::span<const u32>{job->reference_spirv[stage]},
-                                         VideoCommon::Nx2Perf::Verify() ? &reusable->spirv[stage] : nullptr,
-                                         use_libraries ? &reusable->spirv_hashes[stage] : nullptr);
+                                         (shader_objects || VideoCommon::Nx2Perf::Verify()) ? &reusable->spirv[stage] : nullptr,
+                                         (use_libraries || shader_objects) ? &reusable->spirv_hashes[stage] : nullptr);
                 }
             }
             auto completed_pools = std::move(job->pools);
@@ -4247,6 +4336,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             AddRuntimeSpirvTime(1, begin);
             reusable->modules = stage_modules;
             emitted_hashes = reusable->spirv_hashes;
+            if (shader_objects) emitted_code = DriverGraphicsCode(reusable->spirv);
             if (reused) VerifyReusedShaders(*reused, reusable->spirv, hash);
             if (publish) shader_reuse.Add(translation_key, reusable);
             return stage_modules;
@@ -4263,8 +4353,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 EmitShaderModule(device, profile, *stages.runtime_infos[stage],
                                  stages.programs[stage + 1], binding, key.unique_hashes[stage + 1],
                                  stage, {}, spirv_out ? &(*spirv_out)[stage] :
-                                     VideoCommon::Nx2Perf::Verify() ? &reusable->spirv[stage] : nullptr,
-                                 use_libraries ? &reusable->spirv_hashes[stage] : nullptr);
+                                     (shader_objects || VideoCommon::Nx2Perf::Verify()) ? &reusable->spirv[stage] : nullptr,
+                                 (use_libraries || shader_objects) ? &reusable->spirv_hashes[stage] : nullptr);
             if (build_in_parallel) {
                 AddRuntimeSpirvTime(0, begin);
             }
@@ -4292,7 +4382,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         render_pass_cache, key, std::move(modules), infos, std::move(emit_stages),
         std::move(stages.mesh_emulation),
         GraphicsPipeline::LibraryParams{use_libraries ? &graphics_libraries : nullptr,
-                                       reusable->spirv_hashes, false});
+                                       reusable->spirv_hashes, false,
+                                       shader_objects ? &shader_objects_cache : nullptr},
+        shader_objects ? DriverGraphicsCode(reusable->spirv)
+                       : std::array<std::vector<u32>, 5>{}, &binary_cache);
 
 } catch (const Shader::Exception& exception) {
     auto hash = key.Hash();
@@ -4801,7 +4894,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
     return {.pipeline = std::make_unique<ComputePipeline>(
                 device, scheduler, vulkan_pipeline_cache, descriptor_pool, guest_descriptor_queue,
                 descriptor_buffer_ring, thread_worker, statistics, &shader_notify, info,
-                std::move(spv_module), key.unique_hash, std::function<vk::ShaderModule()>{}, deferred),
+                std::move(spv_module), key.unique_hash, std::function<vk::ShaderModule()>{}, deferred, &binary_cache),
             .null_pointer_slots = env.IsNativeProgram() ? env.NullStoragePointerSlots()
                                                         : std::vector<std::pair<u32, u32>>{},
             .mapped_pointers =

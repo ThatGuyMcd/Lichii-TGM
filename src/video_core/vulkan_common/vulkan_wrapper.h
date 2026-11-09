@@ -290,6 +290,17 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdSetStencilWriteMask vkCmdSetStencilWriteMask{};
     PFN_vkCmdSetVertexInputEXT vkCmdSetVertexInputEXT{};
     PFN_vkCmdSetViewport vkCmdSetViewport{};
+    PFN_vkCmdSetViewportWithCountEXT vkCmdSetViewportWithCountEXT{};
+    PFN_vkCmdSetScissorWithCountEXT vkCmdSetScissorWithCountEXT{};
+    PFN_vkCmdSetPolygonModeEXT vkCmdSetPolygonModeEXT{};
+    PFN_vkCmdSetRasterizationSamplesEXT vkCmdSetRasterizationSamplesEXT{};
+    PFN_vkCmdSetSampleMaskEXT vkCmdSetSampleMaskEXT{};
+    PFN_vkCmdSetTessellationDomainOriginEXT vkCmdSetTessellationDomainOriginEXT{};
+    PFN_vkCmdSetDepthClipEnableEXT vkCmdSetDepthClipEnableEXT{};
+    PFN_vkCmdSetDepthClipNegativeOneToOneEXT vkCmdSetDepthClipNegativeOneToOneEXT{};
+    PFN_vkCmdSetProvokingVertexModeEXT vkCmdSetProvokingVertexModeEXT{};
+    PFN_vkCmdSetExtraPrimitiveOverestimationSizeEXT vkCmdSetExtraPrimitiveOverestimationSizeEXT{};
+    PFN_vkCmdSetRasterizationStreamEXT vkCmdSetRasterizationStreamEXT{};
     PFN_vkCmdSetColorWriteMaskEXT vkCmdSetColorWriteMaskEXT{};
     PFN_vkCmdSetColorWriteEnableEXT vkCmdSetColorWriteEnableEXT{};
     PFN_vkCmdSetColorBlendEnableEXT vkCmdSetColorBlendEnableEXT{};
@@ -336,6 +347,11 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkDestroySampler vkDestroySampler{};
     PFN_vkDestroySemaphore vkDestroySemaphore{};
     PFN_vkDestroyShaderModule vkDestroyShaderModule{};
+    PFN_vkCreateShadersEXT vkCreateShadersEXT{};
+    PFN_vkDestroyShaderEXT vkDestroyShaderEXT{};
+    PFN_vkCmdBindShadersEXT vkCmdBindShadersEXT{};
+    PFN_vkCmdBeginRendering vkCmdBeginRendering{};
+    PFN_vkCmdEndRendering vkCmdEndRendering{};
     PFN_vkDestroySwapchainKHR vkDestroySwapchainKHR{};
     PFN_vkDeviceWaitIdle vkDeviceWaitIdle{};
     PFN_vkQueueWaitIdle vkQueueWaitIdle{};
@@ -375,8 +391,20 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkGetDescriptorSetLayoutBindingOffsetEXT vkGetDescriptorSetLayoutBindingOffsetEXT{};
     PFN_vkGetDescriptorEXT vkGetDescriptorEXT{};
     PFN_vkCmdBindDescriptorBuffersEXT vkCmdBindDescriptorBuffersEXT{};
+    PFN_vkWriteResourceDescriptorsEXT vkWriteResourceDescriptorsEXT{};
+    PFN_vkWriteSamplerDescriptorsEXT vkWriteSamplerDescriptorsEXT{};
+    PFN_vkCmdBindResourceHeapEXT vkCmdBindResourceHeapEXT{};
+    PFN_vkCmdBindSamplerHeapEXT vkCmdBindSamplerHeapEXT{};
+    PFN_vkCmdPushDataEXT vkCmdPushDataEXT{};
+    PFN_vkRegisterCustomBorderColorEXT vkRegisterCustomBorderColorEXT{};
+    PFN_vkUnregisterCustomBorderColorEXT vkUnregisterCustomBorderColorEXT{};
     PFN_vkCmdSetDescriptorBufferOffsetsEXT vkCmdSetDescriptorBufferOffsetsEXT{};
     PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets{};
+    PFN_vkCreatePipelineBinariesKHR vkCreatePipelineBinariesKHR{};
+    PFN_vkDestroyPipelineBinaryKHR vkDestroyPipelineBinaryKHR{};
+    PFN_vkGetPipelineKeyKHR vkGetPipelineKeyKHR{};
+    PFN_vkGetPipelineBinaryDataKHR vkGetPipelineBinaryDataKHR{};
+    PFN_vkReleaseCapturedPipelineDataKHR vkReleaseCapturedPipelineDataKHR{};
     PFN_vkWaitForFences vkWaitForFences{};
     PFN_vkWaitForPresent2KHR vkWaitForPresent2KHR{};
     PFN_vkWaitSemaphores vkWaitSemaphores{};
@@ -414,6 +442,7 @@ void Destroy(VkDevice, VkSampler, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkSwapchainKHR, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkSemaphore, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkShaderModule, const DeviceDispatch&) noexcept;
+void Destroy(VkDevice, VkShaderEXT, const DeviceDispatch&) noexcept;
 void Destroy(VkInstance, VkDebugUtilsMessengerEXT, const InstanceDispatch&) noexcept;
 void Destroy(VkInstance, VkDebugReportCallbackEXT, const InstanceDispatch&) noexcept;
 void Destroy(VkInstance, VkSurfaceKHR, const InstanceDispatch&) noexcept;
@@ -657,6 +686,7 @@ using DebugReportCallback = Handle<VkDebugReportCallbackEXT, VkInstance, Instanc
 using DescriptorSetLayout = Handle<VkDescriptorSetLayout, VkDevice, DeviceDispatch>;
 using DescriptorUpdateTemplate = Handle<VkDescriptorUpdateTemplate, VkDevice, DeviceDispatch>;
 using Pipeline = Handle<VkPipeline, VkDevice, DeviceDispatch>;
+using ShaderEXT = Handle<VkShaderEXT, VkDevice, DeviceDispatch>;
 using PipelineLayout = Handle<VkPipelineLayout, VkDevice, DeviceDispatch>;
 using QueryPool = Handle<VkQueryPool, VkDevice, DeviceDispatch>;
 using RenderPass = Handle<VkRenderPass, VkDevice, DeviceDispatch>;
@@ -1166,6 +1196,11 @@ public:
 
     [[nodiscard]] ShaderModule CreateShaderModule(const VkShaderModuleCreateInfo& ci) const;
 
+    /// VK_EXT_shader_object: one shader per create info, linked when they ask for it. Throws on
+    /// failure (no shader is returned then).
+    [[nodiscard]] std::vector<ShaderEXT> CreateShadersEXT(
+        std::span<const VkShaderCreateInfoEXT> infos) const;
+
     [[nodiscard]] Event CreateEvent() const;
 
     [[nodiscard]] SwapchainKHR CreateSwapchainKHR(const VkSwapchainCreateInfoKHR& ci) const;
@@ -1222,6 +1257,30 @@ public:
     void GetDescriptorEXT(const VkDescriptorGetInfoEXT& info, size_t size,
                           void* descriptor) const noexcept {
         dld->vkGetDescriptorEXT(handle, &info, size, descriptor);
+    }
+
+    /// Writes resource descriptors for VK_EXT_descriptor_heap at host addresses.
+    void WriteResourceDescriptorsEXT(Span<VkResourceDescriptorInfoEXT> resources,
+                                     const VkHostAddressRangeEXT* descriptors) const {
+        Check(dld->vkWriteResourceDescriptorsEXT(handle, resources.size(), resources.data(),
+                                                 descriptors));
+    }
+
+    /// Registers a custom border color for heap sampler descriptors; returns its index.
+    VkResult RegisterCustomBorderColorEXT(const VkSamplerCustomBorderColorCreateInfoEXT& color,
+                                          u32* index) const noexcept {
+        return dld->vkRegisterCustomBorderColorEXT(handle, &color, VK_TRUE, index);
+    }
+
+    void UnregisterCustomBorderColorEXT(u32 index) const noexcept {
+        dld->vkUnregisterCustomBorderColorEXT(handle, index);
+    }
+
+    /// Writes sampler descriptors for VK_EXT_descriptor_heap at host addresses.
+    void WriteSamplerDescriptorsEXT(Span<VkSamplerCreateInfo> samplers,
+                                    const VkHostAddressRangeEXT* descriptors) const {
+        Check(dld->vkWriteSamplerDescriptorsEXT(handle, samplers.size(), samplers.data(),
+                                                descriptors));
     }
 
     VkResult AcquireNextImageKHR(VkSwapchainKHR swapchain, u64 timeout, VkSemaphore semaphore,
@@ -1377,6 +1436,19 @@ public:
 
     void BindPipeline(VkPipelineBindPoint bind_point, VkPipeline pipeline) const noexcept {
         dld->vkCmdBindPipeline(handle, bind_point, pipeline);
+    }
+
+    void BindShadersEXT(u32 count, const VkShaderStageFlagBits* stages,
+                        const VkShaderEXT* shaders) const noexcept {
+        dld->vkCmdBindShadersEXT(handle, count, stages, shaders);
+    }
+
+    void BeginRendering(const VkRenderingInfo& info) const noexcept {
+        dld->vkCmdBeginRendering(handle, &info);
+    }
+
+    void EndRendering() const noexcept {
+        dld->vkCmdEndRendering(handle);
     }
 
     void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset,
@@ -1578,6 +1650,24 @@ public:
         dld->vkCmdBindDescriptorBuffersEXT(handle, bindings.size(), bindings.data());
     }
 
+    void BindResourceHeapEXT(const VkBindHeapInfoEXT& info) const noexcept {
+        dld->vkCmdBindResourceHeapEXT(handle, &info);
+    }
+
+    void BindSamplerHeapEXT(const VkBindHeapInfoEXT& info) const noexcept {
+        dld->vkCmdBindSamplerHeapEXT(handle, &info);
+    }
+
+    void PushDataEXT(u32 offset, const void* data, size_t size) const noexcept {
+        const VkPushDataInfoEXT info{
+            .sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
+            .pNext = nullptr,
+            .offset = offset,
+            .data = {.address = data, .size = size},
+        };
+        dld->vkCmdPushDataEXT(handle, &info);
+    }
+
     void SetDescriptorBufferOffsetsEXT(VkPipelineBindPoint bind_point, VkPipelineLayout layout,
                                        u32 first_set, Span<u32> buffer_indices,
                                        Span<VkDeviceSize> offsets) const noexcept {
@@ -1638,6 +1728,50 @@ public:
 
     void SetScissor(u32 first, Span<VkRect2D> scissors) const noexcept {
         dld->vkCmdSetScissor(handle, first, scissors.size(), scissors.data());
+    }
+
+    void SetViewportWithCount(Span<VkViewport> viewports) const noexcept {
+        dld->vkCmdSetViewportWithCountEXT(handle, viewports.size(), viewports.data());
+    }
+
+    void SetScissorWithCount(Span<VkRect2D> scissors) const noexcept {
+        dld->vkCmdSetScissorWithCountEXT(handle, scissors.size(), scissors.data());
+    }
+
+    void SetPolygonModeEXT(VkPolygonMode mode) const noexcept {
+        dld->vkCmdSetPolygonModeEXT(handle, mode);
+    }
+
+    void SetRasterizationSamplesEXT(VkSampleCountFlagBits samples) const noexcept {
+        dld->vkCmdSetRasterizationSamplesEXT(handle, samples);
+    }
+
+    void SetSampleMaskEXT(VkSampleCountFlagBits samples, u32 mask) const noexcept {
+        dld->vkCmdSetSampleMaskEXT(handle, samples, &mask);
+    }
+
+    void SetTessellationDomainOriginEXT(VkTessellationDomainOrigin origin) const noexcept {
+        dld->vkCmdSetTessellationDomainOriginEXT(handle, origin);
+    }
+
+    void SetDepthClipEnableEXT(bool enable) const noexcept {
+        dld->vkCmdSetDepthClipEnableEXT(handle, enable ? VK_TRUE : VK_FALSE);
+    }
+
+    void SetDepthClipNegativeOneToOneEXT(bool enable) const noexcept {
+        dld->vkCmdSetDepthClipNegativeOneToOneEXT(handle, enable ? VK_TRUE : VK_FALSE);
+    }
+
+    void SetProvokingVertexModeEXT(VkProvokingVertexModeEXT mode) const noexcept {
+        dld->vkCmdSetProvokingVertexModeEXT(handle, mode);
+    }
+
+    void SetExtraPrimitiveOverestimationSizeEXT(float size) const noexcept {
+        dld->vkCmdSetExtraPrimitiveOverestimationSizeEXT(handle, size);
+    }
+
+    void SetRasterizationStreamEXT(u32 stream) const noexcept {
+        dld->vkCmdSetRasterizationStreamEXT(handle, stream);
     }
 
     void SetBlendConstants(const float blend_constants[4]) const noexcept {

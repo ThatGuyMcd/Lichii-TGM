@@ -156,6 +156,16 @@ public:
         return profile.support_cooperative_hmma || profile.support_cooperative_hmma_16x16x16;
     }
 
+    /// The dynamic state the graphics pipelines take (their keys hold zero for it).
+    [[nodiscard]] const DynamicFeatures& Features() const noexcept {
+        return dynamic_features;
+    }
+
+    /// Graphics pipelines draw with shader objects, in dynamic rendering instances.
+    [[nodiscard]] bool UsesShaderObjects() const noexcept {
+        return use_shader_objects;
+    }
+
     void TickFrame();
 
     [[nodiscard]] ComputePipeline* CurrentComputePipeline(u64& native_key);
@@ -418,6 +428,14 @@ private:
     /// EDEN_NX2_GPL: shader libraries shared by the graphics pipelines. Declared before the
     /// pipelines, so it outlives them.
     GraphicsPipelineLibraryCache graphics_libraries;
+
+    /// VK_EXT_shader_object: graphics pipelines are shader objects (with every state dynamic)
+    /// instead of pipelines; the sets shared between pipelines with the same shaders.
+    bool use_shader_objects{};
+    ShaderObject::Cache shader_objects_cache;
+    /// Driver binaries of the pipelines built, kept by Lichii (VK_KHR_pipeline_binary). Declared
+    /// before the workers that use it.
+    PipelineBinaryCache binary_cache;
 
     /// Destroys graphics pipelines unused for a while, once the GPU is done with them.
     void EvictUnusedPipelines();

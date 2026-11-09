@@ -38,12 +38,14 @@
 #include "video_core/nx2.h"
 #include "video_core/fsr.h"
 #include "video_core/render_trace.h"
+#include "video_core/renderer_vulkan/sampler_class_key.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #ifdef _WIN32
 #include "video_core/renderer_vulkan/present/amd_frame_gen.h"
 #endif
 #include "video_core/texture_cache/host_mip_limits.h"
 
+#include "video_core/dlss_contract.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/renderer_vulkan/blit_image.h"
 #include "video_core/renderer_vulkan/framebuffer_limits.h"
@@ -55,9 +57,9 @@
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/formatter.h"
+#include "video_core/texture_cache/pool_mirror.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/util.h"
-#include "video_core/dlss_contract.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #ifdef EGLANTINE_NVIDIA_DLSS
 #include "video_core/vulkan_common/nvidia_dlss.h"
@@ -599,7 +601,10 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
             return image;
         }
     }
-    return may_fail ? allocator.TryCreateImage(image_ci) : allocator.CreateImage(image_ci);
+    const float priority = info.render_target ? MemoryAllocator::RenderTargetPriority
+                                              : MemoryAllocator::ImagePriority;
+    return may_fail ? allocator.TryCreateImage(image_ci, false, priority)
+                    : allocator.CreateImage(image_ci, false, priority);
 }
 
 [[nodiscard]] vk::ImageView MakeStorageView(const vk::Device& device, u32 level, VkImage image,
@@ -1334,6 +1339,9 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
       render_pass_cache{render_pass_cache_}, descriptor_pool{descriptor_pool_},
       compute_pass_descriptor_queue{compute_pass_descriptor_queue_},
       resolution{Settings::values.resolution_info} {
+    if (device.IsExtDescriptorHeapSupported()) {
+        texture_heap.emplace(device, memory_allocator);
+    }
     // Before anything below reads astc_recompression (passes, view formats).
     UseBc3ForSwitch2OnSmallCards(device);
     // Huge ASTC arrays always decode on the GPU (IsHugeAstcArray), whatever the decode setting.
@@ -5017,12 +5025,17 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
         .components = swizzle_mapping,
         .subresourceRange = MakeSubresourceRange(aspect_mask, HostRange(image, info.range)),
     };
+    heap_view_base = create_info;
+    heap_view_base.pNext = nullptr;
+    heap_view_usage = clamped_view_usage;
+    heap_astc_decode = view_next == &astc_decode_mode;
     const auto create = [&](TextureType tex_type, std::optional<u32> num_layers) {
         VkImageViewCreateInfo ci{create_info};
         ci.viewType = ImageViewType(tex_type);
         if (num_layers) {
             ci.subresourceRange.layerCount = *num_layers;
         }
+        heap_view_layers[static_cast<size_t>(tex_type)] = ci.subresourceRange.layerCount;
         vk::ImageView handle = device->GetLogical().CreateImageView(ci);
         if (device->HasDebuggingToolAttached()) {
             handle.SetObjectNameEXT(VideoCommon::Name(*this, gpu_addr).c_str());
@@ -5203,6 +5216,29 @@ VkImageView ImageView::StorageView(Shader::TextureType texture_type,
 
 bool ImageView::IsRescaled() const noexcept {
     return (*slot_images)[image_id].IsRescaled();
+}
+
+bool ImageView::HeapViewCreateInfo(Shader::TextureType texture_type, HeapViewInfo& out) const {
+    const size_t index = static_cast<size_t>(texture_type);
+    if (index >= heap_view_layers.size() || heap_view_layers[index] == 0 || !image_views[index]) {
+        return false;
+    }
+    out.usage = VkImageViewUsageCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+        .pNext = nullptr,
+        .usage = heap_view_usage,
+    };
+    out.astc_decode = VkImageViewASTCDecodeModeEXT{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_ASTC_DECODE_MODE_EXT,
+        .pNext = &out.usage,
+        .decodeMode = VK_FORMAT_R8G8B8A8_UNORM,
+    };
+    out.create_info = heap_view_base;
+    out.create_info.pNext = heap_astc_decode ? static_cast<const void*>(&out.astc_decode)
+                                             : static_cast<const void*>(&out.usage);
+    out.create_info.viewType = ImageViewType(texture_type);
+    out.create_info.subresourceRange.layerCount = heap_view_layers[index];
+    return true;
 }
 
 vk::ImageView ImageView::MakeView(VkFormat vk_format, VkImageAspectFlags aspect_mask,
@@ -5403,28 +5439,58 @@ Sampler::Sampler(TextureCacheRuntime& runtime, const Tegra::Texture::TSCEntry& t
     Emplace(VariantKey{});
 }
 
-Sampler::VariantKey Sampler::MakeKey(const ImageView& image_view, bool is_depth) const noexcept {
+u64 ImageView::SamplerClassKey() const noexcept {
+    SamplerViewTraits traits{
+        .anisotropy = SupportsAnisotropy(),
+        .integer = IsPixelFormatInteger(format),
+        .minmax = SupportsMinmaxFilter(),
+        .border_format = RequiresBorderColorFormat(),
+        .srgb = IsPixelFormatSRGB(format),
+        .identity_swizzle = HasIdentitySwizzle(),
+        .gpu_written = BackingImage() != nullptr &&
+                       True(BackingImage()->flags & ImageFlagBits::GpuModified),
+    };
+    if (!traits.identity_swizzle) {
+        const VkComponentMapping& mapping = Swizzle();
+        traits.swizzle = {static_cast<u8>(mapping.r), static_cast<u8>(mapping.g),
+                          static_cast<u8>(mapping.b), static_cast<u8>(mapping.a)};
+    }
+    return PackSamplerClassKey(traits);
+}
+
+u32 ImageView::PoolMetaBits() const noexcept {
+    namespace Meta = VideoCommon::PoolMirror::Meta;
+    u32 bits = 0;
+    if (!SupportsDepthComparison()) {
+        bits |= Meta::NO_DEPTH_COMPARE;
+    }
+    if (IsPixelFormatInteger(format) || IsPixelFormatASTC(format) || IsPixelFormatBCn(format) ||
+        IsPixelFormatETC2(format)) {
+        bits |= Meta::UNCOMPARABLE_FORMAT;
+    }
+    return bits;
+}
+
+Sampler::VariantKey Sampler::MakeKey(u64 view_key, bool is_depth) const noexcept {
+    const SamplerViewTraits view = UnpackSamplerClassKey(view_key);
     VariantKey key{};
-    key.reduce_anisotropy = has_added_anisotropy && !image_view.SupportsAnisotropy();
-    key.force_nearest = has_linear_filtering && IsPixelFormatInteger(image_view.format);
-    key.drop_reduction = has_minmax_reduction && !image_view.SupportsMinmaxFilter();
-    key.drop_custom_border = has_custom_border_colors && image_view.RequiresBorderColorFormat();
-    key.srgb_border = has_srgb_border_color && IsPixelFormatSRGB(image_view.format);
+    key.reduce_anisotropy = has_added_anisotropy && !view.anisotropy;
+    key.force_nearest = has_linear_filtering && view.integer;
+    key.drop_reduction = has_minmax_reduction && !view.minmax;
+    key.drop_custom_border = has_custom_border_colors && view.border_format;
+    key.srgb_border = has_srgb_border_color && view.srgb;
     // A compare-enabled TSC read by a plain (non-Dref) sample: Maxwell ignores the comparison,
     // Vulkan leaves it undefined and AMD returns the 0/1 compare result (Ocarina forest fog
     // composite read alpha 0 -> black screen). Use a variant without comparison.
     key.drop_compare = has_depth_comparison && !is_depth;
-    // The FSR bias is for the game's textures. Images the GPU wrote (render targets: bloom and
-    // blur chains, reflections, fog) keep the game's own bias, or they'd read a mip too sharp.
-    // After the upscaler failed this session every image does (the game's pass runs again).
     if (added_lod_bias != 0.0f) {
-        const Image* const image = image_view.BackingImage();
         key.drop_lod_bias = !VideoCommon::KeepOcarinaFsrLodBias(
-            *ocarina_fsr_failed, image != nullptr && True(image->flags & ImageFlagBits::GpuModified));
+            *ocarina_fsr_failed, view.gpu_written);
     }
-    if (needs_swizzle_mapping && !key.drop_custom_border && !image_view.HasIdentitySwizzle()) {
-        const VkComponentMapping& mapping = image_view.Swizzle();
-        key.swizzle = {mapping.r, mapping.g, mapping.b, mapping.a};
+    if (needs_swizzle_mapping && !key.drop_custom_border && !view.identity_swizzle) {
+        for (size_t i = 0; i < key.swizzle.size(); ++i) {
+            key.swizzle[i] = static_cast<VkComponentSwizzle>(view.swizzle[i]);
+        }
     }
     return key;
 }
@@ -5491,7 +5557,6 @@ VkSampler Sampler::Emplace(VariantKey key) {
     if (key.drop_compare) {
         create_info.compareEnable = VK_FALSE;
     }
-    create_info.pNext = chain;
     if (key.force_nearest) {
         create_info.magFilter = VK_FILTER_NEAREST;
         create_info.minFilter = VK_FILTER_NEAREST;
@@ -5505,24 +5570,111 @@ VkSampler Sampler::Emplace(VariantKey key) {
     if (!custom_border) {
         create_info.borderColor = ConvertBorderColor(color);
     }
+    // Heap descriptors name a custom border color by a registered index.
+    RegisteredBorderColor border_index;
+    if (custom_border && device_ptr->IsExtDescriptorHeapSupported()) {
+        u32 index = 0;
+        if (device_ptr->GetLogical().RegisterCustomBorderColorEXT(border_ci, &index) ==
+            VK_SUCCESS) {
+            border_index = RegisteredBorderColor{*device_ptr, index};
+        } else {
+            static bool warned = false;
+            if (!std::exchange(warned, true)) {
+                LOG_WARNING(Render_Vulkan,
+                            "No custom border color index left for heap sampler descriptors");
+            }
+        }
+    }
+    const bool reduction = has_minmax_reduction && !key.drop_reduction;
+    VkSamplerCreateInfo created = create_info;
+    created.pNext = chain;
     variants.push_back(Variant{
         .key = key,
-        .sampler = device_ptr->GetLogical().CreateSampler(create_info),
+        .sampler = device_ptr->GetLogical().CreateSampler(created),
+        .create_info = create_info,
+        .custom_border = custom_border,
+        .reduction = reduction,
+        .color = color,
+        .border_index = std::move(border_index),
     });
     return *variants.back().sampler;
 }
 
-VkSampler Sampler::HandleFor(const ImageView& image_view, bool is_depth) {
-    VariantKey key = MakeKey(image_view, is_depth);
+Sampler::RegisteredBorderColor::~RegisteredBorderColor() {
+    if (device_ptr != nullptr) {
+        device_ptr->GetLogical().UnregisterCustomBorderColorEXT(value);
+    }
+}
+
+Sampler::RegisteredBorderColor& Sampler::RegisteredBorderColor::operator=(
+    RegisteredBorderColor&& rhs) noexcept {
+    if (this != &rhs) {
+        if (device_ptr != nullptr) {
+            device_ptr->GetLogical().UnregisterCustomBorderColorEXT(value);
+        }
+        device_ptr = std::exchange(rhs.device_ptr, nullptr);
+        value = rhs.value;
+    }
+    return *this;
+}
+
+bool Sampler::HeapSamplerCreateInfo(VkSampler variant, HeapSamplerInfo& out) const {
+    const auto it = std::ranges::find_if(
+        variants, [variant](const Variant& candidate) { return *candidate.sampler == variant; });
+    if (it == variants.end()) {
+        return false;
+    }
+    out.border = VkSamplerCustomBorderColorCreateInfoEXT{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT,
+        .pNext = nullptr,
+        .customBorderColor = std::bit_cast<VkClearColorValue>(it->color),
+        .format = VK_FORMAT_UNDEFINED,
+    };
+    out.border_index = VkSamplerCustomBorderColorIndexCreateInfoEXT{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_INDEX_CREATE_INFO_EXT,
+        .pNext = &out.border,
+        .index = it->border_index.Index(),
+    };
+    out.mapping = VkSamplerBorderColorComponentMappingCreateInfoEXT{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_BORDER_COLOR_COMPONENT_MAPPING_CREATE_INFO_EXT,
+        .pNext = it->border_index.Valid() ? static_cast<const void*>(&out.border_index)
+                                          : static_cast<const void*>(&out.border),
+        .components{it->key.swizzle[0], it->key.swizzle[1], it->key.swizzle[2], it->key.swizzle[3]},
+        .srgb = VK_FALSE,
+    };
+    const void* chain = nullptr;
+    if (it->custom_border) {
+        chain = it->key.HasSwizzle() ? static_cast<const void*>(&out.mapping) : out.mapping.pNext;
+    }
+    out.reduction = VkSamplerReductionModeCreateInfoEXT{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT,
+        .pNext = chain,
+        .reductionMode = reduction_mode,
+    };
+    if (it->reduction) {
+        chain = &out.reduction;
+    }
+    out.create_info = it->create_info;
+    out.create_info.pNext = chain;
+    return true;
+}
+
+VkSampler Sampler::HandleForClass(u64 view_key, bool is_depth) {
+    VariantKey key = MakeKey(view_key, is_depth);
     if (variants.size() >= MAX_VARIANTS) {
         key.srgb_border = false;
         key.swizzle = {};
     }
-    VkSampler handle = Find(key);
-    if (handle == VK_NULL_HANDLE) {
-        handle = Emplace(key);
-    }
+    const VkSampler handle = Find(key);
+    return handle != VK_NULL_HANDLE ? handle : Emplace(key);
+}
+
+VkSampler Sampler::HandleFor(const ImageView& image_view, bool is_depth) {
+    const u64 view_key = image_view.SamplerClassKey();
+    const VkSampler handle = HandleForClass(view_key, is_depth);
     if (VideoCommon::RenderTrace::Enabled() && (is_depth || has_depth_comparison)) {
+        // The variant cap leaves force_nearest alone.
+        const VariantKey key = MakeKey(view_key, is_depth);
         static thread_local std::set<std::tuple<VkSampler, VkImage, s32, s32, s32, bool, bool>> seen;
         if (seen.size() < 4096 &&
             seen.emplace(handle, image_view.ImageHandle(), image_view.range.base.level,
@@ -5592,6 +5744,8 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
         height = (std::min)(height, is_rescaled ? resolution.ScaleUp(color_buffer->size.height)
                                               : color_buffer->size.height);
         attachments.push_back(color_buffer->RenderTarget());
+        color_views[index] = color_buffer->RenderTarget();
+        num_color_slots = static_cast<u32>(index + 1);
         renderpass_key.color_formats[index] = color_buffer->format;
         num_layers = (std::min)(num_layers, color_buffer->range.extent.layers);
         images[num_images] = color_buffer->ImageHandle();
@@ -5609,6 +5763,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
         height = (std::min)(height, is_rescaled ? resolution.ScaleUp(depth_buffer->size.height)
                                               : depth_buffer->size.height);
         attachments.push_back(depth_buffer->RenderTarget());
+        depth_stencil_view = depth_buffer->RenderTarget();
         renderpass_key.depth_format = depth_buffer->format;
         num_layers = (std::min)(num_layers, depth_buffer->range.extent.layers);
         images[num_images] = depth_buffer->ImageHandle();

@@ -65,6 +65,7 @@ struct ShaderTranslationKey {
 
     /// Settings read by the translation passes and the SPIR-V backend.
     u32 library_context;
+    u32 native_context;
     u32 inline_context;
     u32 motion_context;
     u32 depth_context;
@@ -82,7 +83,7 @@ struct ShaderTranslationKey {
     bool tess_clockwise;
     bool dual_source_blend;
     /// Always zero: makes the padding explicit, so the key can be compared and hashed as bytes.
-    std::array<u8, 2> zero_padding;
+    std::array<u8, 6> zero_padding;
 
     bool operator==(const ShaderTranslationKey& rhs) const noexcept;
 };
@@ -207,6 +208,7 @@ struct ReusableShaders {
     std::shared_ptr<const GraphicsShaderModules> modules;
     std::array<u128, Maxwell::MaxShaderStage> spirv_hashes{};
     bool libraries{};
+    bool shader_objects{};
     std::array<Shader::Info, Maxwell::MaxShaderStage> infos;
     /// What translation asked each program's environment, in the order the environments come.
     boost::container::static_vector<TranslationReads, Maxwell::MaxShaderProgram> reads;

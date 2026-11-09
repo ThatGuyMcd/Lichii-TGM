@@ -362,7 +362,7 @@ void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat
         .queueFamilyIndexCount = shared ? static_cast<u32>(shared_families.size()) : 0U,
         .pQueueFamilyIndices = shared ? shared_families.data() : nullptr,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    });
+    }, false, MemoryAllocator::RenderTargetPriority);
 
     frame->image_view = dld.CreateImageView({
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,

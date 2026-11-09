@@ -779,6 +779,12 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         RemoveExtensionFeature(extensions.descriptor_buffer, features.descriptor_buffer,
                                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
     }
+    // So does VK_EXT_descriptor_heap: heaps are bound by device address range.
+    if (extensions.descriptor_heap && !features.buffer_device_address.bufferDeviceAddress) {
+        LOG_WARNING(Render_Vulkan, "Descriptor heap needs buffer device address, disabling.");
+        RemoveExtensionFeature(extensions.descriptor_heap, features.descriptor_heap,
+                               VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+    }
 #ifdef EGLANTINE_NVIDIA_DLSS
     // NVIDIA's DLSS needs buffer device addresses: keep the feature enabled for
     // it, but leave Eglantine's own buffers as they are without descriptor buffers.
@@ -788,7 +794,8 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         extensions.buffer_device_address = false;
     } else
 #endif
-    if (!extensions.descriptor_buffer) {
+        if (!extensions.descriptor_buffer && !features.buffer_device_address.bufferDeviceAddress) {
+        // Kept whenever the device has it: the GPU page table reaches storage by device address.
         RemoveExtensionFeature(extensions.buffer_device_address, features.buffer_device_address,
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     }
@@ -949,6 +956,9 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     }
     if (extensions.buffer_device_address) {
         flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
+    if (extensions.memory_priority) {
+        flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
     }
     // EDEN_NX2_VRAM_LIMIT_MIB: VMA fails allocations past the limit, like a smaller card.
     std::array<VkDeviceSize, VK_MAX_MEMORY_HEAPS> heap_size_limits;
@@ -1119,7 +1129,8 @@ VmaPool Device::GetSeparatePool(SeparatePool kind, u32 memory_type) const {
                                                             : SeparatePoolBlockSize,
             .minBlockCount = 0,
             .maxBlockCount = 0,
-            .priority = 0.f,
+            // Guest buffers are read by most draws; sparse pages are textures (VMA's default).
+            .priority = kind == SeparatePool::DeviceBuffers ? 0.75f : 0.5f,
             .minAllocationAlignment = 0,
             .pMemoryAllocateNext = nullptr,
         };
@@ -1483,7 +1494,8 @@ bool Device::GetSuitability(bool requires_swapchain) {
     // EDEN_NX2_GPL=1: graphics pipelines linked from per-stage libraries (vk_pipeline_library).
     graphics_pipeline_library_requested = [] {
         const char* value = std::getenv("EDEN_NX2_GPL");
-        return value && *value && *value != '0';
+        return value && *value && *value != '0' &&
+               std::getenv("EDEN_NX2_EXP_NO_GPL") == nullptr;
     }();
     if (graphics_pipeline_library_requested &&
         supported_extensions.contains(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
@@ -1701,6 +1713,11 @@ bool Device::GetSuitability(bool requires_swapchain) {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
         SetNext(next, properties.descriptor_buffer);
     }
+    if (extensions.descriptor_heap) {
+        properties.descriptor_heap.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;
+        SetNext(next, properties.descriptor_heap);
+    }
     if (extensions.subgroup_size_control || features.subgroup_size_control.subgroupSizeControl) {
         properties.subgroup_size_control.sType =
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
@@ -1715,6 +1732,11 @@ bool Device::GetSuitability(bool requires_swapchain) {
         properties.maintenance5.sType =
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES_KHR;
         SetNext(next, properties.maintenance5);
+    }
+    if (extensions.pipeline_binary) {
+        properties.pipeline_binary.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_PROPERTIES_KHR;
+        SetNext(next, properties.pipeline_binary);
     }
     if (extensions.custom_border_color) {
         properties.custom_border_color.sType =
@@ -1873,10 +1895,28 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.depth_clip_control, features.depth_clip_control,
                                        VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
 
+    // Buffer device addresses: core since Vulkan 1.2, where the extension list doesn't name it
+    // (FEATURE_EXTENSION sets the flag below 1.2 only), so the queried feature says it.
+    extensions.buffer_device_address = features.buffer_device_address.bufferDeviceAddress;
+    RemoveExtensionFeatureIfUnsuitable(extensions.buffer_device_address,
+                                       features.buffer_device_address,
+                                       VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+
     // VK_EXT_descriptor_buffer
     extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer;
     RemoveExtensionFeatureIfUnsuitable(extensions.descriptor_buffer, features.descriptor_buffer,
                                        VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+
+    // VK_EXT_descriptor_heap
+    // EXPERIMENT (do not merge): off until heap pipelines use it; EDEN_NX2_DESCRIPTOR_HEAP=1
+    // enables it.
+    static const bool heap_wanted = [] {
+        const char* const value = std::getenv("EDEN_NX2_DESCRIPTOR_HEAP");
+        return value != nullptr && value[0] == '1';
+    }();
+    extensions.descriptor_heap = features.descriptor_heap.descriptorHeap && heap_wanted;
+    RemoveExtensionFeatureIfUnsuitable(extensions.descriptor_heap, features.descriptor_heap,
+                                       VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
 
     // VK_EXT_extended_dynamic_state
     extensions.extended_dynamic_state = features.extended_dynamic_state.extendedDynamicState;
@@ -2053,8 +2093,8 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
                                        VK_EXT_MESH_SHADER_EXTENSION_NAME);
 
-    // VK_EXT_graphics_pipeline_library (EDEN_NX2_GPL): used only with fast linking, which makes
-    // a link cost a fraction of a millisecond.
+    // VK_EXT_graphics_pipeline_library. Without fast linking every link is optimized
+    // (GraphicsLibraryLinksOptimized).
     if (graphics_pipeline_library_requested) {
         const bool usable =
             graphics_pipeline_library_features.graphicsPipelineLibrary &&
@@ -2070,8 +2110,10 @@ void Device::RemoveUnsuitableExtensions() {
         graphics_pipeline_library_enabled = usable;
         if (usable) {
             LOG_INFO(Render_Vulkan,
-                     "Nx2Perf gpl: graphics pipeline libraries on (fast linking, independent "
-                     "interpolation decoration {})",
+                     "Nx2Perf gpl: graphics pipeline libraries on (fast linking {}, link time "
+                     "optimization info kept {}, independent interpolation decoration {})",
+                     properties.graphics_pipeline_library.graphicsPipelineLibraryFastLinking,
+                     KeepsGraphicsLibraryLinkInfo(),
                      properties.graphics_pipeline_library
                          .graphicsPipelineLibraryIndependentInterpolationDecoration);
         }
@@ -2183,6 +2225,19 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.maintenance4, features.maintenance4,
                                        VK_KHR_MAINTENANCE_4_EXTENSION_NAME);
 
+    // VK_EXT_memory_priority, VK_EXT_pageable_device_local_memory: under memory pressure the
+    // driver moves the lowest-priority allocations to system memory instead of failing new ones
+    // (Windows pages device memory either way; this tells it what to keep).
+    extensions.memory_priority = features.memory_priority.memoryPriority;
+    RemoveExtensionFeatureIfUnsuitable(extensions.memory_priority, features.memory_priority,
+                                       VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
+    extensions.pageable_device_local_memory =
+        features.pageable_device_local_memory.pageableDeviceLocalMemory &&
+        extensions.memory_priority;
+    RemoveExtensionFeatureIfUnsuitable(extensions.pageable_device_local_memory,
+                                       features.pageable_device_local_memory,
+                                       VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
+
     // VK_KHR_present_id2, VK_KHR_present_wait2 (pacing on the display's present times)
     // Both need VK_KHR_get_surface_capabilities2 on the instance.
     extensions.present_id2 = features.present_id2.presentId2 &&
@@ -2205,6 +2260,12 @@ void Device::RemoveUnsuitableExtensions() {
     RemoveExtensionFeatureIfUnsuitable(extensions.maintenance5, features.maintenance5,
                                        VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
 
+    // VK_KHR_pipeline_binary (its pipeline flags need VK_KHR_maintenance5)
+    extensions.pipeline_binary =
+        features.pipeline_binary.pipelineBinaries && extensions.maintenance5;
+    RemoveExtensionFeatureIfUnsuitable(extensions.pipeline_binary, features.pipeline_binary,
+                                       VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
+
     // VK_KHR_maintenance6
     extensions.maintenance6 = features.maintenance6.maintenance6;
     RemoveExtensionFeatureIfUnsuitable(extensions.maintenance6, features.maintenance6,
@@ -2222,6 +2283,50 @@ void Device::RemoveUnsuitableExtensions() {
     extensions.synchronization2 = features.synchronization2.synchronization2;
     RemoveExtensionFeatureIfUnsuitable(extensions.synchronization2, features.synchronization2,
                                        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+
+    // VK_EXT_shader_object: graphics shaders bound per stage, with every state a pipeline would
+    // hold set dynamically. Shader objects draw only in render pass instances begun with
+    // vkCmdBeginRendering (VUID-vkCmdDraw-None-08876). Tilers stay on pipelines: their MSAA
+    // resolve shadows are render pass resolve attachments.
+    // Line rasterization mode and stipple enable need no EDS3 feature with shader objects
+    // (shaderObject covers them): the 9070 XT has bresenham but no rectangular lines
+    // (vulkaninfo rectangularLines = false), which the pipelines' dynamic line mode needs.
+    const std::array<std::pair<const char*, bool>, 13> shader_object_needs{{
+        {"Vulkan 1.3", instance_version >= VK_API_VERSION_1_3},
+        {"shaderObject", features.shader_object.shaderObject != VK_FALSE},
+        {"dynamicRendering", features.dynamic_rendering.dynamicRendering != VK_FALSE},
+        {"extended dynamic state", extensions.extended_dynamic_state},
+        {"extended dynamic state 2", extensions.extended_dynamic_state2},
+        {"EDS3 blending", dynamic_state3_blending},
+        {"EDS3 depth clamp", dynamic_state3_depth_clamp_enable},
+        {"EDS3 logic op enable", dynamic_state3_logic_op_enable},
+        {"EDS3 alpha to coverage", dynamic_state3_alpha_to_coverage},
+        {"EDS3 conservative rasterization",
+         !extensions.conservative_rasterization || dynamic_state3_conservative_raster_mode},
+        {"dynamic vertex input", extensions.vertex_input_dynamic_state},
+        {"no viewport swizzle, no tiler", !extensions.viewport_swizzle && !IsTiler()},
+        // The mesh emulation draws with pipelines, whose static viewport counts don't take
+        // the counted viewports.
+        {"task and mesh shaders", extensions.mesh_shader &&
+                                      features.mesh_shader.meshShader != VK_FALSE &&
+                                      features.mesh_shader.taskShader != VK_FALSE},
+    }};
+    bool shader_object_usable = true;
+    for (const auto& [need, met] : shader_object_needs) {
+        if (!met) {
+            LOG_INFO(Render_Vulkan, "VK_EXT_shader_object not used: needs {}", need);
+        }
+        shader_object_usable &= met;
+    }
+    // EXPERIMENT (do not merge): pipelines unless EDEN_NX2_SHADER_OBJECT=1, for the pipelines
+    // vs shader objects A/B; the winner ships unconditionally.
+    static const bool shader_objects_wanted = [] {
+        const char* const value = std::getenv("EDEN_NX2_SHADER_OBJECT");
+        return value != nullptr && value[0] == '1';
+    }();
+    extensions.shader_object = shader_objects_wanted && shader_object_usable;
+    RemoveExtensionFeatureIfUnsuitable(extensions.shader_object, features.shader_object,
+                                       VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
 }
 
 void Device::SetupFamilies(VkSurfaceKHR surface) {

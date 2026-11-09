@@ -150,7 +150,18 @@ public:
 
     /// Requests to begin a renderpass.
     void RequestRenderpass(const Framebuffer* framebuffer,
-                           std::source_location location = std::source_location::current());
+                           std::source_location location = std::source_location::current()) {
+        RequestRenderpass(framebuffer, false, location);
+    }
+
+    /// Begin a traditional or dynamic rendering pass for a draw.
+    /// @param dynamic_rendering The draws bind shader objects: a render pass instance begun with
+    ///                          vkCmdBeginRendering (VUID-vkCmdDraw-None-08876).
+    void RequestDrawRenderpass(const Framebuffer* framebuffer, bool dynamic_rendering = false,
+                               std::source_location location = std::source_location::current()) {
+        RequestRenderpass(framebuffer, true, location, dynamic_rendering);
+    }
+
 
     /// Defers a full-attachment color clear so it becomes the next render pass.
     bool DeferColorClear(const Framebuffer* framebuffer, u32 rt_slot, const VkClearValue& value);
@@ -223,6 +234,12 @@ public:
 
     /// Returns true when the descriptor buffer chunk has to be bound into the command buffer.
     bool UpdateDescriptorBufferChunk(u32 descriptor_chunk);
+
+    /// A descriptor heap was bound (it invalidates descriptor buffer bindings): the next
+    /// descriptor buffer draw binds its chunk again.
+    void InvalidateDescriptorBuffer() noexcept {
+        state.descriptor_buffer_bound = false;
+    }
 
     /// Invalidates current command buffer state except for render passes
     void InvalidateState();
@@ -517,6 +534,8 @@ private:
         bool needs_state_enable_refresh = false;
         u32 descriptor_buffer_chunk = 0;
         bool descriptor_buffer_bound = false;
+        /// The active instance was begun with vkCmdBeginRendering
+        bool dynamic_rendering = false;
     };
 
     struct DeferredClear {
@@ -529,10 +548,23 @@ private:
 
     /// Begins a render pass for the given framebuffer, optionally with clear values.
     void BeginRenderPassImpl(const Framebuffer* framebuffer, VkRenderPass renderpass,
-                             const VkClearValue* clear_values, u32 clear_value_count);
+                             const VkClearValue* clear_values, u32 clear_value_count, bool tracked = false);
+
+    /// Begins a dynamic rendering instance on the framebuffer's views; `clear` (or null) names
+    /// the attachments it clears.
+    void BeginRenderingImpl(const Framebuffer* framebuffer, const DeferredClear* clear,
+                            bool tracked);
+
+    /// The bookkeeping of a render pass instance beginning, both kinds.
+    void NoteRenderPassBegin(const Framebuffer* framebuffer, VkRenderPass renderpass, bool tracked,
+                             bool dynamic_rendering);
 
     /// If a deferred clear is pending.
-    void RealizeDeferredClear();
+    void RealizeDeferredClear(bool tracked = true, bool dynamic_rendering = false);
+
+    void RequestRenderpass(const Framebuffer* framebuffer, bool tracked,
+                           std::source_location location, bool dynamic_rendering = false);
+
 
     void WorkerThread(std::stop_token stop_token);
 

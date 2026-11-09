@@ -41,6 +41,8 @@
 namespace Vulkan {
 
 using Shader::ImageBufferDescriptor;
+using Shader::Backend::SPIRV::BANK_TABLE_OFFSET;
+using Shader::Backend::SPIRV::PAGE_TABLE_OFFSET;
 using Shader::Backend::SPIRV::RESCALING_LAYOUT_WORDS_OFFSET;
 using Tegra::Texture::TexturePair;
 
@@ -254,7 +256,9 @@ vk::Pipeline ComputePipeline::MakeComputePipeline(bool fast) {
     const bool unoptimized = (flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) != 0;
     const auto begin = std::chrono::steady_clock::now();
     TracePipelineBuild("BEGIN", "compute", shader_hash, traced, unoptimized);
-    auto result = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
+    auto result = binary_cache
+        ? binary_cache->CreateComputePipeline(compute_ci, *pipeline_cache)
+        : device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
     TracePipelineBuild("END", "compute", shader_hash, traced, unoptimized,
                        std::chrono::duration<double, std::milli>(
                            std::chrono::steady_clock::now() - begin).count());
@@ -269,8 +273,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                                  PipelineStatistics* pipeline_statistics,
                                  VideoCore::ShaderNotify* shader_notify, const Shader::Info& info_,
                                  vk::ShaderModule spv_module_, u64 shader_hash_,
-                                 std::function<vk::ShaderModule()> emit_module_, bool skip_until_built_)
-    : device{device_},
+                                 std::function<vk::ShaderModule()> emit_module_, bool skip_until_built_, PipelineBinaryCache* binary_cache_)
+    : device{device_}, binary_cache{binary_cache_},
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
       shader_hash{shader_hash_}, skip_until_built{skip_until_built_}, spv_module(std::move(spv_module_)),
@@ -443,6 +447,8 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
 
     buffer_cache.SetComputeUniformBufferState(info.constant_buffer_mask, &uniform_buffer_sizes);
     buffer_cache.UnbindComputeStorageBuffers();
+    buffer_cache.SetComputeStorageByAddress(info.storage_by_address);
+    buffer_cache.SetComputeUniformsByAddress(info.uniforms_by_address);
     size_t ssbo_index{};
     for (const auto& desc : info.storage_buffers_descriptors) {
         ASSERT(desc.count == 1);
@@ -674,11 +680,16 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     std::ranges::for_each(info.image_buffer_descriptors, add_buffer);
 
     buffer_cache.UpdateComputeBuffers();
+    if (info.uniforms_by_address) {
+        buffer_cache.BeginBankTable(true);
+    }
     buffer_cache.BindHostComputeBuffers();
     if (buffer_cache.any_buffer_uploaded) {
         buffer_cache.runtime.PostCopyBarrier();
         buffer_cache.any_buffer_uploaded = false;
     }
+    const u64 page_table{info.storage_by_address ? buffer_cache.PageTableAddress() : 0};
+    const u64 bank_table{info.uniforms_by_address ? buffer_cache.BankTableAddress() : 0};
 
     RescalingPushConstant rescaling;
     const VideoCommon::SamplerId* samplers_it{samplers.data()};
@@ -778,8 +789,8 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
 
     const bool is_rescaling = !info.texture_descriptors.empty() || !info.image_descriptors.empty();
     auto bind = [this, descriptor_data, is_rescaling, descriptor_buffer_offset,
-                      descriptor_buffer_chunk, bind_descriptor_buffer,
-                      rescaling_data = rescaling.Data()](vk::CommandBuffer cmdbuf) {
+                 descriptor_buffer_chunk, bind_descriptor_buffer, page_table, bank_table,
+                 rescaling_data = rescaling.Data()](vk::CommandBuffer cmdbuf) {
         if (bind_descriptor_buffer) {
             const VkDescriptorBufferBindingInfoEXT binding_info{
                 descriptor_buffer_ring.BindingInfo(descriptor_buffer_chunk)};
@@ -789,6 +800,14 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
             return;
         }
         cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
+        if (page_table != 0) {
+            cmdbuf.PushConstants(*pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, PAGE_TABLE_OFFSET,
+                                 sizeof(page_table), &page_table);
+        }
+        if (bank_table != 0) {
+            cmdbuf.PushConstants(*pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, BANK_TABLE_OFFSET,
+                                 sizeof(bank_table), &bank_table);
+        }
         if (!descriptor_set_layout) {
             return;
         }

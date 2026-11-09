@@ -50,6 +50,10 @@ struct Buffer : VideoCommon::BufferBase {
     u64 LastUsageTick() const {
         return tick;
     }
+    /// A made-up device address: the GPU page table tests check where entries point.
+    u64 DeviceAddress() const {
+        return 0x7000'0000'0000ULL + CpuAddr();
+    }
 
     std::vector<u8> bytes;
     bool host_mapped{};
@@ -213,9 +217,42 @@ struct Runtime {
             std::memcpy(dst->bytes.data() + offset + word, &value, sizeof(value));
         }
     }
-    void BindUniformBuffer(Buffer&, u32, u32) {}
+    void BindUniformBuffer(Buffer& buffer, u32 offset, u32 size) {
+        if (bank_entry != nullptr) {
+            *bank_entry = {.address = buffer.DeviceAddress() + offset, .size = size, .reserved = 0};
+        }
+    }
+    void SetBankEntry(Shader::Backend::SPIRV::BankTableEntry* entry) {
+        bank_entry = entry;
+    }
+    std::pair<std::span<u8>, u64> AllocateBankTable(u32 size) {
+        bank_table.assign(size, 0xcd);
+        return {bank_table, 0x4000'0000};
+    }
+    Shader::Backend::SPIRV::BankTableEntry* bank_entry{};
+    std::vector<u8> bank_table;
+    bool SupportsGpuPageTable() const {
+        return true;
+    }
+    u64 NullPageAddress() const {
+        return NULL_PAGE;
+    }
+    u64 SyncPageTable(size_t, VideoCommon::GpuPageTable& table, bool upload = true) {
+        if (!upload) {
+            return 0x5000'0000;
+        }
+        table.TakeUpdates(page_table_updates);
+        ++page_table_syncs;
+        return 0x5000'0000;
+    }
+    static constexpr u64 NULL_PAGE = 0x6000'0000;
+    std::vector<VideoCommon::GpuPageTable::Update> page_table_updates;
+    u32 page_table_syncs{};
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size) {
         stream.resize(size);
+        if (bank_entry != nullptr) {
+            *bank_entry = {.address = 0x3000'0000, .size = size, .reserved = 0};
+        }
         return stream;
     }
 
@@ -367,6 +404,7 @@ struct BufferCacheTestAccess {
     }
     static void NextFrame(Cache& cache) {
         cache.native_indirect_uniforms_this_frame.clear();
+        cache.native_indirect_uniform_ranges_this_frame.Clear();
     }
     static u32 CpuMarks(Cache& cache) {
         return cache.memory_tracker.cpu_marks;
@@ -410,6 +448,38 @@ struct BufferCacheTestAccess {
     }
     static const auto& ReadChecks(Cache& cache) {
         return cache.read_check;
+    }
+    /// One draw's storage binding through the GPU page table: the update, then the bind.
+    static const GpuPageTable& Resident(Cache& cache, BufferCacheChannelInfo& channel,
+                                        const Binding& binding, bool written) {
+        cache.channel_state = &channel;
+        cache.maxwell3d = &channel.maxwell3d;
+        cache.gpu_memory = &channel.gpu_memory;
+        auto& residency = cache.residencies[0][0];
+        cache.ResolveResidency(residency, binding);
+        cache.MakeResident(residency, written, ~u64{0});
+        REQUIRE(cache.PageTableAddress() == 0x5000'0000);
+        return *cache.CurrentPageTable();
+    }
+    static size_t Runs(Cache& cache) {
+        return cache.residencies[0][0].runs.size();
+    }
+    static void Delete(Cache& cache, BufferId id) {
+        cache.DeleteBuffer(id);
+    }
+    static BufferId Find(Cache& cache, DAddr address, u32 size) {
+        return cache.FindBuffer(address, size, false);
+    }
+    /// One draw's constant buffers through the bank table, vertex (0) and fragment (4) stages.
+    static void BankDraw(Cache& cache, BufferCacheChannelInfo& channel) {
+        cache.channel_state = &channel;
+        cache.maxwell3d = &channel.maxwell3d;
+        cache.gpu_memory = &channel.gpu_memory;
+        cache.SetUniformsByAddress(0, true);
+        cache.SetUniformsByAddress(4, true);
+        cache.BeginBankTable(false);
+        cache.BindHostGraphicsUniformBuffers(0);
+        cache.BindHostGraphicsUniformBuffers(4);
     }
 };
 
@@ -2502,4 +2572,83 @@ TEST_CASE("Mesh task count slots follow the copies of their command list page",
         CHECK(mirror(*slot) == std::array<u32, 3>{offset, 1, 1});
     }
     CHECK_FALSE(f.cache->Nx2MeshCountSlot(0x20050));
+}
+
+TEST_CASE("Storage through the GPU page table maps each device run to its buffer",
+          "[buffer_ports]") {
+    Fixture f;
+    // Two 64 KiB GPU pages backed by device memory that is not contiguous.
+    constexpr GPUVAddr base = 0x200000;
+    f.memory->Map(base, 0x20000, 0x10000, Tegra::PTEKind::PITCH, true);
+    f.memory->Map(base + 0x10000, 0x40000, 0x10000, Tegra::PTEKind::PITCH, true);
+    Tegra::Control::ChannelState state{0};
+    state.memory_manager = &*f.memory;
+    state.payload.emplace(f.system, *f.memory, state);
+    VideoCommon::BufferCacheChannelInfo channel{state};
+    const VideoCommon::Binding binding{
+        .device_addr = 0x20000, .gpu_addr = base + 0x800, .size = 0x18000, .buffer_id = {}};
+    const auto& table = Access::Resident(*f.cache, channel, binding, true);
+    REQUIRE(Access::Runs(*f.cache) == 2);
+    constexpr u64 host = 0x7000'0000'0000ULL;
+    // Each byte translates to where the buffer holding its device address keeps it.
+    REQUIRE(table.Translate(base + 0x800) == host + 0x20800);
+    REQUIRE(table.Translate(base + 0xffff) == host + 0x2ffff);
+    REQUIRE(table.Translate(base + 0x10000) == host + 0x40000);
+    REQUIRE(table.Translate(base + 0x187ff) == host + 0x487ff);
+    // Pages outside the binding stay at the null page.
+    REQUIRE(table.Translate(base + 0x19000) == Runtime::NULL_PAGE);
+    // The same binding again changes no entry.
+    const u32 syncs = f.runtime.page_table_syncs;
+    f.runtime.page_table_updates.clear();
+    Access::Resident(*f.cache, channel, binding, true);
+    REQUIRE(f.runtime.page_table_syncs == syncs);
+    REQUIRE(f.runtime.page_table_updates.empty());
+    REQUIRE(table.Translate(base + 0x800) == host + 0x20800);
+    REQUIRE(table.Translate(base + 0x10000) == host + 0x40000);
+    // A buffer that goes away takes its entries with it.
+    const VideoCommon::BufferId second = Access::Find(*f.cache, 0x40000, 0x8800);
+    Access::Delete(*f.cache, second);
+    REQUIRE(table.Translate(base + 0x10000) == Runtime::NULL_PAGE);
+    REQUIRE(table.Translate(base + 0x800) == host + 0x20800);
+    // The next draw makes it resident again in a new buffer.
+    Access::Resident(*f.cache, channel, binding, false);
+    REQUIRE(table.Translate(base + 0x10010) == host + 0x40010);
+}
+
+TEST_CASE("Constant buffers by device address fill the draw's bank table, not descriptors",
+          "[buffer_ports]") {
+    using Shader::Backend::SPIRV::BankTableEntry;
+    Fixture f;
+    Tegra::Control::ChannelState state{0};
+    state.memory_manager = &*f.memory;
+    state.payload.emplace(f.system, *f.memory, state);
+    VideoCommon::BufferCacheChannelInfo channel{state};
+    VideoCommon::UniformBufferSizes sizes{};
+    sizes[0][2] = 0x100;  // small: streamed
+    sizes[4][0] = 0x2000; // past the stream size: read in place
+    channel.uniform_buffer_sizes = &sizes;
+    channel.enabled_uniform_buffer_masks[0] = 1U << 2;
+    channel.enabled_uniform_buffer_masks[4] = 1U << 0;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    channel.uniform_buffers[0][2] = {.device_addr = 0x20100, .size = 0x100, .buffer_id = id};
+    channel.uniform_buffers[4][0] = {.device_addr = 0x24000, .size = 0x2000, .buffer_id = id};
+    Access::BankDraw(*f.cache, channel);
+    REQUIRE(f.cache->BankTableAddress() == 0x4000'0000);
+    // Vertex through fragment: five stages of 18 banks.
+    REQUIRE(f.runtime.bank_table.size() == 5 * 18 * sizeof(BankTableEntry));
+    const auto entry = [&](u32 stage, u32 index) {
+        BankTableEntry value;
+        std::memcpy(&value, f.runtime.bank_table.data() + (stage * 18 + index) * sizeof(value),
+                    sizeof(value));
+        return value;
+    };
+    REQUIRE(entry(0, 2).address == 0x3000'0000);
+    REQUIRE(entry(0, 2).size == 0x100);
+    REQUIRE(entry(4, 0).address == 0x7000'0000'0000ULL + 0x24000);
+    REQUIRE(entry(4, 0).size == 0x2000);
+    // Banks the stages don't bind read zero from the null page.
+    REQUIRE(entry(0, 0).address == Runtime::NULL_PAGE);
+    REQUIRE(entry(0, 0).size == 0);
+    REQUIRE(entry(3, 17).size == 0);
+    REQUIRE(f.runtime.bank_entry == nullptr);
 }

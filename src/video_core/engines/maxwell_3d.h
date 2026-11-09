@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "video_core/draw_class_stats.h"
+
 #include <array>
 #include <bitset>
 #include <cmath>
@@ -14,6 +16,7 @@
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "common/assert.h"
@@ -3274,6 +3277,12 @@ public:
         Tables tables{};
     } dirty;
 
+    /// EDEN_NX2_DRAW_CLASSES: the register groups (VideoCommon::DrawClass::Group bits) changed
+    /// since the last draw took them.
+    [[nodiscard]] u8 TakeDrawChanges() noexcept {
+        return std::exchange(draw_changes, u8{0});
+    }
+
     DrawManager draw_manager;
 
     GPUVAddr GetMacroAddress(size_t index) const {
@@ -3351,6 +3360,9 @@ private:
     /// Stores a register's value and sets its dirty flags. Defined here, as the hot method paths
     /// call it for nearly every write.
     void ProcessDirtyRegisters(u32 method, u32 argument) {
+        if (draw_classes) {
+            draw_changes |= VideoCommon::DrawClass::Table()[method];
+        }
         // The instances after the first are drawn together once their loop ends, and they must
         // see the state they were begun with: NVN's draw macros reset the base instance (and its
         // copy in c[0][0x644]) right after the loop, before the macro returns.
@@ -3506,6 +3518,9 @@ private:
 
     std::vector<std::pair<GPUVAddr, size_t>> macro_segments;
     bool current_macro_dirty{};
+    /// EDEN_NX2_DRAW_CLASSES (TakeDrawChanges).
+    u8 draw_changes{};
+    bool draw_classes{};
 
     // Split GPU thread, macros on the front (FrontCallMethod): the front's state, and whether
     // the front owns the macro code and bindings (the back thread then leaves them alone).

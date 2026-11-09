@@ -131,3 +131,67 @@ library cache, shader reuse, warm builder/records/archive parser, Info serializa
 fallback and associated test sources. The standalone SPIR-V inline-control suite ran successfully:
 5 test cases, 25 assertions. Parent integration performs the full link and broader test run.
 No driver-specific rendering, OoT gameplay, warm-start performance or guard-room result is claimed.
+
+## #831 native backend integration
+
+The native backend branch starts at `0c3d77c370` and retains the individual upstream authors
+and source commit IDs in 58 cherry-picks, followed by a combined compatibility fix. This is an
+integration of the following native layers, not a claim that every implementation in #831 is
+simultaneously active.
+
+| Layer | Included behavior and reconciliation |
+| --- | --- |
+| Guest GPU addresses | GPU page tables, host-buffer page offsets, reverse mapping, once-per-frame null updates, storage/global-memory address lowering, and per-draw uniform-bank address tables. Address-backed draws take the full bind path so a previous draw's bank table cannot be reused accidentally. |
+| Texture residency | Resident descriptor tables, watched device pages, image-specific invalidation, pool layout/version tracking, changed-entry queues and sampler class keys. The existing image recycler and low-memory allocation fallbacks remain authoritative. |
+| Descriptor heaps | Capability-gated resource/sampler heaps, cached shadow descriptors, null entries, physical-page updates, per-stage mappings, GPL and shader-object draws. Pipelines with motion-history descriptors, unsupported images or nonzero OoT FSR LOD bias use the existing descriptor path. Heap pipeline binary capture is disabled to avoid conflicting creation-flags chains. |
+| Shader objects | Shared `VK_EXT_shader_object` stage sets with dynamic rendering and state packets. Raw reusable SPIR-V is retained for verification; shader objects apply the same driver no-inline transform as shader modules. Recorded #1021 modules retain their monolithic descriptor layout. |
+| Draw state | Exact draw-input watches and GPU-written-page generation, batched dynamic-state deltas, alpha/blend updates and additional dynamic raster state. OoT jitter is included when viewport packets are rebuilt. The AMD floating-point logic-op workaround changes only host state. |
+| Pipeline libraries | Concurrent pre-raster/fragment builds, AMD quad-after-demote correctness guard, optimized background relinking and static vertex inputs masked by actual shader reads. Existing #656/#995 build ownership and scheduler-ordered retirement replace the competing optimized-handle implementation. |
+| Driver resources | Vulkan memory priorities and pageable memory; driver pipeline-binary persistence for supported non-heap graphics/compute pipelines, including prepared/reused pipelines. |
+
+Native storage and uniforms require buffer device addresses and their shader capabilities;
+`EDEN_NX2_NATIVE_STORAGE=0` and `EDEN_NX2_NATIVE_UNIFORMS=0` disable the respective paths.
+Descriptor heaps require `EDEN_NX2_DESCRIPTOR_HEAP=1`; shader objects require
+`EDEN_NX2_SHADER_OBJECT=1`. These switches cannot enable a missing driver feature.
+The original comparison controls are retained: `EDEN_NX2_DYNAMIC_RASTER=0`,
+`EDEN_NX2_DYNSTATE_BATCH=0`, `EDEN_NX2_EXP_VERTEX_INPUT=dynamic`,
+`EDEN_NX2_EXP_NO_GPL_RELINK=1`, `EDEN_NX2_EXP_NO_GPL=1`, and
+`EDEN_NX2_EXP_NO_PIPELINE_BINARY=1`. Native comparison and draw-class diagnostics remain
+off unless their `EDEN_NX2_NATIVE_VERIFY` / `EDEN_NX2_DRAW_CLASSES` controls are set.
+
+The 112-byte common push-constant layout preserves the OoT motion area at offset 80, rescaling
+data and render area. Heap-stage mappings start after that layout. Info serialization includes
+the native address and quad-after-demote fields. Prepared-cache signatures include the layout
+size, address capabilities, heap capability and shader-object mode; shader reuse also separates
+these contexts. The parent `lichii-4` identity remains unchanged because the expanded context
+invalidates incompatible preparations.
+
+The pinned Vulkan headers `v1.4.345` provide the new extension declarations. The bundled Sirit
+`v1.0.7` remains supported and was used for syntax validation: this emitter uses ordinary SPIR-V
+with Vulkan heap resource mappings. The source-Sirit alternative retains its pinned version and
+the checked-in include/extension patches, so it is reproducible without requiring that alternative
+for the Windows build.
+
+Remaining architectural limits: the current #805/#1028 render-pass barriers are retained rather
+than importing #831's competing deferred-pass barrier tracker. Its hot-page demotion change
+`483f404f6` targets an absent alternative bank-shadow cache and is not applied. The existing
+shader-read-mask canonicalization replaces #831's alternate pipeline-state watch; whole-cache
+lookup memoization was not imported. The heap path does not yet implement the per-draw OoT FSR
+sampler LOD-bias variant, so those draws deliberately retain ordinary descriptors. These are
+specific exclusions, not evidence that those optimizations are equivalent on every workload.
+
+Validation: Windows clang-cl syntax checks cover the emitter and Info serialization, page-table
+consumers, Vulkan device/wrapper/allocator, texture/buffer cache, heap, shader-object, binary and
+pipeline code, scheduler/state packets, shader reuse, warm builder and new test sources. The
+standalone native suite passes 71 cases and 5,516,133 assertions. The baseline warm-prompt bug is
+fixed so absent/header-only files do not prompt and the per-game mesh opt-in is honored; native
+recipe fallback remains intact. The uniform-upload test's frame transition now clears the same
+per-frame range set as production `TickFrame`. The final integration still requires the parent's
+full build/test run and hardware validation; no emulator or game was launched for these checks.
+
+The separately linked buffer-cache / mesh-warm regression harness also passes all 71 cases and
+15,621 assertions, including both baseline failures and the native residency/bank-table cases.
+The unchanged-binding page-table test now verifies that no redundant upload occurs and both
+mapped runs retain their translations. Final review also corrected deferred stage-pool release
+to occur after every stage has emitted, and heap draws now adopt completed optimized links in
+scheduler order.

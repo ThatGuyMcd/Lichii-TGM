@@ -8,13 +8,26 @@ add_executable(tests
     video_core/neural_rendering_model.cpp
     common/addon_config.cpp
     video_core/oot_ultrawide.cpp
+    video_core/graphics_pipeline_library.cpp
+    video_core/pipeline_cache_policy.cpp
+    video_core/gpl_build_once.cpp
+    video_core/pipeline_binary_store.cpp
     video_core/vulkan_overlay_filter.cpp
     video_core/buffer_cache_ports.cpp
+    video_core/draw_class_stats.cpp
+    video_core/draw_input_watch.cpp
+    video_core/gpu_page_table.cpp
+    video_core/native_verify.cpp
+    video_core/native_storage_layers.cpp
     video_core/unswizzle_workers.cpp
     video_core/block_linear_swizzle.cpp
     video_core/aftermath_dump.cpp
     video_core/frame_dump_schedule.cpp
     video_core/nx2_stutter_trace.cpp
+    video_core/heap_mappings.cpp
+    video_core/dynamic_state_delta.cpp
+    video_core/shader_object_cache.cpp
+    video_core/provoking_vertex.cpp
     video_core/host_mip_limits.cpp
     video_core/gpu_timestamp.cpp
     video_core/semaphore_waiters.cpp
@@ -223,6 +236,9 @@ add_executable(tests
     video_core/usage_tracker.cpp
     video_core/shader_invalidation.cpp
     video_core/descriptor_table.cpp
+    video_core/sampler_class_key.cpp
+    video_core/pool_page_watch.cpp
+    video_core/pool_mirror.cpp
     video_core/descriptor_payload_growth.cpp
     video_core/global_address_tracking.cpp
     video_core/global_atomic_routing.cpp

@@ -12,6 +12,7 @@
 #include <vector>
 #include <queue>
 
+#include "common/alignment.h"
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
@@ -365,6 +366,37 @@ void TightenOutputVertices(IR::Program& program) {
 }
 } // Anonymous namespace
 
+/// With the GPU page table, a program that reaches guest memory reads the table's address and
+/// leaves its storage buffer descriptors unbound.
+void MarkStorageByAddress(IR::Program& program, const HostTranslateInfo& host_info) {
+    Info& info{program.info};
+    info.storage_by_address =
+        host_info.gpu_page_table &&
+        (info.uses_global_memory || !info.storage_buffers_descriptors.empty());
+    if (info.storage_by_address) {
+        // The shader reads each storage buffer's pointer from its constant buffer itself (the
+        // storage buffer pass took those reads out of the program for bound buffers): the
+        // constant buffer has to be bound, and read at least through the pointer's two words.
+        for (const StorageBufferDescriptor& desc : info.storage_buffers_descriptors) {
+            const u32 index{desc.cbuf_index};
+            if ((info.constant_buffer_mask & (1U << index)) == 0) {
+                info.constant_buffer_mask |= 1U << index;
+                auto& cbufs{info.constant_buffer_descriptors};
+                cbufs.insert(
+                    std::ranges::lower_bound(cbufs, index, {}, &ConstantBufferDescriptor::index),
+                    ConstantBufferDescriptor{.index = index, .count = 1});
+            }
+            u32& size{info.constant_buffer_used_sizes[index]};
+            size = Common::AlignUp((std::max)(size, desc.cbuf_offset + 8U), 16U);
+            info.used_constant_buffer_types |= IR::Type::U32x2;
+        }
+    }
+    // Mesh and task programs bind in other stages' slots: their banks stay descriptors.
+    program.info.uniforms_by_address = host_info.uniforms_by_address &&
+                                       !program.info.constant_buffer_descriptors.empty() &&
+                                       program.stage != Stage::Mesh && program.stage != Stage::Task;
+}
+
 IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Block>& block_pool,
                              Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info) {
     HostTranslateInfo normalized_host_info{host_info};
@@ -497,6 +529,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     CollectInterpolationInfo(env, program);
     AddNVNStorageBuffers(program, normalized_host_info);
     Optimization::LimitSampledTextureArrays(program, normalized_host_info);
+    MarkStorageByAddress(program, normalized_host_info);
     return program;
 }
 
@@ -537,6 +570,7 @@ IR::Program MergeDualVertexPrograms(IR::Program& vertex_a, IR::Program& vertex_b
         Optimization::VerificationPass(result);
     }
     Optimization::CollectShaderInfoPass(env_vertex_b, result);
+    MarkStorageByAddress(result, host_info);
     return result;
 }
 

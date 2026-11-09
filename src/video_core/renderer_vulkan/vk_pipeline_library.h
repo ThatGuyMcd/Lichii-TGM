@@ -6,17 +6,16 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/thread_worker.h"
+#include "video_core/renderer_vulkan/gpl_build_once.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
@@ -27,8 +26,9 @@ namespace Vulkan {
 // and fragment output. The two shader parts are what the driver spends seconds on; they are built
 // once per shader (and the little state the driver bakes into them) and shared by every pipeline
 // that uses that shader, whatever its partner stage. The vertex input and fragment output parts
-// are cheap and built per pipeline. A new pipeline whose shaders were seen before costs a link
-// (a fraction of a millisecond with fast linking).
+// are cheap and built per pipeline. A new pipeline whose shaders were seen before costs a link:
+// a fraction of a millisecond with a fast link, a few milliseconds with an optimized one
+// (GraphicsLibraryLinksOptimized), against a full build of tens of milliseconds.
 //
 // For a shader library to be independent of its partner, each stage has its own descriptor set
 // (set index = stage index, VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT) with its bindings
@@ -49,6 +49,14 @@ namespace Vulkan {
 /// has 128 texture and 64 image bits; the pre-rasterization stages use the ones below).
 constexpr u32 GPL_FRAGMENT_TEXTURE_SCALING_BASE = 64;
 constexpr u32 GPL_FRAGMENT_IMAGE_SCALING_BASE = 32;
+
+constexpr bool FitsLibraryRescalingBits(size_t pre_textures, size_t pre_images,
+                                        size_t fragment_textures, size_t fragment_images) {
+    return pre_textures <= GPL_FRAGMENT_TEXTURE_SCALING_BASE &&
+           fragment_textures <= GPL_FRAGMENT_TEXTURE_SCALING_BASE &&
+           pre_images <= GPL_FRAGMENT_IMAGE_SCALING_BASE &&
+           fragment_images <= GPL_FRAGMENT_IMAGE_SCALING_BASE;
+}
 
 /// EDEN_NX2_GPL_OPTIMIZE=1 (with EDEN_NX2_GPL=1): after the fast link, an optimized link
 /// (VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT) is built on a worker and swapped in at a
@@ -110,6 +118,14 @@ public:
     /// While set on a thread, libraries it builds are not kept in the cache (the graphics
     /// warm-up: only the driver's disk cache keeps them, 60,000 kept libraries would not fit).
     static void SetNoRetainOnThisThread(bool no_retain) noexcept;
+    /// Starts building the library for `key` on a compile thread when nobody has, and returns at
+    /// once. A new pipeline builds its two shader libraries at the same time this way: the draw
+    /// waits for the slower one instead of both in turn (Ocarina of Time: 214 + 190 ms for one
+    /// pipeline). GetOrCreate for the same key takes the build over when the compile thread
+    /// hasn't started it, so `build` must stay valid until that GetOrCreate returns, and is never
+    /// called after it.
+    void Prefetch(GplPart part, std::string key, Builder build, u64 name);
+
 
     void RecordLink(bool optimized, std::chrono::nanoseconds time);
     void RecordHeldDraw(std::chrono::nanoseconds time);
@@ -119,15 +135,10 @@ public:
     void Report();
 
 private:
-    struct Entry {
-        std::mutex mutex;
-        std::condition_variable condition;
-        bool done{};
-        std::shared_ptr<const GplLibrary> library;
-    };
+    /// Builds the library with `build`, timing it for the report; null when it failed.
+    std::shared_ptr<const GplLibrary> Build(GplPart part, const Builder& build, u64 name);
 
-    std::mutex mutex;
-    std::unordered_map<std::string, std::shared_ptr<Entry>> entries;
+    BuildOnceMap<GplLibrary> entries;
 
     std::array<std::atomic<u32>, 2> built{};
     std::array<std::atomic<u32>, 2> failed{};
@@ -142,6 +153,10 @@ private:
     std::atomic<u32> fallbacks{};
     std::atomic<u32> logged_builds{};
     std::atomic<size_t> total_libraries{};
+    std::array<std::atomic<u32>, 2> prefetched{};
+    /// Last members: stopped before the counters their tasks report to are destroyed.
+    /// Prefetch: at normal priority, as a draw usually waits for what they build.
+    Common::ThreadWorker compile_workers{2, "VkGplCompile", {}, Common::ThreadPlacement::Default};
     std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
 };
 

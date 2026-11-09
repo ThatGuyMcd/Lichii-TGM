@@ -161,6 +161,18 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdSetConservativeRasterizationModeEXT);
     X(vkCmdSetLineRasterizationModeEXT);
     X(vkCmdSetLineStippleEnableEXT);
+    X(vkCmdSetLineStippleEXT);
+    X(vkCmdSetViewportWithCountEXT);
+    X(vkCmdSetScissorWithCountEXT);
+    X(vkCmdSetPolygonModeEXT);
+    X(vkCmdSetRasterizationSamplesEXT);
+    X(vkCmdSetSampleMaskEXT);
+    X(vkCmdSetTessellationDomainOriginEXT);
+    X(vkCmdSetDepthClipEnableEXT);
+    X(vkCmdSetDepthClipNegativeOneToOneEXT);
+    X(vkCmdSetProvokingVertexModeEXT);
+    X(vkCmdSetExtraPrimitiveOverestimationSizeEXT);
+    X(vkCmdSetRasterizationStreamEXT);
     X(vkCmdSetDepthBiasEnableEXT);
     X(vkCmdSetLogicOpEnableEXT);
     X(vkCmdSetDepthClampEnableEXT);
@@ -220,6 +232,11 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkDestroySampler);
     X(vkDestroySemaphore);
     X(vkDestroyShaderModule);
+    X(vkCreateShadersEXT);
+    X(vkDestroyShaderEXT);
+    X(vkCmdBindShadersEXT);
+    X(vkCmdBeginRendering);
+    X(vkCmdEndRendering);
     X(vkDestroySwapchainKHR);
     X(vkDeviceWaitIdle);
     X(vkQueueWaitIdle);
@@ -260,7 +277,19 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkGetDescriptorSetLayoutBindingOffsetEXT);
     X(vkGetDescriptorEXT);
     X(vkCmdBindDescriptorBuffersEXT);
+    X(vkWriteResourceDescriptorsEXT);
+    X(vkWriteSamplerDescriptorsEXT);
+    X(vkCmdBindResourceHeapEXT);
+    X(vkCmdBindSamplerHeapEXT);
+    X(vkCmdPushDataEXT);
+    X(vkRegisterCustomBorderColorEXT);
+    X(vkUnregisterCustomBorderColorEXT);
     X(vkCmdSetDescriptorBufferOffsetsEXT);
+    X(vkCreatePipelineBinariesKHR);
+    X(vkDestroyPipelineBinaryKHR);
+    X(vkGetPipelineKeyKHR);
+    X(vkGetPipelineBinaryDataKHR);
+    X(vkReleaseCapturedPipelineDataKHR);
     X(vkWaitForFences);
     X(vkWaitForPresent2KHR);
     X(vkWaitSemaphores);
@@ -446,6 +475,10 @@ void Destroy(VkDevice device, VkSemaphore handle, const DeviceDispatch& dld) noe
 
 void Destroy(VkDevice device, VkShaderModule handle, const DeviceDispatch& dld) noexcept {
     dld.vkDestroyShaderModule(device, handle, nullptr);
+}
+
+void Destroy(VkDevice device, VkShaderEXT handle, const DeviceDispatch& dld) noexcept {
+    dld.vkDestroyShaderEXT(device, handle, nullptr);
 }
 
 void Destroy(VkInstance instance, VkDebugUtilsMessengerEXT handle,
@@ -1073,6 +1106,28 @@ ShaderModule Device::CreateShaderModule(const VkShaderModuleCreateInfo& ci) cons
     VkShaderModule object;
     Check(dld->vkCreateShaderModule(handle, &ci, nullptr, &object));
     return ShaderModule(object, handle, *dld);
+}
+
+std::vector<ShaderEXT> Device::CreateShadersEXT(
+    std::span<const VkShaderCreateInfoEXT> infos) const {
+    std::vector<VkShaderEXT> objects(infos.size());
+    const VkResult result = dld->vkCreateShadersEXT(handle, static_cast<u32>(infos.size()),
+                                                    infos.data(), nullptr, objects.data());
+    if (result != VK_SUCCESS) {
+        // VK_INCOMPATIBLE_SHADER_BINARY_EXT and errors leave some shaders null; free the rest.
+        for (const VkShaderEXT object : objects) {
+            if (object != VK_NULL_HANDLE) {
+                dld->vkDestroyShaderEXT(handle, object, nullptr);
+            }
+        }
+        throw Exception(result);
+    }
+    std::vector<ShaderEXT> shaders;
+    shaders.reserve(objects.size());
+    for (const VkShaderEXT object : objects) {
+        shaders.emplace_back(object, handle, *dld);
+    }
+    return shaders;
 }
 
 Event Device::CreateEvent() const {

@@ -137,8 +137,8 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
 }
 
 [[nodiscard]] inline u32 NumDescriptorEntries(const Shader::Info& info) {
-    return Shader::NumDescriptors(info.constant_buffer_descriptors) +
-           Shader::NumDescriptors(info.storage_buffers_descriptors) +
+    return Shader::NumDescriptors(Shader::BoundConstantBuffers(info)) +
+           Shader::NumDescriptors(Shader::BoundStorageBuffers(info)) +
            Shader::NumDescriptors(info.texture_buffer_descriptors) +
            Shader::NumDescriptors(info.image_buffer_descriptors) +
            Shader::NumDescriptors(info.texture_descriptors) +
@@ -246,12 +246,6 @@ public:
     }
 
     VkPushConstantRange PushConstantRange() const {
-        using Shader::Backend::SPIRV::RenderAreaLayout;
-        using Shader::Backend::SPIRV::RescalingLayout;
-        const u32 size_offset = is_compute ? sizeof(RescalingLayout::down_factor) : 0u;
-        // Every graphics layout covers the OoT object motion words, so push constants stay
-        // compatible across pipelines (the down factor is only pushed when it changes).
-        const u32 graphics_size = Shader::Backend::SPIRV::OOT_MOTION_PUSH_END;
         return VkPushConstantRange{
             .stageFlags = static_cast<VkShaderStageFlags>(
                 is_compute ? VK_SHADER_STAGE_COMPUTE_BIT
@@ -261,9 +255,7 @@ public:
                                        VK_SHADER_STAGE_MESH_BIT_EXT
                                  : VK_SHADER_STAGE_ALL_GRAPHICS)),
             .offset = 0,
-            .size = is_compute ? static_cast<u32>(sizeof(RescalingLayout)) - size_offset +
-                                     static_cast<u32>(sizeof(RenderAreaLayout))
-                               : graphics_size,
+            .size = Shader::Backend::SPIRV::PUSH_CONSTANT_LAYOUT_SIZE,
         };
     }
 
@@ -358,8 +350,8 @@ public:
         is_compute |= (stage & VK_SHADER_STAGE_COMPUTE_BIT) != 0 && !mesh_emulation;
         uses_mesh |= (stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) != 0;
 
-        Add(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stage, info.constant_buffer_descriptors);
-        Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage, info.storage_buffers_descriptors);
+        Add(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stage, Shader::BoundConstantBuffers(info));
+        Add(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage, Shader::BoundStorageBuffers(info));
         Add(VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, stage, info.texture_buffer_descriptors);
         Add(VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, stage, info.image_buffer_descriptors);
         Add(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stage, info.texture_descriptors);

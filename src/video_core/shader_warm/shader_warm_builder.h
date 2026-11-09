@@ -47,8 +47,11 @@ u64 ReadWarmCount(const std::filesystem::path& warm_file);
 
 /// What a marker records: the precache file's size and last-write time, its entry count, the GPU
 /// driver version and device ID, the pipeline cache version and whether shared shader functions
-/// were built as calls (compute bit 0, graphics bit 1: the SPIR-V the driver compiled differs).
-/// Markers written without the last field no longer match, so that precache runs once more.
+/// were built as calls (compute bit 0, graphics bit 1: the SPIR-V the driver compiled differs),
+/// and the graphics link mode (bit 0 fast links usable, bit 1 optimized links on: together they
+/// decide whether libraries keep link time optimization info, which changes what the driver
+/// caches). Markers written without the last field no longer match, so that precache runs once
+/// more.
 struct WarmStamp {
     u64 size{};
     s64 write_time{};
@@ -57,20 +60,21 @@ struct WarmStamp {
     u32 device_id{};
     u32 cache_version{};
     u32 no_inline{};
+    u32 link_mode{};
 
-    /// True when `other` was written for the same file, driver, device, cache version and shader
-    /// calls mode (the entry count is informative).
+    /// True when `other` was written for the same file, driver, device, cache version, shader
+    /// calls mode and link mode (the entry count is informative).
     [[nodiscard]] bool Matches(const WarmStamp& other) const noexcept {
         return size == other.size && write_time == other.write_time && driver == other.driver &&
                device_id == other.device_id && cache_version == other.cache_version &&
-               no_inline == other.no_inline;
+               no_inline == other.no_inline && link_mode == other.link_mode;
     }
 };
 
 /// The stamp of `warm_file` as it is now, empty when its size or time cannot be read.
 std::optional<WarmStamp> CurrentWarmStamp(const std::filesystem::path& warm_file, u64 entries,
                                           u32 driver, u32 device_id, u32 cache_version,
-                                          u32 no_inline = 0);
+                                          u32 no_inline = 0, u32 link_mode = 0);
 
 /// The marker of `warm_file`, empty when there is none or it cannot be read.
 std::optional<WarmStamp> ReadWarmMarker(const std::filesystem::path& warm_file);

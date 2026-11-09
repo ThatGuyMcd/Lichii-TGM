@@ -66,6 +66,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_binaries.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache_records.h"
+#include "video_core/renderer_vulkan/vk_pipeline_library.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_cache_v2.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -1860,7 +1861,7 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
 
 namespace {
 /// Threads of the shader precache: EDEN_NX2_WARM_THREADS=N (1 to 64), else the
-/// shader_warm_threads setting, where 0 is every CPU thread.
+/// shader_warm_threads setting, where 0 is every CPU thread that fits the free commit memory.
 size_t PrecacheThreads() {
     const size_t all = std::clamp<size_t>(std::thread::hardware_concurrency(), 1, 64);
     const u32 setting = Settings::values.shader_warm_threads.GetValue();
@@ -1882,7 +1883,29 @@ size_t PrecacheThreads() {
         }
         return static_cast<size_t>(parsed);
     }();
-    return forced != 0 ? forced : chosen;
+    if (forced != 0 || setting != 0) {
+        return forced != 0 ? forced : chosen;
+    }
+    // Every CPU thread, unless the system is short of commit memory: each warm-up thread holds a
+    // driver compile, and on a 16 GB machine all 12 threads plus the guest memory hit the commit
+    // limit (#741). Windows reports the commit charge; elsewhere the count stays as is.
+    constexpr u64 BytesPerThread = 2ULL << 30;
+    constexpr u64 Headroom = 2ULL << 30;
+    const auto usage = Common::GetProcessMemoryUsage();
+    if (usage.system_commit_limit == 0 || usage.system_commit >= usage.system_commit_limit) {
+        return chosen;
+    }
+    const u64 free_commit = usage.system_commit_limit - usage.system_commit;
+    const size_t fit = static_cast<size_t>(
+        std::max<u64>(free_commit > Headroom ? (free_commit - Headroom) / BytesPerThread : 0, 1));
+    if (fit < chosen) {
+        LOG_INFO(Render_Vulkan,
+                 "Shader precache: {} MiB of commit memory free, {} threads instead of {} "
+                 "(shader_warm_threads or EDEN_NX2_WARM_THREADS set a fixed count)",
+                 free_commit >> 20, fit, chosen);
+        return fit;
+    }
+    return chosen;
 }
 
 bool ComputeNoInline();
@@ -1891,6 +1914,13 @@ bool ComputeNoInline();
 /// precache markers: the SPIR-V the driver compiled differs between the two modes.
 u32 NoInlineBits() {
     return (ComputeNoInline() ? 1U : 0U) | (GraphicsNoInline() ? 2U : 0U);
+}
+
+/// The graphics link mode, for the precache markers (bit 0 fast links usable, bit 1 optimized
+/// links on): together they decide whether libraries keep link time optimization info, which
+/// changes what the driver caches.
+u32 LinkModeBits(const Device& device) {
+    return (device.CanFastLinkGraphicsLibraries() ? 1U : 0U) | (GplOptimizeEnabled() ? 2U : 0U);
 }
 } // Anonymous namespace
 
@@ -1910,7 +1940,8 @@ size_t PipelineCache::PrecacheGraphicsWarm(u64 title_id, size_t num_threads, siz
     }
     const auto stamp = [&](u64 entries) {
         return ShaderWarm::CurrentWarmStamp(warm_file, entries, device.GetDriverVersion(),
-                                            device.GetDeviceID(), CACHE_VERSION, NoInlineBits());
+                                            device.GetDeviceID(), CACHE_VERSION, NoInlineBits(),
+                                            LinkModeBits(device));
     };
     const auto current = stamp(0);
     const auto marker = ShaderWarm::ReadWarmMarker(warm_file);
@@ -2161,7 +2192,7 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
         }
         const auto graphics_current = ShaderWarm::CurrentWarmStamp(
             graphics_file, 0, device.GetDriverVersion(), device.GetDeviceID(), CACHE_VERSION,
-            NoInlineBits());
+            NoInlineBits(), LinkModeBits(device));
         const auto graphics_marker = ShaderWarm::ReadWarmMarker(graphics_file);
         return !(graphics_current && graphics_marker &&
                  graphics_marker->Matches(*graphics_current));

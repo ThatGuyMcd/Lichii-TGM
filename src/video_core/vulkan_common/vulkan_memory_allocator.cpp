@@ -231,6 +231,33 @@ bool MemoryAllocator::AllocateMediumImage(const VkImageCreateInfo &ci, VkImage &
     // GPU back thread there.
     const auto &dld = device.GetDispatchLoader();
     const VkDevice logical = *device.GetLogical();
+    const auto fits = [](const VkMemoryRequirements &requirements) {
+        return requirements.size > Device::SeparatePoolBlockSize / 2 &&
+               requirements.size <= Device::MediumImagePoolBlockSize / 4;
+    };
+    // Vulkan 1.3 or VK_KHR_maintenance4 give the requirements without creating the image, so an
+    // image the pool does not take is created only once, by VMA.
+    const bool query_first = dld.vkGetDeviceImageMemoryRequirements != nullptr &&
+                             device.IsKhrMaintenance4Supported();
+    VkMemoryRequirements requirements{};
+    if (query_first) {
+        const VkDeviceImageMemoryRequirements info{
+            .sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
+            .pNext = nullptr,
+            .pCreateInfo = &ci,
+            .planeAspect = VkImageAspectFlagBits{},
+        };
+        VkMemoryRequirements2 requirements2{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+            .pNext = nullptr,
+            .memoryRequirements = {},
+        };
+        dld.vkGetDeviceImageMemoryRequirements(logical, &info, &requirements2);
+        requirements = requirements2.memoryRequirements;
+        if (!fits(requirements)) {
+            return false;
+        }
+    }
     VkImage raw{};
     if (dld.vkCreateImage(logical, &ci, nullptr, &raw) != VK_SUCCESS) {
         return false;
@@ -239,11 +266,11 @@ bool MemoryAllocator::AllocateMediumImage(const VkImageCreateInfo &ci, VkImage &
         dld.vkDestroyImage(logical, raw, nullptr);
         return false;
     };
-    VkMemoryRequirements requirements{};
-    dld.vkGetImageMemoryRequirements(logical, raw, &requirements);
-    if (requirements.size <= Device::SeparatePoolBlockSize / 2 ||
-        requirements.size > Device::MediumImagePoolBlockSize / 4) {
-        return discard();
+    if (!query_first) {
+        dld.vkGetImageMemoryRequirements(logical, raw, &requirements);
+        if (!fits(requirements)) {
+            return discard();
+        }
     }
     VmaAllocationCreateInfo type_ci{};
     type_ci.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;

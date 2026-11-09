@@ -260,6 +260,8 @@ public:
     /// Ocarina of Time's photo mode: notes the image the anti-aliasing output pass writes (the
     /// HUD's target) and returns true to drop the haze pass while photo mode hides it.
     bool ProcessOcarinaPhotoPass(u64 program_id, u64 shader_hash);
+    /// Draws a plain upscale of a rejected tensor program's input in its place.
+    [[nodiscard]] bool UpscaleInsteadOfNativeProgram();
     void TraceDlssContract(u64 native_key, bool warn_unvalidated = true);
     /// EDEN_NX2_COMPUTE_HANDLE_TRACE=1: logs a compute program's launch and the texture handles
     /// in its constant buffer 0, at its 1st, 61st and 62nd dispatch.
@@ -273,6 +275,10 @@ public:
     /// GPU address of the image a cb0 texture handle at `offset` points to, or 0.
     u64 HandleImageAddress(u32 offset);
 
+
+    /// Whether the matrix multiplies (tensor-core instructions) of native compute programs are
+    /// emulated; rejected ones get UpscaleInsteadOfNativeProgram.
+    [[nodiscard]] bool EmulatesNativeTensorPrograms() const;
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod for native compute engines: runs their macros and macro
@@ -349,12 +355,17 @@ private:
     u32 network_skip_remaining{};
     /// Set when the replacement copy fails, so the full network runs from then on.
     bool native_upscale_disabled{};
+    /// Programs rejected as native matrix multiplies (the upscale stand-in replaces them). Later
+    /// dispatches of the same program fail on the cached pipeline with another message, and must
+    /// still reach the stand-in, or its output stops updating after the first frame.
+    std::unordered_set<GPUVAddr> matrix_rejected_programs;
 
     /// Motion vectors and depth of Fire Emblem: Fortune's Weave's DLSS evaluation, from its first
     /// pass (run earlier in the frame than the network pass the stand-in replaces), with the input
     /// colour image and camera jitter they go with.
     std::optional<Texture::TICEntry> dlss_motion_vectors;
     std::optional<Texture::TICEntry> dlss_depth;
+    std::array<f32, 2> dlss_jitter{};
     u32 dlss_contract_trace_count{};
     GPUVAddr dlss_motion_color{};
     VideoCommon::FireEmblemUpscale::FrameJitter fe_upscale_jitter;

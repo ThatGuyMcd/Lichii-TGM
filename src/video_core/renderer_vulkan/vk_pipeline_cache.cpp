@@ -960,12 +960,12 @@ u64 IrBytes(std::span<const Shader::IR::Program> programs) {
 }
 
 // EDEN_NX2_PRELOAD_ALL_PIPELINES=1 builds every cached pipeline at boot, as before.
-bool PreloadAllPipelines() {
-    static const bool all = [] {
+bool PreloadAllPipelines(bool moltenvk) {
+    static const std::optional<bool> all = []() -> std::optional<bool> {
         const char* value = std::getenv("EDEN_NX2_PRELOAD_ALL_PIPELINES");
-        return value != nullptr && value[0] == '1';
+        return value != nullptr ? std::optional{value[0] == '1'} : std::nullopt;
     }();
-    return all;
+    return all.value_or(moltenvk);
 }
 
 // A graphics pipeline unused for this many frames (~2.5 min at 60 FPS) may be destroyed.
@@ -1336,7 +1336,8 @@ bool PipelineCache::KeyFitsDevice(const GraphicsPipelineCacheKey& key) const {
     }
     const bool key_requests_provoking_last = key.state.provoking_vertex_last != 0;
     if (key_requests_provoking_last && !dynamic_features.has_provoking_vertex_last_mode) {
-        return false;
+        // The live draw retains this bit too; pipeline construction falls back to first vertex.
+        return true;
     }
     const bool key_uses_transform_feedback = key.state.xfb_enabled != 0;
     return !key_uses_transform_feedback || !key_requests_provoking_last ||
@@ -1592,7 +1593,7 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
         if (build_journal->Skip(hash)) {
             continue;
         }
-        if (PreloadAllPipelines() || (used_pipelines.empty()
+        if (PreloadAllPipelines(device.IsMoltenVK()) || (used_pipelines.empty()
                                           ? queued_graphics < MaxPipelinesWithoutUsedList
                                           : used_pipelines.contains(hash))) {
             ++queued_graphics;
@@ -2772,7 +2773,7 @@ void PipelineCache::EvictUnusedPipelines() {
     // EDEN_NX2_PRELOAD_ALL_PIPELINES asked for every cached pipeline built: evicting the ones not
     // used yet threw the preload away after 9000 frames (Ocarina: 22,510 of 24,285, then rebuilt
     // one by one in new places).
-    if (PreloadAllPipelines()) {
+    if (PreloadAllPipelines(device.IsMoltenVK())) {
         return;
     }
     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
@@ -2860,7 +2861,7 @@ void PipelineCache::EvictUnusedPipelines() {
 void PipelineCache::LogEvictionPolicy() const {
     if (device.IsMoltenVK()) {
         LOG_INFO(Render_Vulkan, "Pipeline eviction: off on MoltenVK");
-    } else if (PreloadAllPipelines()) {
+    } else if (PreloadAllPipelines(device.IsMoltenVK())) {
         LOG_INFO(Render_Vulkan, "Pipeline eviction: off (EDEN_NX2_PRELOAD_ALL_PIPELINES=1)");
     } else if (const size_t kept = kept_pipelines.load(std::memory_order::relaxed); kept != 0) {
         LOG_INFO(Render_Vulkan,

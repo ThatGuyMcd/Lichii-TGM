@@ -152,7 +152,7 @@ public:
 
     bool CanUsePushDescriptor() const noexcept {
         if (!device->IsKhrPushDescriptorSupported() ||
-            num_descriptors > device->MaxPushDescriptors()) {
+            num_descriptors > device->MaxPushDescriptors() || exceeds_metal_slots) {
             return false;
         }
         return !device->IsExtDescriptorBufferSupported() ||
@@ -372,6 +372,23 @@ public:
         if (info.oot_motion.history || info.oot_motion.image) {
             AddSingle(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stage);
         }
+
+        // MoltenVK can't put push descriptors in Metal argument buffers, so each one takes a
+        // direct slot: 31 buffers and 16 samplers per stage, shared with MoltenVK's own auxiliary
+        // buffers and, in vertex shaders, the vertex buffers. Past that the shader fails to
+        // compile or reads unbound buffers, which loses the device.
+        if (device->IsMoltenVK()) {
+            const u32 buffers = Shader::NumDescriptors(info.constant_buffer_descriptors) +
+                                Shader::NumDescriptors(info.storage_buffers_descriptors) +
+                                (info.oot_motion.history || info.oot_motion.image ? 1U : 0U);
+            const u32 samplers = Shader::NumDescriptors(info.texture_descriptors);
+            const u32 textures = samplers +
+                                 Shader::NumDescriptors(info.texture_buffer_descriptors) +
+                                 Shader::NumDescriptors(info.image_buffer_descriptors) +
+                                 Shader::NumDescriptors(info.image_descriptors);
+            const u32 buffer_slots = (stage & VK_SHADER_STAGE_VERTEX_BIT) != 0 ? 10 : 24;
+            exceeds_metal_slots |= buffers > buffer_slots || samplers > 16 || textures > 31;
+        }
     }
 
 private:
@@ -412,6 +429,7 @@ private:
     bool is_compute{};
     bool uses_mesh{};
     bool mesh_emulation{};
+    bool exceeds_metal_slots{};
     boost::container::small_vector<VkDescriptorSetLayoutBinding, 32> bindings;
     boost::container::small_vector<VkDescriptorUpdateTemplateEntry, 32> entries;
     u32 binding{};

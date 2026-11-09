@@ -87,6 +87,7 @@ add_executable(tests
     video_core/unbacked_fallback.cpp
     video_core/fire_emblem_upscale.cpp
     video_core/query_copy.cpp
+    video_core/shader_reuse.cpp
     video_core/dlss_contract.cpp
     video_core/ampere_fast_fusion.cpp
     video_core/ampere_async_copy.cpp
@@ -100,7 +101,9 @@ add_executable(tests
     video_core/precache_journal.cpp
     video_core/oot_network.cpp
     video_core/page_filter.cpp
+    video_core/mesh_warm_builder.cpp
     video_core/pipeline_optimization.cpp
+    video_core/spirv_inline_control.cpp
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_storage_alignment.cpp
     video_core/spirv_fragment_shuffle.cpp

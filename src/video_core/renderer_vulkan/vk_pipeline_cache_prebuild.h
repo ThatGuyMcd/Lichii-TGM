@@ -116,6 +116,13 @@ public:
         entries.clear();
     }
 
+    void ResetForLoad() {
+        Stop();
+        captured_bytes = 0;
+        started = false;
+        stopped = false;
+    }
+
 private:
     EmissionBudget budget;
     const size_t capture_limit;

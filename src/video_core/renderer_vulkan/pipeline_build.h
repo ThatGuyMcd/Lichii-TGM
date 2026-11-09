@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -16,6 +17,28 @@
 #include "video_core/renderer_vulkan/async_draw_policy.h"
 
 namespace Vulkan {
+
+/// Build an unoptimized pipeline first, then replace it with a worker's optimized build.
+inline bool FastFirstBuildEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_FAST_FIRST");
+        return value && *value && *value != '0';
+    }();
+    return enabled;
+}
+
+inline bool PipelinePerformanceDiagnosticsEnabled() {
+    static const bool enabled = [] {
+        for (const char* name : {"EDEN_NX2_GPU_PROFILE", "EDEN_NX2_STUTTER_TRACE"}) {
+            const char* value = std::getenv(name);
+            if (value && *value && *value != '0') {
+                return true;
+            }
+        }
+        return false;
+    }();
+    return enabled;
+}
 
 class EmissionBudget {
 public:

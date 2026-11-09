@@ -25,6 +25,7 @@
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/file_sys/nup_container.h"
@@ -39,6 +40,7 @@
 #include "video_core/shader_warm/shader_archives.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
 #include "video_core/shader_warm/warm_records.h"
+#include "video_core/shader_warm/mesh_warm_builder.h"
 
 namespace VideoCommon::ShaderWarm {
 namespace {
@@ -339,6 +341,10 @@ fs::path FindNativeRecipe(u64 title_id) {
     return {};
 }
 
+fs::path MeshWarmPath(u64 title_id) {
+    return TitleDir(title_id) / "warm-mesh.bin";
+}
+
 fs::path ComputeWarmPath(u64 title_id) {
     return TitleDir(title_id) / "warm-compute.bin";
 }
@@ -368,7 +374,7 @@ u64 ReadWarmCount(const fs::path& warm_file) {
 }
 
 std::optional<WarmStamp> CurrentWarmStamp(const fs::path& warm_file, u64 entries, u32 driver,
-                                          u32 device_id, u32 cache_version) {
+                                          u32 device_id, u32 cache_version, u32 pipeline_configuration) {
     std::error_code ec;
     const auto size = fs::file_size(warm_file, ec);
     if (ec) {
@@ -380,14 +386,14 @@ std::optional<WarmStamp> CurrentWarmStamp(const fs::path& warm_file, u64 entries
     }
     return WarmStamp{size,      static_cast<s64>(time.time_since_epoch().count()),
                      entries,   driver,
-                     device_id, cache_version};
+                     device_id, cache_version, pipeline_configuration};
 }
 
 std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
     std::ifstream in(WarmMarkerPath(warm_file));
     WarmStamp stamp;
     if (!(in >> stamp.size >> stamp.write_time >> stamp.entries >> stamp.driver >>
-          stamp.device_id >> stamp.cache_version)) {
+          stamp.device_id >> stamp.cache_version >> stamp.pipeline_configuration)) {
         return std::nullopt;
     }
     return stamp;
@@ -396,7 +402,8 @@ std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
 bool WriteWarmMarker(const fs::path& warm_file, const WarmStamp& stamp) {
     std::ofstream out(WarmMarkerPath(warm_file), std::ios::trunc);
     out << stamp.size << ' ' << stamp.write_time << ' ' << stamp.entries << ' ' << stamp.driver
-        << ' ' << stamp.device_id << ' ' << stamp.cache_version << '\n';
+        << ' ' << stamp.device_id << ' ' << stamp.cache_version << ' '
+        << stamp.pipeline_configuration << '\n';
     out.close();
     return static_cast<bool>(out);
 }
@@ -405,6 +412,11 @@ bool WarmPending(u64 title_id) {
     const auto file = ComputeWarmPath(title_id);
     std::error_code ec;
     if (!fs::exists(file, ec) || !fs::exists(WarmMarkerPath(file), ec)) {
+        return true;
+    }
+    const auto mesh = MeshWarmPath(title_id);
+    if (Settings::values.use_mesh_shader_warmup.GetValue() && fs::exists(mesh, ec) &&
+        !fs::exists(WarmMarkerPath(mesh), ec)) {
         return true;
     }
     return !fs::exists(NativePreparationPath(title_id), ec) && !FindNativeRecipe(title_id).empty();
@@ -481,7 +493,9 @@ bool DeleteWarmFiles(u64 title_id, std::string* error) {
     bool ok = true;
     for (const auto& path :
          {warm, WarmMarkerPath(warm), WarmCountPath(warm), tmp, PrecachedPipelinesPath(title_id),
-          NativeRecipePath(title_id), NativePreparationPath(title_id),
+          NativeRecipePath(title_id), NativePreparationPath(title_id), MeshWarmPath(title_id),
+          WarmMarkerPath(MeshWarmPath(title_id)), WarmCountPath(MeshWarmPath(title_id)),
+          TitleDir(title_id) / "warm-mesh.bin.tmp",
           TitleDir(title_id) / "native-prepared.journal",
           TitleDir(title_id) / "native-source.txt"}) {
         std::error_code ec;
@@ -745,13 +759,30 @@ Result BuildComputeWarmFiles(Core::System& system, const fs::path& game_path, u6
     std::error_code ec;
     fs::create_directories(output_dir, ec);
     const fs::path compute_path = output_dir / "warm-compute.bin";
+    const fs::path mesh_path = output_dir / "warm-mesh.bin";
+    const fs::path mesh_tmp = output_dir / "warm-mesh.bin.tmp";
+    std::vector<fs::path> caches;
+    if (options.runtime_caches) {
+        caches = *options.runtime_caches;
+    } else {
+        for (const auto& entry : fs::directory_iterator(output_dir)) {
+            const auto name = entry.path().filename().string();
+            if (name.starts_with("vulkan_pipelines") && entry.path().extension() == ".bin") {
+                caches.push_back(entry.path());
+            }
+        }
+    }
+    MeshWarmRecipes mesh_recipes{caches, options.mesh_candidates};
     fs::path compute_tmp = compute_path;
     compute_tmp += ".tmp";
     std::ofstream compute_out;
+    std::ofstream mesh_out;
     const auto fail = [&](std::string error) {
         compute_out.close();
+        mesh_out.close();
         std::error_code ignored;
         fs::remove(compute_tmp, ignored);
+        fs::remove(mesh_tmp, ignored);
         result.ok = false;
         result.error = std::move(error);
         LOG_WARNING(Render_Vulkan, "Shader precache build for {:016x} failed: {}", title_id,
@@ -886,7 +917,10 @@ Result BuildComputeWarmFiles(Core::System& system, const fs::path& game_path, u6
             LOG_DEBUG(Render_Vulkan, "Shader precache: {}: {}", archive.path, error);
         };
         try {
-            WalkArchive(data, name, &dictionaries, on_record, on_member_error);
+            WalkArchive(data, name, &dictionaries, on_record, on_member_error,
+                        [&](std::span<const ShaderRecord> variation) {
+                            if (!stop.stop_requested()) mesh_recipes.AddVariation(variation);
+                        });
         } catch (const ArchiveError& e) {
             ++archive_errors;
             LOG_WARNING(Render_Vulkan, "Shader precache: {}: {}", archive.path, e.what());
@@ -909,6 +943,14 @@ Result BuildComputeWarmFiles(Core::System& system, const fs::path& game_path, u6
     report(StageConverting, total_jobs, total_jobs);
     converter.reset();
 
+    report("Preparing mesh candidates", 0, mesh_recipes.VariationCount());
+    mesh_out.open(mesh_tmp, std::ios::binary | std::ios::trunc);
+    if (!mesh_out) return fail("Cannot write mesh candidates");
+    WriteHeader(mesh_out);
+    result.mesh_pipelines = mesh_recipes.Write(mesh_out, stop);
+    result.skipped += mesh_recipes.Skipped();
+    mesh_out.close();
+    if (!mesh_out || stop.stop_requested()) return fail("Mesh candidate preparation stopped");
     report(StageWriting, 0, 1);
     compute_out.close();
     if (!compute_out) {
@@ -923,6 +965,11 @@ Result BuildComputeWarmFiles(Core::System& system, const fs::path& game_path, u6
         return fail("Cannot replace " + Common::FS::PathToUTF8String(compute_path));
     }
     WriteWarmCount(compute_path, result.compute_programs);
+    fs::remove(WarmMarkerPath(mesh_path), ignored);
+    fs::remove(WarmCountPath(mesh_path), ignored);
+    fs::rename(mesh_tmp, mesh_path, ec);
+    if (ec) return fail("Cannot replace mesh candidates");
+    WriteWarmCount(mesh_path, result.mesh_pipelines);
     report(StageWriting, 1, 1);
     result.ok = true;
     LOG_INFO(Render_Vulkan,

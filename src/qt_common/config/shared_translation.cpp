@@ -451,6 +451,14 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, vertex_input_dynamic_state, tr("Vertex Input Dynamic State"),
            tr("Enables vertex input dynamic state feature for better quality and performance."));
 
+    INSERT(Settings, shader_calls_not_inlined,
+           tr("Keep shared shader functions as calls"),
+           tr("Avoid repeatedly inlining large shared functions while compiling shaders."));
+    INSERT(Settings, use_mesh_shader_warmup,
+           tr("Prewarm predicted mesh shaders (experimental)"),
+           tr("Prepares bounded mesh shader predictions from game archives and previously "
+              "observed draw state. Requires prepared shader data and a game restart. "
+              "May increase startup time or background CPU work."));
     INSERT(Settings, mesh_shaders, tr("Mesh Shaders"),
            tr("How Switch 2 games' mesh shader geometry is drawn.\n"
               "Native uses the GPU's mesh shaders. Compute Fallback emulates them with compute "

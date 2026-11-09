@@ -72,3 +72,62 @@ triage if it occurs. Zstd hooks are build-ID and original-instruction guarded.
 Attribution: merge/cherry-picks retain original authors. The manual #717 CPU port commit
 `0f46b89` was mistakenly assigned to jpkto during integration; its source is Stephen Jayakar's
 `eb3553bcb` / PR #717, and Stephen Jayakar is the correct author of those imported changes.
+
+
+## Final shader stack (base cf3f95b9d, branch oot-shader-final)
+
+| Source | Reconciled implementation |
+|---|---|
+| #589 | Safe interpreter fallback when macro JIT compilation rejects an unsupported program; fallback is forbidden after observable macro side effects. Live FIFO reads and interpreter side-effect tracking retained. |
+| #300 | Software-HMMA shader metadata and a dedicated background compiler. Eligible dispatches skip until ready; native dispatches report deferred or failed compilation through the native shader error contract. AMD driver defaults and `EDEN_NX2_DEFER_MATRIX_PIPELINES` remain available. |
+| #656 | A bounded 4096-entry shader reuse cache validates environment reads and all translation inputs. Detached native graphics jobs snapshot buffers, texture types and pointer classification. Snapshot misses fall back to current GPU-thread state; a later nonskippable draw joins the in-flight build. |
+| #761 / #741 | Bounded archive-paired task/mesh predictions, reconstructed runtime state, target-format defaults, constant-table extraction, and a cancellable one-thread prewarm consumer. Transient descriptor pools and uncached speculative pipelines avoid filling the draw cache. Driver/device/settings/motion signatures and successful cache persistence gate completion markers. |
+| #579 / #761 | Per-stage graphics pipeline libraries, native task/mesh library support, AMD fast-link correctness guard, monolithic fallback and optional optimized relinking. Motion-buffer descriptor sets and subgroup controls follow the actual library layout. |
+| #579 / #741 | Optional fast-first graphics and compute pipelines (`EDEN_NX2_FAST_FIRST=1`) retain the first pipeline until its optimized replacement is ready; replacements bind in scheduler order. Shared large SPIR-V functions use DontInline controls consistently for translated and prepared modules. |
+
+The #1021 recorded recipe and prepared Info/SPIR-V architecture remains authoritative. Its
+prepared graphics modules use their recorded monolithic descriptor layout. Newly translated
+pipelines can use libraries. This avoids treating monolithic prepared SPIR-V as per-stage-set
+SPIR-V. #678 motion and depth context remain part of shader reuse and preparation signatures.
+The serializer includes `uses_software_matrix`, and the preparation identity is `lichii-4`.
+
+The newer bounded #998/#999 background prebuild queue remains in place rather than importing
+#761's older refill implementation, which would retain unbounded captured environments in this
+loader. Reload now cancels and drains translation, deferred compute, background prebuild and
+mesh jobs before replacing cache state, then restores the capture/resident budget. #994 retention,
+#995 failed-compute replacement ownership, heavy compilation limits and current recipe adoption
+remain intact. An optimized compute build also prevents retirement until its worker completes.
+
+The old general vertex/fragment prediction warm-up is represented by #1021's recorded recipe
+preparation. Only the unique task/mesh prediction layer was added. There is no claim that every
+old warm-up loader, job queue and on-disk format runs simultaneously. The in-app conversion guard
+also prevents NUP conversion of a title whose shader preparation is using the same source.
+
+Controls: graphics libraries require `EDEN_NX2_GPL=1`; optimized links additionally use
+`EDEN_NX2_GPL_OPTIMIZE=1` where supported. Predicted mesh prewarm has the per-game
+`use_mesh_shader_warmup` setting (default off). `shader_calls_not_inlined` defaults on, with
+`EDEN_NX2_COMPUTE_NOINLINE` and `EDEN_NX2_GRAPHICS_NOINLINE` overrides. New recurring library,
+worker-build and dispatch-wait timing diagnostics require `EDEN_NX2_GPU_PROFILE=1` or
+`EDEN_NX2_STUTTER_TRACE=1`. The existing shader-dump and verification switches stay opt-in.
+
+Older scope details: #166's native asynchronous snapshot, skip, wait and fallback behavior is
+superseded by #656; its Switch 1 asynchronous extension is outside this Ocarina port. #161's
+4096-draw / 5000-microsecond submission tuning is available through
+`EDEN_NX2_FLUSH_DRAWS=4096` and `EDEN_NX2_FENCE_FLUSH_US=5000`, while the conservative defaults
+remain 128 / 500. Deferred fragment barriers and immediate split list-copy submission are
+already present. #267's descriptor-array, dual-vertex, texture and cache umbrella changes must
+be accounted through their individual parent-integration descendants; it was not blanket merged
+by this shader branch.
+
+Attribution: the individual #589, #300, #656 and graphics-library commits preserve original
+authors. The combined mesh port `209af8edf0` is based on Ewan Betts's `74f63c819f`, with later
+#761 corrections, shader-archive constant extraction and PantACRO4life's warm-record/default
+work. The final manual integration additionally adapts PantACRO4life's `6724498289` fast-first
+work, DJ Lynch's `7869334bb3` shared-function control and later graphics control, and Ewan
+Betts's `ae537ceaf7` reload/conversion/persistence review fixes.
+
+Validation: targeted Windows clang-cl checks cover the new cache, graphics/compute pipelines,
+library cache, shader reuse, warm builder/records/archive parser, Info serialization, macro
+fallback and associated test sources. The standalone SPIR-V inline-control suite ran successfully:
+5 test cases, 25 assertions. Parent integration performs the full link and broader test run.
+No driver-specific rendering, OoT gameplay, warm-start performance or guard-room result is claimed.

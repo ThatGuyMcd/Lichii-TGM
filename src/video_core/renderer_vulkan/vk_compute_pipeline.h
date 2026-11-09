@@ -18,6 +18,7 @@
 #include "common/thread_worker.h"
 #include "shader_recompiler/shader_info.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
+#include "video_core/renderer_vulkan/pipeline_build.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
@@ -45,7 +46,8 @@ public:
                              PipelineStatistics* pipeline_statistics,
                              VideoCore::ShaderNotify* shader_notify, const Shader::Info& info,
                              vk::ShaderModule spv_module, u64 shader_hash,
-                             std::function<vk::ShaderModule()> emit_module = {});
+                             std::function<vk::ShaderModule()> emit_module = {},
+                             bool skip_until_built = false);
 
     ComputePipeline& operator=(ComputePipeline&&) noexcept = delete;
     ComputePipeline(ComputePipeline&&) noexcept = delete;
@@ -104,7 +106,8 @@ public:
 
     /// Whether no build of this pipeline is left queued on a worker thread, which holds it
     [[nodiscard]] bool IsBuildTaskDone() const noexcept {
-        return build_task_done.load(std::memory_order::acquire);
+        return build_task_done.load(std::memory_order::acquire) &&
+               (!optimized_build || optimized_build->IsBuilt());
     }
 
     [[nodiscard]] const Shader::Info& StageInfo() const noexcept {
@@ -129,12 +132,16 @@ private:
     /// Builds the pipeline once, on whichever thread gets here first.
     void RunBuild();
 
+    vk::Pipeline MakeComputePipeline(bool fast);
+
     const Device& device;
     vk::PipelineCache& pipeline_cache;
     GuestDescriptorQueue& guest_descriptor_queue;
     DescriptorBufferRing& descriptor_buffer_ring;
     Shader::Info info;
     u64 shader_hash{};
+    /// Built on a worker nothing waits for: dispatches are skipped until the pipeline exists.
+    bool skip_until_built{};
     u32 num_descriptor_entries{};
     boost::container::small_vector<VideoCommon::ImageViewId, 8> written_images;
     std::vector<SampledImage> sampled_images;
@@ -161,6 +168,13 @@ private:
     std::condition_variable build_condvar;
     std::mutex build_mutex;
     std::atomic_bool is_built{false};
+    vk::Pipeline optimized_pipeline;
+    vk::Pipeline retired_pipeline;
+    std::atomic_bool optimized_ready{};
+    bool optimized_bound{};
+    Common::ThreadWorker* const build_workers;
+    // Destroyed first: workers must finish before any module or layout is released.
+    std::optional<PipelineBuild> optimized_build;
 };
 
 } // namespace Vulkan

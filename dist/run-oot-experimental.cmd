@@ -1,0 +1,10 @@
+@echo off
+setlocal
+set "EDEN_NX2_GPL=1"
+set "EDEN_NX2_GPL_OPTIMIZE=1"
+set "EDEN_NX2_FAST_FIRST=1"
+set "EDEN_NX2_DESCRIPTOR_HEAP=1"
+set "EDEN_NX2_SHADER_OBJECT=1"
+set "EDEN_NX2_NATIVE_STORAGE=1"
+set "EDEN_NX2_NATIVE_UNIFORMS=1"
+start "" "%~dp0lichii.exe" %*

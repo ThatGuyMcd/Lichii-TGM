@@ -11,6 +11,12 @@ Extract the entire ZIP to a writable folder and open `lichii.exe`. Keep the DLLs
 Game files, keys, firmware and user data are not included. The normal Lichii user-data location
 is used; the package does not create a portable `user` folder automatically.
 
+To enable the optional experimental GPU paths, use `run-oot-experimental.cmd` instead.
+It enables graphics libraries and optimized links, fast-first compilation, descriptor heaps,
+shader objects and native address paths for that launch. Driver capability checks and
+per-shader fallbacks still apply. Choose the appropriate anti-aliasing/frame-generation settings
+inside Lichii for your GPU; the launcher does not change saved settings.
+
 The integrated features include asynchronous GPU readback, CPU/JIT and storage optimizations,
 shader preparation and pipeline retention, graphics pipeline libraries, task/mesh prediction,
 DLSS/DLAA and FSR paths, frame generation, HDR, ultrawide camera/HUD hooks, VRR pacing,

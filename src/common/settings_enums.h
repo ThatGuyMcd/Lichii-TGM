@@ -170,6 +170,7 @@ ENUM(SpeedMode, Standard, Turbo, Slow);
 ENUM(FrameGenType, Lsfg, Fsr3);
 ENUM(FrameGenMotion, Auto, Shader);
 ENUM(FrameGenFlowQuality, Fast, Medium, Best);
+ENUM(MeshShaderMode, Automatic, Native, Compute);
 
 template <typename Type>
 inline std::string_view CanonicalizeEnum(Type id) {

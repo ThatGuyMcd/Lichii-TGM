@@ -17,13 +17,9 @@ Vulkan::FixedPipelineState MakeState() {
     state.attribute_types = 0b01'01'01'01 | (u64{3} << 12);
     state.color_formats = {0xd5, 0xd5, 0, 0, 0, 0, 0, 0};
     for (auto& attachment : state.attachments) {
-        attachment.mask_r.Assign(1);
-        attachment.mask_a.Assign(1);
-        attachment.factor_source_rgb.Assign(4);
-        attachment.factor_dest_rgb.Assign(5);
-        attachment.equation_rgb.Assign(1);
+        attachment.raw = 0b1001 | (4U << 10) | (5U << 15) | (1U << 4);
     }
-    state.attachments[0].enable.Assign(1);
+    state.attachments[0].raw |= 1U << 30;
     state.depth_bounds_min = 0x3f000000;
     state.depth_bounds_max = 0x3f800000;
     state.line_stipple_factor = 2;
@@ -95,9 +91,11 @@ TEST_CASE("Draws that differ only in cleared state share a canonical key",
     auto a = MakeState();
     auto b = MakeState();
     b.attribute_types |= u64{2} << 40;            // an attribute the program does not read
-    b.attachments[1].factor_dest_a.Assign(7);     // blending off on target 1
-    b.attachments[4].enable.Assign(1);            // no target 4
+    b.attachments[1].raw |= 7U << 25;            // blending off on target 1
+    b.attachments[4].raw |= 1U << 30;            // no target 4
     b.depth_bounds_max = 0;
+    REQUIRE((a.attachments[1].raw & 0xF) == 0b1001);
+    REQUIRE((b.attachments[1].raw & 0xF) == 0b1001);
     CHECK(a.Hash() != b.Hash());
     a.CanonicalizeNative(0b1111);
     b.CanonicalizeNative(0b1111);

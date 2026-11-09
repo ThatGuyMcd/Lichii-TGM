@@ -34,6 +34,8 @@ struct LoweredNativeCode {
     /// Constant buffer holding the texture handles if the program requires one, otherwise ~0U
     /// (the engine's register value is used).
     u32 texture_bound = ~0U;
+    /// The captured source contains HMMA, including code restored from the disk cache.
+    bool uses_matrix{};
 };
 
 /// What the lowering of a native program takes besides its instructions
@@ -44,6 +46,8 @@ struct NativeLoweringInputs {
     /// LoadsProgramCounter).
     u64 native_code_address{};
 };
+
+[[nodiscard]] bool HasNativeMatrix(std::span<const Shader::Ampere::Instruction> native);
 
 /// Byte offsets of the trap instructions, whose guards the caller verifies before lowering
 [[nodiscard]] std::vector<u32> NativeTrapOffsets(

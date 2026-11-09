@@ -129,6 +129,7 @@ std::shared_ptr<LoweredNativeCode> TakeProgramCode(ProgramRecord& record) {
             ? 0
             : record.verified_traps.back() / sizeof(Shader::Ampere::Instruction) + 1;
     auto code = std::make_shared<LoweredNativeCode>();
+    code->uses_matrix = HasNativeMatrix(record.native);
     code->native_program_key = Shader::Ampere::NativeProgramKey(record.native);
     code->code = std::move(record.lowered_code);
     code->trap_prefix.assign(record.native.begin(),

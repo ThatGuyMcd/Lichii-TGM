@@ -16,6 +16,12 @@ namespace VideoCommon {
 
 using Shader::Ampere::Instruction;
 
+bool HasNativeMatrix(std::span<const Instruction> native) {
+    return std::ranges::any_of(native, [](const Instruction& instruction) {
+        return instruction.Bits(0, 12) == 0x23c;
+    });
+}
+
 std::vector<u32> NativeTrapOffsets(std::span<const Instruction> native) {
     std::vector<u32> offsets;
     for (u32 i = 0; i < native.size(); ++i)
@@ -49,6 +55,7 @@ std::shared_ptr<LoweredNativeCode> MakeLoweredNativeCode(std::span<const Instruc
     const size_t trap_count =
         verified_traps.empty() ? 0 : verified_traps.back() / sizeof(Instruction) + 1;
     auto result = std::make_shared<LoweredNativeCode>();
+    result->uses_matrix = HasNativeMatrix(native);
     result->native_program_key = Shader::Ampere::NativeProgramKey(native);
     result->texture_bound = lowered.required_texture_buffer;
     result->source_size = header_size + lowered.source_size;

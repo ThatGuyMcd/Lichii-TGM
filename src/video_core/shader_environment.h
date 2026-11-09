@@ -124,6 +124,8 @@ protected:
                                                           bool geometry_stage,
                                                           ShaderCacheV2::Cache* cache_v2);
     size_t native_source_size{};
+    /// Reject matrix multiplies (KeplerCompute::EmulatesNativeTensorPrograms).
+    bool reject_native_matrix{};
     std::shared_ptr<const LoweredNativeCode> lowered_native;
     std::shared_ptr<const ShaderCacheV2::ProgramRecord> program_record;
 

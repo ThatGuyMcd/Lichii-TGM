@@ -595,6 +595,9 @@ void GenericEnvironment::InitializeNativeCode(std::shared_ptr<const LoweredNativ
             return ReadTrapGuardConstant(bank, offset);
         }))
         throw Shader::Ampere::TrapGuardError{};
+    if (reject_native_matrix && lowered->uses_matrix) {
+        throw Shader::RuntimeError("native matrix multiply (not emulated on this host)");
+    }
     if (lowered->texture_bound != ~0U) {
         // Native TEX carries its cbuf index explicitly; TEXS obtains it from the environment.
         texture_bound = lowered->texture_bound;
@@ -660,6 +663,9 @@ std::shared_ptr<const LoweredNativeCode> GenericEnvironment::LowerNativeCode(
                                    : stage == Shader::Stage::TessellationEval
                                        ? Shader::Ampere::TessellationStage::Evaluation
                                        : Shader::Ampere::TessellationStage::None;
+    if (reject_native_matrix && HasNativeMatrix(native)) {
+        throw Shader::RuntimeError("native matrix multiply (not emulated on this host)");
+    }
     const NativeLoweringInputs inputs{.geometry = geometry_stage,
                                       .tessellation_stage = tessellation_stage,
                                       .native_code_address = program_base + native_header_size};
@@ -1083,6 +1089,7 @@ ComputeEnvironment::ComputeEnvironment(Tegra::Engines::KeplerCompute& kepler_com
     if (kepler_compute->IsNativeMode()) {
         initial_offset = sizeof(sph);
         is_proprietary_driver = true;
+        reject_native_matrix = !kepler_compute->EmulatesNativeTensorPrograms();
         InitializeNativeCode(std::move(lowered_native_), 0, false, cache_v2);
         start_address = sizeof(sph);
     }

@@ -304,10 +304,11 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     // They must not retire one of those reports from the buffer cache's ordered tracking.
     const bool report_noted =
         !immediate && !is_synced && impl->rasterizer.NoteReportPending(cpu_addr, report_size);
+    auto report = std::make_shared<Tegra::Nx2AsyncReport>(cpu_addr);
     std::function<void()> operation([this, is_synced, streamer, query_base = query,
                                      query_location, pointer, pointer_timestamp, cpu_addr, addr,
                                      asid = gpu_memory->GetID(), counter_type, split_entry, mirrored,
-                                     report_size, report_noted] {
+                                     report_size, report_noted, report] {
         SCOPE_EXIT {
             if (report_noted) {
                 impl->rasterizer.FinishReport(cpu_addr, report_size);
@@ -316,6 +317,12 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
                 VideoCommon::GpuSplit::Get().NoteFencedWrite(*split_entry);
             }
         };
+        struct Complete {
+            Tegra::Nx2AsyncReport& report;
+            ~Complete() {
+                report.Complete();
+            }
+        } const complete{*report};
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
             if (const u64 trace = QueryTrace::Sample(QueryTrace::Event::Discard)) {
                 LOG_INFO(HW_GPU,
@@ -381,6 +388,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         }
     });
     if (is_fence) {
+        report->Issue();
         VideoCore::g_signaling_query_report_fence = !is_synced;
         impl->rasterizer.SignalFence(std::move(operation));
         VideoCore::g_signaling_query_report_fence = false;
@@ -420,6 +428,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             streamer->Free(new_query_id);
             return;
         }
+        report->Issue();
         impl->rasterizer.SyncOperation(std::move(operation));
     }
     auto [cont_addr, base] = gen_caching_indexing(cpu_addr);

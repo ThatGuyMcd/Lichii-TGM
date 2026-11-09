@@ -136,6 +136,7 @@ add_library(video_core STATIC
     nx2_list_stats.h
     oot_dlss.h
     nvidia_dlss_policy.h
+    host_logic_op.h
     nx2_profile.h
     nx2_stutter_trace.cpp
     nx2_stutter_trace.h

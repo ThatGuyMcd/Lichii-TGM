@@ -80,6 +80,7 @@
 #include "video_core/nx2.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_fast_draw.h"
+#include "video_core/nx2_present_sync.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -1212,9 +1213,15 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
             }
         }
     }
+    // Ocarina's UI copy (nx2_present_sync.h): the buffer cache notes the storage UI draws bind.
+    if (Tegra::Nx2UiSnapshotEnabled()) {
+        const auto& hashes = pipeline->ShaderHashes();
+        Tegra::t_nx2_ui_draw = Tegra::Nx2IsUiProgram(hashes[1], hashes[5]);
+    }
+    SCOPE_EXIT { Tegra::t_nx2_ui_draw = false; };
     const bool delta_holds =
         delta_pipeline != nullptr && DeltaStillHolds(draw_serial, draw_map_serial);
-    const DrawPath path = delta_holds && !verify_pipeline ? DrawPath::Delta : DrawPath::Full;
+    const DrawPath path = delta_holds && !verify_pipeline && !Tegra::t_nx2_ui_draw ? DrawPath::Delta : DrawPath::Full;
     buffer_cache.BeginGraphicsUniforms(path == DrawPath::Delta ? &taken_delta : nullptr);
     if (path == DrawPath::Delta) {
         if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->ConfigureDelta(is_indexed)) {

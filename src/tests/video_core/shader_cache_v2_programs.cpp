@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <fmt/format.h>
 
@@ -652,7 +653,7 @@ TEST_CASE("Shader cache v2: tensor source provenance survives every code restora
                 // The message is part of the dispatch contract: KeplerCompute recognizes
                 // matrix rejection and draws the upscale stand-in on every frame.
                 REQUIRE_THROWS_MATCHES(adopt(false), Shader::RuntimeError,
-                                       Catch::Matchers::ContainsSubstring("matrix multiply"));
+                    Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring("matrix multiply")));
             } else {
                 REQUIRE_NOTHROW(adopt(false));
             }
@@ -673,7 +674,7 @@ TEST_CASE("Shader cache v2: live tensor policy also rejects fresh and cached cap
                                       emulates, cache};
     };
     REQUIRE_THROWS_MATCHES(capture(matrix, false, nullptr), Shader::RuntimeError,
-                           Catch::Matchers::ContainsSubstring("matrix multiply"));
+        Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring("matrix multiply")));
     REQUIRE_NOTHROW(capture(ordinary, false, nullptr));
     auto native = capture(matrix, true, nullptr);
     REQUIRE(native.LoweredNative()->uses_matrix);
@@ -696,5 +697,5 @@ TEST_CASE("Shader cache v2: live tensor policy also rejects fresh and cached cap
     // by lowering again. Changing policy still rejects that same cached native program.
     REQUIRE(capture(matrix, true, &cache).LoweredNative() == found.code);
     REQUIRE_THROWS_MATCHES(capture(matrix, false, &cache), Shader::RuntimeError,
-                           Catch::Matchers::ContainsSubstring("matrix multiply"));
+        Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring("matrix multiply")));
 }

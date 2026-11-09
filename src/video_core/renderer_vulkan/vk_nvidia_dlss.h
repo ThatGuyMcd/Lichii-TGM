@@ -78,6 +78,10 @@ public:
     /// layout). Returns false when DLSS can't run, so the caller can fall back to FSR 3.1.
     bool Upscale(const Inputs& inputs);
 
+    [[nodiscard]] bool Failed() const noexcept {
+        return failed.load(std::memory_order_relaxed);
+    }
+
 
     [[nodiscard]] VkImage OutputImage() const noexcept {
         return *output_image;

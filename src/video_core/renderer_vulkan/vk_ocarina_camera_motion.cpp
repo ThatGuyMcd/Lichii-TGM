@@ -990,6 +990,8 @@ bool OcarinaUpscaler::Record(VkImageView color, VkImageView depth, VkImageView t
             .depth = {depth, depth_image, VK_FORMAT_D32_SFLOAT, DEPTH_RANGE, VK_IMAGE_ASPECT_DEPTH_BIT},
             .motion_vectors = {*resources.motion_view, *resources.motion, MOTION_FORMAT,
                                COLOR_RANGE, VK_IMAGE_ASPECT_COLOR_BIT},
+            .bias_mask = bias_view ? std::optional{NvidiaDlssUpscaler::Image{
+                bias_view, bias_image, BIAS_FORMAT, COLOR_RANGE, VK_IMAGE_ASPECT_COLOR_BIT}} : std::nullopt,
             .render_size = extent,
             .upscale_size = output_extent,
             .jitter = {0.0f, 0.0f},
@@ -997,8 +999,6 @@ bool OcarinaUpscaler::Record(VkImageView color, VkImageView depth, VkImageView t
             .reset = reset,
             .depth_inverted = false,
             .color_hdr = 0,
-            .bias_mask = bias_view ? std::optional{NvidiaDlssUpscaler::Image{
-                bias_view, bias_image, BIAS_FORMAT, COLOR_RANGE, VK_IMAGE_ASPECT_COLOR_BIT}} : std::nullopt,
         })) {
         state.scheduler.InvalidateState();
         return false;

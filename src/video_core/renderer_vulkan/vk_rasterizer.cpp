@@ -3585,7 +3585,11 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
             const f32 sign = OcarinaJitterMode() < 0 ? -1.0f : 1.0f;
             jitter = {sign * oot_jitter_offset[0], sign * oot_jitter_offset[1]};
         }
-        const VkExtent2D output_extent = upscale_4k ? VkExtent2D{3840, 2160} : target_extent;
+        const bool native_dlss = oot_backend == VideoCommon::OcarinaUpscaleBackend::Dlss &&
+                                 Settings::values.nvidia_dlss_quality.GetValue() ==
+                                     Settings::NvidiaDlssQuality::Native;
+        const VkExtent2D output_extent = native_dlss ? extent
+                                        : upscale_4k ? VkExtent2D{3840, 2160} : target_extent;
         const bool recorded = oot_live_dlss->Record(color_view, depth.DepthView(), target_view,
                                                    extent, output_extent, target_extent, oot_motion.current,
                                                    oot_motion.previous, mesh, depth.ImageHandle(),

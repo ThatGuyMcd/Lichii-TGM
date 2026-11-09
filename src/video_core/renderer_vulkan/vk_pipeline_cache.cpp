@@ -971,8 +971,8 @@ bool PreloadAllPipelines(bool moltenvk) {
     return all.value_or(moltenvk);
 }
 
-// A graphics pipeline unused for this many frames (~2.5 min at 60 FPS) may be destroyed.
-constexpr u64 EvictAfterFrames = 9000;
+// Keep an area's pipelines across longer revisits (~7.5 min at 60 FPS, PR #1107).
+constexpr u64 EvictAfterFrames = 27000;
 
 /// Built graphics pipelines kept before unused ones are destroyed, for a session that loaded
 /// `cached_at_boot` pipelines from the disk cache; 0 is the old eviction (Android, or
@@ -2767,6 +2767,8 @@ void PipelineCache::TickFrame() {
     }
 }
 
+/// Desktop retention follows its RAM bound; the frame-based fallback scales unused prebuilds
+/// with device memory. Both wait until the GPU has finished with a pipeline.
 void PipelineCache::EvictUnusedPipelines() {
     // Building a pipeline again on MoltenVK means a Metal compile mid-game, far dearer than the
     // rebuild cost below, so none are evicted there.
@@ -2827,8 +2829,8 @@ void PipelineCache::EvictUnusedPipelines() {
             }
         }
     } else {
-        // ~0.9 GB of driver memory at ~0.45 MB each.
-        constexpr size_t MaxUnusedPrebuiltPipelines = 2000;
+        const size_t MaxUnusedPrebuiltPipelines = std::clamp<size_t>(
+            device.GetDeviceLocalMemory() / (size_t{3} << 20), 2000, 10000);
         size_t kept_prebuilt = 0;
         for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
             GraphicsPipeline* const pipeline = it->second.get();
@@ -2871,8 +2873,10 @@ void PipelineCache::LogEvictionPolicy() const {
                  "Pipeline eviction: unused pipelines are destroyed only past {} built", kept);
     } else {
         LOG_INFO(Render_Vulkan,
-                 "Pipeline eviction: pipelines unused for {} frames are destroyed",
-                 EvictAfterFrames);
+                 "Pipeline eviction: pipelines unused for {} frames are destroyed; up to {} "
+                 "unused prebuilt pipelines are retained",
+                 EvictAfterFrames,
+                 std::clamp<size_t>(device.GetDeviceLocalMemory() / (size_t{3} << 20), 2000, 10000));
     }
 }
 void PipelineCache::NoteClear(u64 color_address, u64 depth_address) {

@@ -1258,6 +1258,9 @@ struct Maxwell3D::FrontState {
     /// the front didn't read (FrontDrawFromGpuArguments): regs holds older values until each is
     /// written again, so a write of the same value isn't dropped.
     u32 vertex_arguments_unknown{};
+    std::array<OotMacros::Id, 0x80> oot_macro{};
+    std::array<u32, 0x80> oot_start{};
+    u64 oot_generation{~u64{0}};
 };
 
 namespace {
@@ -1805,6 +1808,53 @@ void Maxwell3D::FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit
     }
 }
 
+struct Maxwell3D::OotContext {
+    Maxwell3D& engine;
+    VideoCommon::GpuSplit& split;
+    FrontState& fs;
+    u32 macro_method;
+
+    [[nodiscard]] u32 Count() const {
+        return static_cast<u32>(fs.parameters.size());
+    }
+    [[nodiscard]] u32 Param(u32 index) const {
+        return fs.parameters[index];
+    }
+    [[nodiscard]] u32* Dram() {
+        return engine.native_data_ram.data();
+    }
+    [[nodiscard]] u32 Read(u32 method) const {
+        return fs.back_owned[method] ? engine.FrontRegister(split, fs, method) : fs.regs[method];
+    }
+    [[nodiscard]] bool OcclusionHle() const { return false; }
+    void FoldFirstInstance() {}
+    void Emit(u32 method, u32 value) {
+        // As the JIT's emit in FrontRunMacro.
+        if (method >= MacroRegistersStart) [[unlikely]] {
+            Fail("method past the macro range");
+            return;
+        }
+
+        engine.FrontWrite(split, fs, method, value, true, true);
+        if (method == 0x157 || method == 0x158) [[unlikely]] {
+            engine.FrontDmaRead(split, fs, macro_method, method, value);
+        }
+    }
+    void EmitRepeated(const std::array<u32, 2>* writes, u32 count, u32 times) {
+        for (u32 time = 0; time < times; ++time) {
+
+            for (u32 i = 0; i < count; ++i) {
+                Emit(writes[i][0], writes[i][1]);
+            }
+        }
+    }
+    void Fail(const char* error) {
+        engine.GetNativeMacroEngine().native_execution_failed = true;
+        LOG_ERROR(HW_GPU, "Native MME (split front, OoT macro {:#x}) failed: {}", macro_method,
+                  error);
+    }
+};
+
 void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split,
                               FrontState& fs) {
     const u32 method = fs.executing_macro;
@@ -1820,6 +1870,19 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             ConcretizeListWords(split, rasterizer, *channel, native_data_ram, engine, start);
         }
         engine.native_interpreter.active_dram = &native_data_ram;
+        static const bool native_oot = VideoCommon::Nx2Switch("EDEN_NX2_OOT_MACROS", true);
+        const u32 slot = ((method - MacroRegistersStart) >> 1) % fs.oot_macro.size();
+        if (fs.oot_generation != engine.native_code_generation) {
+            fs.oot_generation = engine.native_code_generation;
+            fs.oot_start.fill(~u32{0});
+        }
+        if (native_oot && fs.oot_start[slot] != start) {
+            fs.oot_start[slot] = start;
+            const auto* found = OotMacros::Find(OotMacros::HashMacro(engine.native_code, start));
+            fs.oot_macro[slot] = found ? found->id : OotMacros::Id::None;
+        }
+        OotContext context{*this, split, fs, method};
+        if (!native_oot || !OotMacros::Run(fs.oot_macro[slot], context)) {
         const auto parameter_count = fs.parameters.size();
         const auto read = [&](u32 address) {
             if (address >= Regs::NUM_REGS) {
@@ -1855,6 +1918,7 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
                       start, result.consumed, parameter_count, result.error);
         }
     }
+        }
     fs.parameters.clear();
     if (fs.draw_pending) {
         fs.draw_pending = false;
@@ -2236,7 +2300,7 @@ bool Maxwell3D::FrontDrawFromGpuArguments(Core::System& system, VideoCommon::Gpu
     // The end of the macro, as FrontRunMacro ends it (its writes include draw manager methods).
     fs.draw_pending = false;
     split.Defer([this, system_ptr = &system] { FinishFrontMacro(*system_ptr); },
-                VideoCommon::GpuSplit::FastDrawNeutral);
+                VideoCommon::GpuSplit::Writes::Caches, VideoCommon::GpuSplit::FastDrawNeutral);
     return true;
 }
 

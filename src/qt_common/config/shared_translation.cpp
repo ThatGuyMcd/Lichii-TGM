@@ -187,10 +187,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "remains active.\nIn The Legend of Zelda: Ocarina of Time, pick NVIDIA DLSS or DLAA "
               "under Ocarina of Time anti-aliasing.\nTakes effect when a game starts."));
     INSERT(Settings, ocarina_dlss_mode, tr("NVIDIA DLSS mode in Ocarina of Time:"),
-           tr("How much of the game's output resolution Ocarina of Time renders before DLSS "
-              "upscales it.\nQuality: 67%.\nBalanced: 58%.\nPerformance: 50%.\nUltra "
-              "Performance: 33%, cheapest for smaller cards.\nNeeds NVIDIA DLSS on, docked "
-              "mode, the Max Resolution add-on and 1x resolution scale.\nTakes effect when the "
+           tr("Quality, Balanced, Performance or Ultra Performance render resolution. "
+              "Requires the Max Resolution add-on. Takes effect when a game starts."));
     INSERT(Settings, nvidia_dlss_quality, tr("NVIDIA DLSS quality:"),
            tr("Automatic preserves the game's supported upscaling path.\n"
               "Native (DLAA) applies anti-aliasing at the game's render resolution. "

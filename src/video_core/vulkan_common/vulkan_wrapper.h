@@ -1124,12 +1124,6 @@ public:
 
     [[nodiscard]] Queue GetQueue(u32 family_index, u32 queue_index = 0) const noexcept;
 
-    [[nodiscard]] Queue GetQueue(u32 family_index, u32 queue_index) const noexcept {
-        VkQueue queue;
-        dld->vkGetDeviceQueue(handle, family_index, queue_index, &queue);
-        return Queue(queue, *dld);
-    }
-
     [[nodiscard]] BufferView CreateBufferView(const VkBufferViewCreateInfo& ci) const;
 
     [[nodiscard]] ImageView CreateImageView(const VkImageViewCreateInfo& ci) const;

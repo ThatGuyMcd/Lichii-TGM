@@ -509,10 +509,6 @@ struct GPU::Impl {
     std::vector<const std::vector<std::pair<DAddr, u64>>*> applying_writes;
     std::mutex applying_writes_mutex;
 
-    /// InvalidateGPUCache: the writes it gathered and is applying, on each thread doing so.
-    std::vector<const std::vector<std::pair<DAddr, u64>>*> applying_writes;
-    std::mutex applying_writes_mutex;
-
     const bool is_async;
 
     std::unique_ptr<Core::Frontend::GraphicsContext> cpu_context;

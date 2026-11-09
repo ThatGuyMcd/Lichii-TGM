@@ -92,9 +92,7 @@ struct GpuSplitTestAccess {
         return position + (size != 0 ? size : GpuSplit::RingWords - index);
     }
 
-    static bool FrontWaits(const GpuSplit& split) {
-        return split.wait_target.load() != ~u64{0};
-    }
+
 
     /// The position a read waits for the back to reach (WaitForWrites).
     static u64 WritesTarget(const GpuSplit& split, const Tegra::MemoryManager& memory,

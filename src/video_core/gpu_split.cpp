@@ -743,7 +743,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     u64 read_position = 0;
     while (!stop_token.stop_requested()) {
         Nx2Profile::Report("GPU back thread", true);
-        Nx2Profile::Report("GPU back thread");
+
         MaybeTick();
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {

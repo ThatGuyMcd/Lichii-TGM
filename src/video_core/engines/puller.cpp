@@ -601,7 +601,6 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             .operation = static_cast<u32>(op),
             .since = std::chrono::steady_clock::now(),
             .last_fences = std::chrono::steady_clock::now(),
-            .last_drain = std::chrono::steady_clock::now(),
             .reported = false,
         };
         if (op != GpuSemaphoreOperation::AcquireEqual && op != GpuSemaphoreOperation::AcquireGequal &&

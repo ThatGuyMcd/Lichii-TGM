@@ -128,10 +128,6 @@ struct Runtime {
             ++downloads;
         }
     }
-    void CopyBuffer(Buffer& dst, Buffer& src, std::span<const VideoCommon::BufferCopy> copies,
-                    bool) {
-        CopyBuffer(dst, &src, copies, true, true);
-    }
     void CopyBuffer(Buffer& dst, Buffer* src, std::span<const VideoCommon::BufferCopy> copies, bool,
                     VideoCommon::UploadOrder) {
         for (const auto& copy : copies) {

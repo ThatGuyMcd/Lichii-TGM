@@ -1362,50 +1362,22 @@ bool FileEnvironment::AnswersHoldFor(Shader::Environment& live, const char** why
     if (live.HasHLEMacroState() || HasHLEMacroState()) {
         return fail("HLE constant replacements");
     }
-    const auto is_pointer_word = [&](u64 key) {
-        const u32 index = static_cast<u32>(key >> 32);
-        const u32 offset = static_cast<u32>(key);
-        return storage_pointer_types.contains(MakeCbufKey(index, offset)) ||
-               (offset >= 4 && storage_pointer_types.contains(MakeCbufKey(index, offset - 4)));
-    };
-    std::vector<u32> handles_read;
+    // A word can be used as both a scalar and a handle/pointer. Without recorded usage
+    // provenance, matching resource traits alone cannot prove its scalar value is unchanged.
     for (const auto& [key, value] : cbuf_values) {
         const u32 index = static_cast<u32>(key >> 32);
         const u32 offset = static_cast<u32>(key);
-        const u32 live_value = live.ReadCbufValue(index, offset);
-        const auto type = texture_types.find(value);
-        const auto format = texture_pixel_formats.find(value);
-        if (type != texture_types.end() || format != texture_pixel_formats.end()) {
-            // A texture handle. Asked of `live` even when it is the same value, so `live` holds
-            // the answers its translation would have asked for (it is what the disk cache keeps).
-            if (type != texture_types.end() && live.ReadTextureType(live_value) != type->second) {
-                return fail("texture type");
-            }
-            if (format != texture_pixel_formats.end() &&
-                ((PixelFormatTraits(live.ReadTexturePixelFormat(live_value)) ^
-                  PixelFormatTraits(format->second)) &
-                 format_traits) != 0) {
-                return fail("texture pixel format");
-            }
-            handles_read.push_back(value);
-            continue;
-        }
-        if (live_value != value && !is_pointer_word(key)) {
+        if (live.ReadCbufValue(index, offset) != value) {
             return fail("constant buffer value");
         }
     }
-    const auto read_from_cbuf = [&](u32 handle) {
-        return std::ranges::find(handles_read, handle) != handles_read.end();
-    };
-    // Handles not read from a constant buffer (or built from several words): asked as they are.
     for (const auto& [handle, type] : texture_types) {
-        if (!read_from_cbuf(handle) && live.ReadTextureType(handle) != type) {
+        if (live.ReadTextureType(handle) != type) {
             return fail("texture type");
         }
     }
     for (const auto& [handle, format] : texture_pixel_formats) {
-        if (!read_from_cbuf(handle) &&
-            ((PixelFormatTraits(live.ReadTexturePixelFormat(handle)) ^ PixelFormatTraits(format)) &
+        if (((PixelFormatTraits(live.ReadTexturePixelFormat(handle)) ^ PixelFormatTraits(format)) &
              format_traits) != 0) {
             return fail("texture pixel format");
         }

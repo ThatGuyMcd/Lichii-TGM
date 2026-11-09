@@ -247,7 +247,8 @@ private:
                                                      PipelineStatistics* statistics,
                                                      bool build_in_parallel,
                                                      std::shared_ptr<ShaderPools> emit_pools = nullptr,
-                                                     std::vector<u32>* spirv_out = nullptr);
+                                                     std::vector<u32>* spirv_out = nullptr,
+                                                     DescriptorPool* transient_descriptors = nullptr);
 
     /// Where CreateGraphicsPipeline and CreateComputePipeline build; `cpu_bytes` estimates the
     /// IR a deferred emission holds

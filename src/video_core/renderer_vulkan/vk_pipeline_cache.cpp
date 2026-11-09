@@ -7,6 +7,7 @@
 #include <zstd.h>
 #include "native_preparation_revision.h"
 #include "video_core/shader_warm/prepared_store.h"
+#include "video_core/shader_warm/prepared_stage_info.h"
 #include <algorithm>
 #include <bitset>
 #include <atomic>
@@ -2924,9 +2925,13 @@ void PipelineCache::PreparePrecompiled(const std::filesystem::path& base_dir, bo
     }
     LoadPrecompiledInfos(path, infos_path, store);
     if (prepare) {
+        const auto journal_size = std::filesystem::file_size(infos_path, error);
         RunNativePreparation(path, store, stop_loading, callback);
+        const auto updated_size = std::filesystem::file_size(infos_path, error);
+        if (error || updated_size != journal_size) {
+            LoadPrecompiledInfos(path, infos_path, store);
+        }
     }
-    LoadPrecompiledInfos(path, infos_path, store);
 }
 
 void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
@@ -3138,19 +3143,27 @@ Common::UniqueFunction<bool> PipelineCache::PrepareNativeRecord(const std::files
     ShaderPools pools;
     std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv;
     std::array<std::vector<u8>, 5> infos;
-    std::unique_ptr<ComputePipeline> compute_pipeline;
-    std::unique_ptr<GraphicsPipeline> graphics_pipeline;
+    struct PreparedPipelines {
+        PreparedPipelines(const Device& device_, Scheduler& scheduler_) : descriptors{device_, scheduler_} {}
+        // The pipelines must be destroyed before the banks their allocators reference.
+        DescriptorPool descriptors;
+        std::unique_ptr<ComputePipeline> compute;
+        std::unique_ptr<GraphicsPipeline> graphics;
+    };
+    auto pipelines = std::make_unique<PreparedPipelines>(device, scheduler);
     if (compute) {
         auto entry =
-            CreateComputePipeline(pools, compute_key, environments[0], nullptr, false, nullptr, &spirv[0]);
+            CreateComputePipeline(pools, compute_key, environments[0], nullptr, false, nullptr,
+                                  &spirv[0], &pipelines->descriptors);
         if (!entry.pipeline || entry.pipeline->BuildFailed()) {
             throw std::runtime_error("compute pipeline build failed");
         }
         Shader::SerializeInfo(entry.pipeline->StageInfo(), infos[0]);
-        compute_pipeline = std::move(entry.pipeline);
+        pipelines->compute = std::move(entry.pipeline);
     } else {
         auto pipeline = CreateGraphicsPipeline(pools, graphics, MakeSpan(pointers), nullptr,
-                                                     false, nullptr, nullptr, false, false, nullptr, &spirv);
+                                               false, nullptr, nullptr, false, false,
+                                               &pipelines->descriptors, &spirv);
         if (!pipeline || pipeline->Failed()) {
             throw std::runtime_error("graphics pipeline build failed");
         }
@@ -3164,7 +3177,7 @@ Common::UniqueFunction<bool> PipelineCache::PrepareNativeRecord(const std::files
             }
         }
         context.SetDriverBytes(GraphicsDriverBytes(pipeline->IsMeshPipeline()));
-        graphics_pipeline = std::move(pipeline);
+        pipelines->graphics = std::move(pipeline);
     }
     // A translation that asked what the recipe did not record is not one runtime can reproduce.
     for (const auto& env : environments) {
@@ -3173,16 +3186,15 @@ Common::UniqueFunction<bool> PipelineCache::PrepareNativeRecord(const std::files
         }
     }
     return [&store, record, index, compute, graphics, compute_key, infos = std::move(infos),
-            spirv = std::move(spirv), compute_pipeline = std::move(compute_pipeline),
-            graphics_pipeline = std::move(graphics_pipeline)]() mutable {
-    if (compute_pipeline) {
-        compute_pipeline->Build();
-        if (compute_pipeline->BuildFailed()) {
+            spirv = std::move(spirv), pipelines = std::move(pipelines)]() mutable {
+    if (pipelines->compute) {
+        pipelines->compute->Build();
+        if (pipelines->compute->BuildFailed()) {
             return false;
         }
     } else {
-        graphics_pipeline->Build();
-        if (graphics_pipeline->Failed()) {
+        pipelines->graphics->Build();
+        if (pipelines->graphics->Failed()) {
             return false;
         }
     }
@@ -3280,7 +3292,7 @@ bool PipelineCache::LoadPrecompiledInfos(const std::filesystem::path& precompile
     size_t rejected = 0;
     constexpr u32 Differs = ~0U - 1;
     std::map<std::tuple<u64, u8, u32>, u32> stage_infos;
-    std::unordered_map<u32, bool> validated_legacy_loads;
+    std::unordered_map<u32, bool> validated_stage_reuse;
     std::unordered_set<u32> validated_spirv;
     for (const auto& entry : store.Records()) {
         // A damaged record only loses that pipeline: its draws are translated as usual.
@@ -3342,7 +3354,7 @@ bool PipelineCache::LoadPrecompiledInfos(const std::filesystem::path& precompile
                     continue;
                 }
                 const u32 info_id = record.infos[stage];
-                if (!validated_legacy_loads.contains(info_id)) {
+                if (!validated_stage_reuse.contains(info_id)) {
                     const auto [offset, size] = precompiled_info_blobs.at(info_id);
                     const auto info_bytes = Warm::PreparedStore::ReadBlob(file, {offset, size});
                     std::span<const u8> input{info_bytes};
@@ -3350,7 +3362,7 @@ bool PipelineCache::LoadPrecompiledInfos(const std::filesystem::path& precompile
                     if (!Shader::DeserializeInfo(input, info) || !input.empty()) {
                         throw std::runtime_error("invalid prepared info");
                     }
-                    validated_legacy_loads.emplace(info_id, info.loads.Legacy());
+                    validated_stage_reuse.emplace(info_id, Warm::CanReusePreparedStageInfo(info));
                 }
                 if (!validated_spirv.contains(record.spirv[stage])) {
                     ReadKeptSpirv(file, precompiled_info_blobs.at(record.spirv[stage]));
@@ -3376,7 +3388,7 @@ bool PipelineCache::LoadPrecompiledInfos(const std::filesystem::path& precompile
                     }
                     const u32 env = record.envs[position++];
                     const u32 info = record.infos[stage];
-                    if (info == NoInfo || validated_legacy_loads.at(info)) {
+                    if (info == NoInfo || !validated_stage_reuse.at(info)) {
                         continue;
                     }
                     const auto [it, added] = stage_infos.try_emplace(
@@ -3546,7 +3558,7 @@ void PipelineCache::OpenPrecompiledFiles() {
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePerStageGraphicsPipeline(
     GraphicsEnvironments& environments, std::optional<PrecompiledRecord>* matched,
     std::string_view& reason) {
-    if (precompiled_stages.empty()) {
+    if (precompiled_stages.empty() || VideoCommon::OotDlss::ObjectMotionRequested()) {
         return nullptr;
     }
     const auto live = environments.Span();
@@ -3581,7 +3593,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePerStageGraphicsPipeline(
                 }
                 ++tried;
                 if (!ReadKeptInfo(precompiled_infos_file,
-                                  precompiled_info_blobs[candidate.info], infos[stage])) {
+                                  precompiled_info_blobs[candidate.info], infos[stage]) ||
+                    !VideoCommon::ShaderWarm::CanReusePreparedStageInfo(
+                        infos[stage], VideoCommon::OotDlss::ObjectMotionRequested())) {
                     continue;
                 }
                 FileEnvironment env;
@@ -3613,6 +3627,16 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePerStageGraphicsPipeline(
     }
     reason = {};
     if (position != live.size()) {
+        return nullptr;
+    }
+    size_t storage_buffers{};
+    for (size_t stage = 0; stage < infos.size(); ++stage) {
+        if (present[stage]) {
+            storage_buffers += Shader::NumDescriptors(infos[stage].storage_buffers_descriptors);
+        }
+    }
+    if (!FitsStorageBufferSetLimit(storage_buffers, 0, host_info.max_descriptor_set_storage_buffers)) {
+        reason = "per stage: combined storage descriptors exceed the device limit";
         return nullptr;
     }
     found.env_count = static_cast<u8>(position);
@@ -5508,7 +5532,8 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(const ComputePipe
 ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
     PipelineStatistics* statistics, bool build_in_parallel,
-    std::shared_ptr<ShaderPools> emit_pools, std::vector<u32>* spirv_out) try {
+    std::shared_ptr<ShaderPools> emit_pools, std::vector<u32>* spirv_out,
+    DescriptorPool* transient_descriptors) try {
     SCOPE_EXIT {
         if (emit_pools) {
             ReturnPools(std::move(emit_pools));
@@ -5581,7 +5606,8 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         };
         pipeline = std::make_unique<ComputePipeline>(
             device, scheduler, vulkan_pipeline_cache, pipeline_binaries.get(), hash,
-            descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring,
+            transient_descriptors ? *transient_descriptors : descriptor_pool,
+            guest_descriptor_queue, descriptor_buffer_ring,
             BuildQueue(build_in_parallel, ir_bytes), statistics,
             &shader_notify, info, vk::ShaderModule{}, key.unique_hash, std::move(emit));
     } else {
@@ -5597,7 +5623,8 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         }
         pipeline = std::make_unique<ComputePipeline>(
             device, scheduler, vulkan_pipeline_cache, pipeline_binaries.get(), hash,
-            descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring,
+            transient_descriptors ? *transient_descriptors : descriptor_pool,
+            guest_descriptor_queue, descriptor_buffer_ring,
             BuildQueue(build_in_parallel), statistics, &shader_notify, info, std::move(module),
             key.unique_hash);
     }

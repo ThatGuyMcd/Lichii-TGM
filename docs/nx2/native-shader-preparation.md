@@ -2,8 +2,8 @@
 
 Prepares a Switch 2 game's native graphics and compute pipelines before gameplay. The Vulkan
 driver compiles them on the loading screen, and Lichii keeps its translated SPIR-V and shader
-metadata, so later draws neither translate nor compile them again. Targeted at The Legend of
-Zelda: Ocarina of Time (`0400486024DEC000`) on Windows/Vulkan; nothing in it is specific to that
+metadata for checked reuse. Targeted at The Legend of
+Zelda: Ocarina of Time (`0400486024DEC000`) on Windows and Linux/Vulkan; nothing in extraction is specific to that
 game.
 
 ## Sources
@@ -12,13 +12,16 @@ This ports and hardens work that already existed; it does not reinvent it.
 
 | Source | Ref | What is used |
 |---|---|---|
-| zortos293/Lichii#895 (`precompile`, open) | `6eea979a02f9c55a5b7011a3f9c2c00003e3e526` | Native program extraction (`core/file_sys/nx2_shader_extract`), recipes (`video_core/nx2_recipe`), canonical native keys, `tools/nx2-precompile` |
-| zortos293/Lichii#896 (`engine-async-translation`, open) | `ca8567f0530e7613c775ce52ecaa5badf54d9710` | `Shader::Info` serialization, kept SPIR-V, runtime check that recorded answers hold (`FileEnvironment::AnswersHoldFor`), precompiled draw path |
+| zortos293/Lichii#895 (`precompile`) | `82a17f610cd21b114051b634b921c371e879c952` | Native program extraction (`core/file_sys/nx2_shader_extract`), recipes (`video_core/nx2_recipe`), canonical native keys, `tools/nx2-precompile` |
+| zortos293/Lichii#896 (`engine-async-translation`) | `fa51e4cdfddb63e30d43a19071f9cf086043b788` | `Shader::Info` serialization, kept SPIR-V, runtime check that recorded answers hold (`FileEnvironment::AnswersHoldFor`), precompiled draw path |
+| zortos293/Lichii#1116 | `90a6afad292e46312f84cfe53e8e04cb7b548dd9` | Per-stage Info lookup for keys absent from a recipe |
+| zortos293/Lichii#1117 | `35e8fc39faa375e7bd9883049332fb4f3eaaf2eb` | Embedded and bare program extraction |
+| zortos293/Lichii#1021 | `fb2c215b79b4043db176c5649a9ee0aefe406ab3` | Durable journal, identity, resume and recipe UI, adapted to the current shader job scheduler |
 | Frizti/Fritchii `fritchii-v5` | `62194f32e9b9af25504528a5c1037ffc1e97bebb` | Code reference only. Fritchii uses the #895 recipes. It gets render state from those recipes, or, for a title with no cache, from `warm_defaults.cpp` (the most common state in one title's recorded caches). Its caches, keys and file formats are not read or converted. |
 
-The upstream survey (`Djihads80/Eglantine` PRs, issues and `upstream/nx2`) found no
-preparation or precompile work. Merging `upstream/nx2` gives conflicts in the renderer, the shader
-compiler, services and CI; that is left out of this branch.
+This integration targets Lichii's `nx2` architecture. The divergent Eglantine history is not
+merged wholesale. The competing experimental #900 IR store and GPL manager are also excluded;
+direct game-file-to-Info-store filling without recordings is not implemented.
 
 ## Where render state comes from
 
@@ -31,7 +34,8 @@ fingerprint for each program, and the facts its translation read. It contains no
 (`audit` checks this), so a recipe can be shared but extracted code cannot.
 
 So graphics preparation needs a recipe for the game version and cache version. Compute programs
-are still precached from the game files alone, as before.
+are still precached from the game files alone, as before. The separate #741/#761 GPL and mesh
+warm-ups also remain available; they do not replace the recipe's pipeline-state evidence.
 
 ## Flow
 
@@ -67,8 +71,9 @@ them. A record payload is the kind, environment ids, the full pipeline key, and 
 location of its info and SPIR-V blobs. A record is appended only after its blobs are flushed.
 
 - **Durable progress and resumption.** Each record is checkpointed as soon as it is prepared. A
-  stopped, skipped or crashed preparation resumes with the records not yet journaled, and a fully
-  prepared title only reads the record headers.
+   stopped, skipped or crashed preparation resumes with the records not yet journaled. Loading
+  validates every referenced unique Info and SPIR-V blob; this reads and decompresses the journal,
+  even for a fully prepared title. A second load occurs only if preparation changes the journal.
 - **Corruption.** On open, records are checksummed. A damaged record is dropped and prepared again,
   and a torn or damaged last entry is truncated. Blobs are checksummed when they are read. A damaged
   blob, info that won't deserialize, or invalid SPIR-V (size, magic, zstd size) falls back to
@@ -102,16 +107,20 @@ assembled file, the journal and the identity with the other precache files.
   whole file once.
 - Entries are flushed to the OS as they are written but not fsynced. A process crash keeps every
   complete entry; after a power loss the damaged tail is cut off as above.
-- A blob that turns out damaged after the journal opened stays referenced for that generation, so
-  its pipelines keep falling back to runtime translation until the identity changes or the journal
-  is deleted.
+- Damaged blobs fall back to runtime translation. The next preparation excludes their records
+  from completed work and appends repaired blobs and records; reopening retains the repair.
+- Per-stage reuse excludes legacy input remapping, layer emulation, sampled descriptor arrays,
+  and OOT motion instrumentation because those infos can depend on other stages or render state.
+  Whole-key prepared reuse remains available. Constant-buffer words must match exactly, including
+  handle and pointer words: their recorded numeric values alone do not prove how they were used.
+  These conservative checks can reduce cache hits and cause normal translation.
 - Preparation runs only where the driver keeps its own pipeline cache (NVIDIA, AMD proprietary),
   or with `EDEN_NX2_PRECOMPILED=1`. `EDEN_NX2_PRECOMPILED=0` disables loading and preparing.
   `EDEN_NX2_PRECOMPILED_FAST=0` and `EDEN_NX2_PRECOMPILED_AUDIT=1` (from #896) still apply.
 - On NVIDIA, set Shader Cache Size to Unlimited, as the #895 README explains. Otherwise the driver
   silently evicts most prepared pipelines.
 
-## Build
+## Upstream author's build example
 
 Windows, VS 2026 Build Tools environment, clang-cl, Ninja, Qt 6.8.3 (`C:/Qt/6.8.3/msvc2022_64`):
 
@@ -121,7 +130,7 @@ cmake -S C:/dev/Lichii -B C:/dev/Lichii/build-native -G Ninja ^
   -DCMAKE_C_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" ^
   -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" ^
   -DCMAKE_BUILD_TYPE=Release -DENABLE_QT=ON -DYUZU_USE_BUNDLED_QT=OFF ^
-  -DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/msvc2022_64 -DENABLE_TESTS=ON -DENABLE_DEBUG_TOOLS=ON ^
+  -DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/msvc2022_64 -DYUZU_TESTS=ON -DENABLE_DEBUG_TOOLS=ON ^
   -DENABLE_WEB_SERVICE=OFF -DENABLE_UPDATE_CHECKER=OFF -DUSE_DISCORD_PRESENCE=OFF ^
   -DENABLE_LSFG=OFF -DENABLE_WERROR=OFF ^
   "-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /D_USE_STD_VECTOR_ALGORITHMS=0"
@@ -148,7 +157,10 @@ next to an empty `user` directory (portable mode), add keys and firmware, then:
    `Prepared native shaders: ... ignored`. During play, the 10 s report shows precompiled pipelines
    created, drawn and failed, and the reasons the precompiled path was refused.
 
-## Measured (Ocarina of Time v131072, RTX 4090, Ryzen 9 5900X)
+## Upstream-reported measurements (Ocarina of Time v131072, RTX 4090, Ryzen 9 5900X)
+
+The following measurements and player report come from the #1021 author. They have not been
+reproduced on this integrated branch and do not establish its performance or visual correctness.
 
 Fritchii v5.3's shipped recipe (`OoT v131072 (cache v54).nx2recipe`) with the player's `.nup`:
 
@@ -164,7 +176,9 @@ Fritchii v5.3's shipped recipe (`OoT v131072 (cache v54).nx2recipe`) with the pl
 
 ## Verification status
 
-Measured: the unit tests (`tests.exe "[preparation]"` and the whole suite) and the run above.
-Not measured: peak RAM during *Build*, boot time with a complete journal, driver-cache retention
+The upstream author reported the unit tests and run above. This integration has focused journal,
+Info serialization and environment validation regression tests; full platform build results are
+recorded separately with the local build artifacts. Gameplay has not been validated here.
+Not measured here: peak RAM during *Build*, boot time with a complete journal, driver-cache retention
 across reboots, AMD and Intel drivers. The 1.17 GB / 133,016 pipeline figures and the cache-size
 behaviour come from the #895 README (RTX 3080).

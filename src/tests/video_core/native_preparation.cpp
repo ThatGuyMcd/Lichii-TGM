@@ -18,11 +18,59 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/shader_environment.h"
 #include "video_core/shader_warm/prepared_store.h"
+#include "video_core/shader_warm/prepared_stage_info.h"
 #include "video_core/shader_warm/warm_records.h"
+
+TEST_CASE("Prepared stages with pipeline-dependent infos require whole-key reuse", "[preparation]") {
+    using VideoCommon::ShaderWarm::CanReusePreparedStageInfo;
+    Shader::Info info;
+    REQUIRE(CanReusePreparedStageInfo(info));
+    REQUIRE_FALSE(CanReusePreparedStageInfo(info, true));
+    for (auto member : {&Shader::Info::OotMotion::history, &Shader::Info::OotMotion::image,
+                        &Shader::Info::OotMotion::shadow}) {
+        info.oot_motion.*member = true;
+        REQUIRE_FALSE(CanReusePreparedStageInfo(info));
+        info.oot_motion.*member = false;
+    }
+    info.texture_descriptors.emplace_back();
+    REQUIRE(CanReusePreparedStageInfo(info));
+    info.texture_descriptors.back().is_descriptor_array = true;
+    REQUIRE_FALSE(CanReusePreparedStageInfo(info));
+    info.texture_descriptors.back().is_descriptor_array = false;
+    info.requires_layer_emulation = true;
+    REQUIRE_FALSE(CanReusePreparedStageInfo(info));
+}
 
 namespace {
 
 using VideoCommon::ShaderWarm::PreparedStore;
+
+class AnswersEnvironment final : public VideoCommon::GenericEnvironment {
+public:
+    AnswersEnvironment(u32 value, bool pointer_) : current{value}, pointer{pointer_} {
+        stage = Shader::Stage::Compute;
+        code = {0x123456789abcdef0, 0xfedcba9876543210};
+        cached_lowest = 0;
+        cached_highest = sizeof(u64);
+        cbuf_values.emplace(0, value);
+        texture_types.emplace(0, Shader::TextureType::Color2D);
+        if (pointer) {
+            storage_pointer_types.emplace(0, 1);
+        }
+    }
+    u32 ReadCbufValue(u32, u32) override { return current; }
+    Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
+    Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override { return {}; }
+    bool IsTexturePixelFormatInteger(u32) override { return false; }
+    u32 ReadViewportTransformState() override { return 1; }
+    bool IsCbufStorageBufferPointer(u32, u32) override { return pointer; }
+    std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override {
+        return std::nullopt;
+    }
+private:
+    u32 current;
+    bool pointer;
+};
 
 constexpr std::string_view Identity = "game=1 translator=2 device=3 settings=4";
 
@@ -300,6 +348,26 @@ TEST_CASE("Prepared translations are used only when the runtime state answers th
     REQUIRE_FALSE(recorded.AnswersHoldFor(other_workgroup, &why));
     auto other_shared = make(1024, 0, {64, 1, 1}, 512);
     REQUIRE_FALSE(recorded.AnswersHoldFor(other_shared, &why));
+}
+
+TEST_CASE("Prepared translations reject scalar changes that alias resource handles or pointers",
+          "[video_core][preparation]") {
+    for (const bool pointer : {false, true}) {
+        Scratch scratch;
+        AnswersEnvironment captured{0, pointer};
+        {
+            std::ofstream file(scratch.path, std::ios::binary);
+            captured.Serialize(file, 0);
+        }
+        std::ifstream file(scratch.path, std::ios::binary);
+        VideoCommon::FileEnvironment recorded;
+        recorded.Deserialize(file, static_cast<std::streamoff>(std::filesystem::file_size(scratch.path)));
+        AnswersEnvironment same{0, pointer};
+        AnswersEnvironment changed{1, pointer};
+        REQUIRE(recorded.AnswersHoldFor(same));
+        // Both values name the same texture type and have the same pointer classification.
+        REQUIRE_FALSE(recorded.AnswersHoldFor(changed));
+    }
 }
 
 TEST_CASE("Recipes from elsewhere or damaged ones are refused", "[video_core][preparation]") {

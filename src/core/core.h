@@ -125,6 +125,12 @@ extern std::atomic<u64> g_nx2_present_count;
 extern std::array<std::atomic<u64>, 4096> g_nx2_present_times_ns;
 extern std::atomic<u32> g_nx2_present_time_services;
 
+/// The last presents' steady clock times and fence waits (ns), for the debug server's frame time
+/// statistics. Written by the present thread only; entry n % size is present n.
+inline constexpr size_t Nx2PresentHistory = 4096;
+extern std::array<std::atomic<u64>, Nx2PresentHistory> g_nx2_present_times;
+extern std::array<std::atomic<u64>, Nx2PresentHistory> g_nx2_present_fence_ns;
+
 class CpuManager;
 class Debugger;
 class DeviceMemory;

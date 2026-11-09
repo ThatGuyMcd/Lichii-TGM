@@ -287,17 +287,17 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     // A fence-flagged payload release writes a constant, so at low accuracy with Default fences
     // it stays synchronized as before #337: its fence may be skipped and the query freed at once.
     // Only reports of GPU counters wait for their fence to run.
+    // A release over a pending report waits too, so the older report cannot overwrite it.
+    const u64 report_size = has_timestamp ? 16 : 4;
     const bool is_synced = is_fence && counter_type == QueryType::Payload &&
                            (Settings::IsGPUFenceBehaviorDefault()
                                 ? !Settings::IsGPULevelHigh()
                                 : !Settings::IsGPUFenceBehaviorBalanced() &&
-                                      !Settings::IsGPUFenceBehaviorAccurate());
-    // The GPU thread split's back entry this report came in: the front counts the report in
-    // memory once its operation ran with a fence (GpuSplit::NoteFencedWrite). A synced release's
-    // operation doesn't run in fence order, so it must not count earlier reports as landed.
+                                      !Settings::IsGPUFenceBehaviorAccurate()) &&
+                           !HoldsQueries(cpu_addr, report_size);
+    // Only a fence-ordered operation can count earlier writes as landed on the split's front.
     const std::optional<u64> split_entry =
         is_synced ? std::nullopt : VideoCommon::GpuSplit::Get().BackEntry();
-    const u64 report_size = has_timestamp ? 16 : 4;
     const bool immediate =
         !is_fence && !Settings::IsGPULevelHigh() && counter_type == QueryType::Payload;
     // Synced payload callbacks can run ahead of older fenced reports at the same address.

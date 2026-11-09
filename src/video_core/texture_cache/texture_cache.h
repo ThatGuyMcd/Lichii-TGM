@@ -3407,11 +3407,27 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                  gpu_addr, info.size.width, info.size.height, info.size.depth, info.resources.levels,
                  static_cast<u32>(info.format), info.block.width, info.block.height, info.block.depth);
     }
+    // EDEN_NX2_TC_TRACE=1: log every image the cache creates (time, format, size, joins) and deletes
+    static const bool tc_trace = [] {
+        const char* const v = std::getenv("EDEN_NX2_TC_TRACE");
+        return v != nullptr && v[0] == '1';
+    }();
+    const auto tc_t0 = tc_trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
     if (!image_id) {
         return image_id;
     }
     const Image& image = slot_images[image_id];
+    if (tc_trace) {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc_t0).count();
+        LOG_WARNING(HW_GPU,
+                    "TCTRACE create id={} gpu={:#x} type={} fmt={} {}x{}x{} lv={} ly={} guest={}KiB "
+                    "joined={} found={} ms={:.2f} frame={}",
+                    image_id.index, image.gpu_addr, static_cast<u32>(info.type), static_cast<u32>(info.format),
+                    info.size.width, info.size.height, info.size.depth, info.resources.levels,
+                    info.resources.layers, CalculateGuestSizeInBytes(info) / 1024, join_overlap_ids.size(),
+                    join_overlaps_found.size(), ms, frame_tick);
+    }
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
     const auto [it, is_new] = image_allocs_table.try_emplace(image.gpu_addr);
     if (is_new) {
@@ -4487,6 +4503,18 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     const StutterTrace::SiteScope site{StutterTrace::Site::ImageDelete};
     ImageBase& image = slot_images[image_id];
     ++images_deleted;
+    {
+        static const bool tc_trace = [] {
+            const char* const v = std::getenv("EDEN_NX2_TC_TRACE");
+            return v != nullptr && v[0] == '1';
+        }();
+        if (tc_trace) {
+            LOG_WARNING(HW_GPU, "TCTRACE delete id={} gpu={:#x} fmt={} {}x{}x{} guest={}KiB immediate={} frame={}",
+                        image_id.index, image.gpu_addr, static_cast<u32>(image.info.format),
+                        image.info.size.width, image.info.size.height, image.info.size.depth,
+                        image.guest_size_bytes / 1024, immediate_delete, frame_tick);
+        }
+    }
     VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);
     // Drop every decode still queued for it, whatever IsDecoding says: an image re-decoded while
     // a decode was in flight has two, and the first to finish clears the flag. A decode left

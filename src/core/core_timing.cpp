@@ -13,11 +13,13 @@
 #include <tuple>
 #include <vector>
 #include "common/cpu_features.h"
-#include "common/cpu_features.h"
 #include "common/logging.h"
 #include "common/thread_cpu_clock.h"
 
 #ifdef _WIN32
+#include <windows.h>
+#undef CreateEvent
+#include <cstdlib>
 #include "common/windows/timer_resolution.h"
 #endif
 
@@ -120,6 +122,58 @@ struct CoreTiming::Event {
     }
 };
 
+#ifdef _WIN32
+// Event::WaitFor spins in MWAITX for the whole wait, so the HostTiming thread holds a logical
+// processor at 100% that the guest cores and the GPU threads need (Ryzen 5 8645HS, 6 cores).
+// Long waits sleep on a high resolution waitable timer instead, in chunks of at most
+// EDEN_NX2_TIMING_CHUNK_US (default 500) so an earlier event scheduled meanwhile (event.Set) is
+// late by no more than a chunk; the last EDEN_NX2_TIMING_SPIN_US (default 300) are left to the
+// precise MWAITX wait. EDEN_NX2_TIMING_SLEEP=0 restores the plain wait.
+void CoreTiming::CoarseSleep(s64 deadline_ns) {
+    static const bool enabled = [] {
+        const char* v = std::getenv("EDEN_NX2_TIMING_SLEEP");
+        return v == nullptr || v[0] != '0';
+    }();
+    static const s64 spin_ns = [] {
+        const char* v = std::getenv("EDEN_NX2_TIMING_SPIN_US");
+        return (v ? std::atoll(v) : 300) * 1000;
+    }();
+    static const s64 chunk_ns = [] {
+        const char* v = std::getenv("EDEN_NX2_TIMING_CHUNK_US");
+        return (v ? std::atoll(v) : 500) * 1000;
+    }();
+    if (!enabled) {
+        return;
+    }
+    struct Timer {
+        HANDLE handle = CreateWaitableTimerExW(
+            nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        ~Timer() {
+            if (handle) {
+                CloseHandle(handle);
+            }
+        }
+    };
+    thread_local Timer timer;
+    if (timer.handle == nullptr) {
+        return;
+    }
+    while (!event.IsSet() && !paused) {
+        const s64 left = deadline_ns - GetGlobalTimeNs().count();
+        if (left <= spin_ns) {
+            break;
+        }
+        const s64 chunk = (std::min)(left - spin_ns, chunk_ns);
+        LARGE_INTEGER due;
+        due.QuadPart = -static_cast<LONGLONG>((std::max<s64>)(chunk / 100, 1));
+        if (!SetWaitableTimerEx(timer.handle, &due, 0, nullptr, nullptr, nullptr, 0)) {
+            break;
+        }
+        WaitForSingleObject(timer.handle, INFINITE);
+    }
+}
+#endif
+
 CoreTiming::CoreTiming() = default;
 CoreTiming::~CoreTiming() {
     Reset();
@@ -170,7 +224,18 @@ void CoreTiming::WaitForEvent(s64 next_time) {
     }
     s64 now = start;
     bool signalled = false;
-    if (next_time - now > HOST_WAIT_MARGIN_NS) {
+    bool custom_sleep = false;
+#ifdef _WIN32
+    static const bool use_custom_sleep = std::getenv("EDEN_NX2_TIMING_SLEEP") != nullptr ||
+                                         std::getenv("EDEN_NX2_TIMING_SPIN_US") != nullptr ||
+                                         std::getenv("EDEN_NX2_TIMING_CHUNK_US") != nullptr;
+    if (use_custom_sleep) {
+        CoarseSleep(next_time);
+        now = GetGlobalTimeNs().count();
+        custom_sleep = true;
+    }
+#endif
+    if (!custom_sleep && next_time - now > HOST_WAIT_MARGIN_NS) {
         signalled = event.SleepFor(std::chrono::nanoseconds{next_time - HOST_WAIT_MARGIN_NS - now});
         now = GetGlobalTimeNs().count();
     }

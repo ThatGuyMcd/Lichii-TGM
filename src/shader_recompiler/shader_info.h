@@ -379,7 +379,7 @@ struct Info {
     /// Ocarina of Time DLSS object motion (set by the Vulkan pipeline cache, see
     /// docs/nx2/oot-motion-vectors-plan.md): the vertex stage keeps clip positions in a history
     /// buffer and passes this and last frame's to the fragment stage, which writes the motion.
-    struct {
+    struct OotMotion {
         bool history{};
         bool image{};
         /// The fragment stage neither discards nor writes depth or memory: run the depth test
@@ -395,6 +395,8 @@ struct Info {
         u32 shadow_words{};
         std::array<u32, MAX_CBUFS> shadow_base{};
         std::array<u32, MAX_CBUFS> shadow_size{};
+
+        bool operator==(const OotMotion&) const = default;
     } oot_motion;
 
     IR::Type used_constant_buffer_types{};

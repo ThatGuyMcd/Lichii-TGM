@@ -64,6 +64,46 @@ TEST_CASE("sysmix sink rejects invalid blocks and unavailable backends", "[sysmi
     REQUIRE(discard->GetQueueSize() == 0);
 }
 
+TEST_CASE("Sysmix learns large callbacks and keeps their audio continuous", "[sysmix_sink]") {
+    SysmixTests::Context context;
+    for (const u32 channels : {2U, 6U}) {
+        CAPTURE(channels);
+        auto owned_stream = std::make_unique<SysmixTests::Stream>(
+            context.system, AudioCore::Sink::StreamType::Sysmix, channels, true);
+        auto& stream = *owned_stream;
+        stream.SetSystemVolume(1.0f / Settings::Volume());
+        std::vector<s16> output(1024 * channels);
+        stream.ProcessAudioOutAndRender(output, 1024);
+        REQUIRE(std::ranges::all_of(output, [](s16 sample) { return sample == 0; }));
+        AudioCore::Sink::SinkBuffer block{240, 0, 0, false};
+        std::array<s16, 480> samples;
+        samples.fill(1234);
+        for (u32 index = 0; index < 6; ++index) {
+            REQUIRE(stream.TryAppendOutputBlock(block, samples));
+        }
+        REQUIRE_FALSE(stream.TryAppendOutputBlock(block, samples));
+        stream.ProcessAudioOutAndRender(output, 1024);
+        for (size_t frame = 0; frame < 1024; ++frame) {
+            REQUIRE(output[frame * channels] == 1234);
+            REQUIRE(output[frame * channels + 1] == 1234);
+            for (u32 channel = 2; channel < channels; ++channel) {
+                REQUIRE(output[frame * channels + channel] == 0);
+            }
+        }
+        // A smaller later callback must not shrink the learned capacity. Finish the current
+        // block, refill all six waiting blocks, then reject one more before mutating its samples.
+        stream.ProcessAudioOutAndRender(std::span(output).first(176 * channels), 176);
+        REQUIRE(stream.GetQueueSize() == 1);
+        for (u32 index = 1; index < 6; ++index) {
+            REQUIRE(stream.TryAppendOutputBlock(block, samples));
+        }
+        REQUIRE(stream.GetQueueSize() == 6);
+        samples.fill(2222);
+        REQUIRE_FALSE(stream.TryAppendOutputBlock(block, samples));
+        REQUIRE(samples.front() == 2222);
+    }
+}
+
 TEST_CASE("sysmix sink converts stereo to host channels without losing block alignment", "[sysmix_sink]") {
     SysmixTests::Context context;
     auto owned_stream = std::make_unique<SysmixTests::Stream>(

@@ -16,6 +16,7 @@
 #include "audio_core/common/common.h"
 #include "audio_core/sink/input_processing.h"
 #include "audio_core/sink/sink_stream.h"
+#include "audio_core/sink/sysmix_queue.h"
 #include "common/common_types.h"
 #include "common/fixed_point.h"
 #include "common/scope_exit.h"
@@ -91,11 +92,17 @@ void SinkStream::AppendBuffer(SinkBuffer& buffer, std::span<s16> samples) {
     }
 }
 
+u32 SinkStream::SysmixQueueLimit() const {
+    return SysmixQueueBlocks(largest_request_frames.load(std::memory_order_relaxed),
+                             device_channels, SampleRingCapacity);
+}
+
 bool SinkStream::TryAppendOutputBlock(SinkBuffer& buffer, std::span<s16> samples) {
     if (type != StreamType::Sysmix || !IsReady() || buffer.frames != TargetSampleCount ||
         buffer.frames_played != 0 || buffer.consumed || system_channels != 2 ||
         (device_channels != 2 && device_channels != 6) ||
-        samples.size() != TargetSampleCount * system_channels || queued_buffers.load() >= 3) {
+        samples.size() != TargetSampleCount * system_channels ||
+        queued_buffers.load() >= SysmixQueueLimit()) {
         return false;
     }
     AppendBuffer(buffer, samples);
@@ -212,6 +219,11 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
         for (size_t i = 0; i < num_frames; i++)
             std::memset(&output_buffer[i * frame_size], 0, frame_size_bytes);
         return;
+    }
+
+    if (type == StreamType::Sysmix &&
+        num_frames > largest_request_frames.load(std::memory_order_relaxed)) {
+        largest_request_frames.store(num_frames, std::memory_order_relaxed);
     }
 
     while (frames_written < num_frames) {

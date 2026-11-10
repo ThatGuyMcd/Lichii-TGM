@@ -273,8 +273,11 @@ protected:
     std::string name{};
 
 private:
+    u32 SysmixQueueLimit() const;
+
     /// Ring buffer of the samples waiting to be played or consumed
-    Common::RingBuffer<s16, 0x10000> samples_buffer;
+    static constexpr std::size_t SampleRingCapacity = 0x10000;
+    Common::RingBuffer<s16, SampleRingCapacity> samples_buffer;
     bool input_preview{};
     std::atomic<float> input_preview_gain{1.0f};
     std::atomic<u32> input_peak{};
@@ -289,6 +292,8 @@ private:
     u64 level_frames{};
     /// Number of buffers waiting to be played
     std::atomic<u32> queued_buffers{};
+    /// Largest active host callback, used to keep a complete callback of sysmix audio queued.
+    std::atomic<u64> largest_request_frames{};
     /// The ring size for audio out buffers (usually 4, rarely 2 or 8)
     u32 max_queue_size{};
     /// Locks access to sample count tracking info

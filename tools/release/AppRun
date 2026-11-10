@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -eu
+
+app_dir=${APPDIR:-$(dirname "$(readlink -f "$0")")}
+export LD_LIBRARY_PATH="$app_dir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export QT_PLUGIN_PATH="$app_dir/usr/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$app_dir/usr/plugins/platforms"
+export QML2_IMPORT_PATH="$app_dir/usr/qml${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+
+exec "$app_dir/usr/bin/lichii-tgm" "$@"

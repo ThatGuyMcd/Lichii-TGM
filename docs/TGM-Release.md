@@ -27,6 +27,11 @@ Package runtime libraries and `LICENSE.txt`; verify archive integrity, dependenc
 and Linux executable build IDs. Build both platforms from the same tested commit.
 The published tag must point to that commit.
 
+Pass `--custom-apprun tools/release/AppRun` to linuxdeploy when building AppImages.
+The launcher sets Qt plugin/QML and library paths relative to the mounted AppImage.
+For Qt 6, deploy the Wayland client module and discover the available platform
+plugin filenames from the Qt installation.
+
 Upload verified assets to a draft release, verify asset digests, then publish it as
 a non-prerelease. Fork tags use `Lichii-tgm-vMAJOR.MINOR[.PATCH]`, ordered numerically;
 they never select upstream `build-N` releases. Updates target `ThatGuyMcd/Lichii-TGM`.

@@ -5230,7 +5230,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             PrepareStageBindings(binding, stage, use_libraries);
             modules[stage] = EmitShaderModule(device, profile, *stages.runtime_infos[stage],
                                               programs[stage + 1], binding,
-                                              key.unique_hashes[stage + 1], stage, {},
+                                              key.unique_hashes[stage + 1], stage,
+                                              stages.reference_spirv[stage],
                                               use_libraries ? &spirv_hashes[stage] : nullptr,
                                               spirv_out ? &(*spirv_out)[stage] : nullptr);
             if (build_in_parallel) {

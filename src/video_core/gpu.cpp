@@ -161,6 +161,10 @@ struct GPU::Impl {
         std::unique_lock lck{sync_request_mutex};
         const u64 fence = last_sync_fence.load(std::memory_order_relaxed) + 1;
         last_sync_fence.store(fence, std::memory_order_release);
+        if (sync_requests_dropped) {
+            // Its waiter returns immediately after shutdown; do not retain its stack captures.
+            return fence;
+        }
         sync_requests.emplace_back(std::forward<Func>(action));
         return fence;
     }

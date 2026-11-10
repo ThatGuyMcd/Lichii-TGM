@@ -44,6 +44,8 @@ newly selected, specific to Fritchii, or require further validation.
   budget is exhausted, avoiding a second emission of mutated IR in diagnostic mode.
 - The buffer cache's post-copy barrier also orders later transfers, closing the
   downloads/gathers path identified in [Fritchii's transfer-order fix](https://github.com/Frizti/Fritchii/commit/15f8e4c5c299032b094a48eb6787eed0437a918d).
+- Host-sync requests arriving after GPU shutdown are rejected, so a late GPU tick
+  cannot execute callbacks whose waiting stack frames have already returned.
 - The AppImage has a relocatable Qt launcher, Wayland client deployment and an explicit
   X11 preference that takes precedence over a desktop's platform environment, adapted
   from [Fritchii #37](https://github.com/Frizti/Fritchii/pull/37) and

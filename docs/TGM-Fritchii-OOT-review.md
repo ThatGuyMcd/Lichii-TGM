@@ -19,6 +19,7 @@ replacement PRs are used instead of importing those whole branches.
 | `9b30eec8ca`, rollback of upstream #820 | Adapt the reported NVIDIA fog regression: keep native interpolation on NVIDIA and retain the AMD workaround. Producer/consumer SPIR-V tests cover both paths. Do not blanket-revert the AMD fix. |
 | `8b11f2500b` | Fritchii's async-translation architecture differs. Review found a related diagnostic edge here: pass the existing reference SPIR-V to the inline path after an IR-budget refusal. Default diagnostic mode stays off. |
 | `15f8e4c5c` | Port the missing post-copy barrier hunk: later transfers must wait for downloads/gathers too. The corresponding CopyBuffer barrier was already covered by upstream #805. This is vendor-neutral ordering, not a measured FPS gain. |
+| `a04eb9a800` | Port the late-request rejection missing from the upstream shutdown merge: do not enqueue captured callbacks after shutdown has released their waiters. |
 | `464fbb45bb` | The allocator already retries over-budget buffers. Do not duplicate its fallback or import its catch-all staging retry, which also catches device-loss exceptions. |
 | `b3396c01f9` | Address-based guards protect Fritchii's EXP43 relocation. This fork has no such relocation architecture, so the patch is inapplicable. |
 | `834026ac81`, `1c63b2b268` | Fritchii corrects its AMD shader-library default. This fork already defaults graphics pipeline libraries off; preserve users' explicit choices. |

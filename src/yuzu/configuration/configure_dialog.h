@@ -76,11 +76,10 @@ private:
 
     void SetConfiguration();
     void PopulateSelectionList();
-    void UpdateHeader();
+    void UpdateSettingsShell();
 
     std::unique_ptr<Ui::ConfigureDialog> ui;
     ConfigurationShared::SettingsNavigation* navigation{};
-    QWidget* header{};
     HotkeyRegistry& registry;
 
     Core::System& system;

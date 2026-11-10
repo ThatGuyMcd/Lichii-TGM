@@ -11,7 +11,7 @@
 #include "common/settings_enums.h"
 #include "core/core.h"
 #include "qt_common/config/uisettings.h"
-#include "qt_common/forest_theme.h"
+#include "qt_common/touch_ui.h"
 #include "qt_common/util/vk.h"
 #include "ui_configure.h"
 #include "yuzu/configuration/configure_applets.h"
@@ -76,10 +76,9 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     ui->selectorList->hide();
     ui->horizontalLayout->removeWidget(ui->tabWidget);
     ui->tabWidget->hide();
-    navigation = new ConfigurationShared::SettingsNavigation(this);
+    navigation = new ConfigurationShared::SettingsNavigation(this, QtCommon::TouchUi::TargetSize());
     ui->horizontalLayout->addWidget(navigation, 1);
     ui->label->setWordWrap(true);
-    UpdateHeader();
 
     web_tab->SetWebServiceConfigEnabled(enable_web_config);
     hotkeys_tab->Populate(registry);
@@ -95,16 +94,15 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     connect(general_tab.get(), &ConfigureGeneral::ExternalContentDirsChanged, this,
             &ConfigureDialog::ExternalContentDirsChanged);
 
-    if (system.IsPoweredOn()) {
-        QPushButton* apply_button = ui->buttonBox->addButton(QDialogButtonBox::Apply);
-        connect(apply_button, &QAbstractButton::clicked, this,
-                &ConfigureDialog::HandleApplyButtonClicked);
-    }
+    QPushButton* apply_button = ui->buttonBox->addButton(QDialogButtonBox::Apply);
+    connect(apply_button, &QAbstractButton::clicked, this,
+            &ConfigureDialog::HandleApplyButtonClicked);
 
     setSizeGripEnabled(true);
     const QSize available = screen()->availableGeometry().size() - QSize(48, 64);
-    setMinimumSize(QSize(760, 480).boundedTo(available));
+    setMinimumSize(QSize(480, 320).boundedTo(available));
     resize(QSize(1120, 800).boundedTo(available));
+    UpdateSettingsShell();
 
     // Selects the leftmost button on the bottom bar (Cancel as of writing)
     ui->buttonBox->setFocus();
@@ -145,24 +143,19 @@ void ConfigureDialog::changeEvent(QEvent* event) {
 
 void ConfigureDialog::RetranslateUI() {
     ui->retranslateUi(this);
-    UpdateHeader();
     PopulateSelectionList();
+    UpdateSettingsShell();
 }
 
-void ConfigureDialog::UpdateHeader() {
-    if (header) {
-        ui->verticalLayout->removeWidget(header);
-        header->hide();
-        header->deleteLater();
-    }
-    header = QtCommon::ForestTheme::CreateHeader(
-        this, tr("Settings"), tr("Make Lichii-tgm feel at home."));
-    ui->verticalLayout->insertWidget(0, header);
+void ConfigureDialog::UpdateSettingsShell() {
+    QtCommon::TouchUi::InstallSettingsShell(this, tr("Settings"),
+                                           tr("Make Lichii-tgm feel at home."));
 }
 
 void ConfigureDialog::HandleApplyButtonClicked() {
     UISettings::values.configuration_applied = true;
     ApplyConfiguration();
+    QtCommon::TouchUi::MarkApplied(this);
 }
 
 void ConfigureDialog::PopulateSelectionList() {
@@ -189,11 +182,11 @@ void ConfigureDialog::PopulateSelectionList() {
         {audio_tab.get(), tr("Audio"), tr("Devices"), tr("sound volume output latency backend")},
         {input_tab.get(), tr("Controls"), tr("Devices"),
          tr("input controllers gamepad player joystick keyboard mouse microphone mic voice")},
-        {network_tab.get(), tr("Network"), tr("Services and Diagnostics"),
+        {network_tab.get(), tr("Network"), tr("Services"),
          tr("internet multiplayer LAN interface")},
-        {web_tab.get(), tr("Web"), tr("Services and Diagnostics"),
+        {web_tab.get(), tr("Web"), tr("Services"),
          tr("services telemetry account privacy")},
-        {debug_tab_tab.get(), tr("Debug"), tr("Services and Diagnostics"),
+        {debug_tab_tab.get(), tr("Debug"), tr("Diagnostics"),
          tr("logging diagnostics CPU debugging advanced")},
     });
 }
@@ -206,4 +199,5 @@ void ConfigureDialog::OnLanguageChanged(const QString& locale) {
     ApplyConfiguration();
     RetranslateUI();
     SetConfiguration();
+    QtCommon::TouchUi::MarkApplied(this);
 }

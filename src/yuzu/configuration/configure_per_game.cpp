@@ -62,7 +62,7 @@
 #include "qt_common/qt_common.h"
 #include "qt_common/util/vk.h"
 #include "ui_configure_per_game.h"
-#include "qt_common/forest_theme.h"
+#include "qt_common/touch_ui.h"
 #include "yuzu/configuration/settings_navigation.h"
 #include <QScreen>
 #include "yuzu/configuration/configuration_shared.h"
@@ -406,21 +406,20 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
 
     setProperty("forestDialogPrepared", true);
     info_page = new QWidget(this);
-    auto* info_layout = new QHBoxLayout(info_page);
+    auto* info_layout = new QVBoxLayout(info_page);
     ui->horizontalLayout->removeWidget(ui->groupBox);
+    ui->groupBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     info_layout->addWidget(ui->groupBox);
     ui->VerticalLayout->removeItem(ui->verticalLayout_2);
     info_layout->addLayout(ui->verticalLayout_2, 1);
     ui->tabWidget->hide();
-    navigation = new ConfigurationShared::SettingsNavigation(this);
+    navigation = new ConfigurationShared::SettingsNavigation(this, QtCommon::TouchUi::TargetSize());
     ui->horizontalLayout->addWidget(navigation, 1);
-    ui->verticalLayout_3->insertWidget(0, QtCommon::ForestTheme::CreateHeader(
-        this, tr("Game settings"), tr("Fine-tune this adventure. Global settings stay as they are.")));
     ui->label_8->setWordWrap(true);
     UpdateNavigation();
     setSizeGripEnabled(true);
     const QSize available = screen()->availableGeometry().size() - QSize(48, 64);
-    setMinimumSize(QSize(760, 480).boundedTo(available));
+    setMinimumSize(QSize(480, 320).boundedTo(available));
     resize(QSize(1120, 800).boundedTo(available));
 
     setFocusPolicy(Qt::ClickFocus);
@@ -523,13 +522,21 @@ void ConfigurePerGame::changeEvent(QEvent* event) {
 
 void ConfigurePerGame::RetranslateUI() {
     ui->retranslateUi(this);
-    if (auto* heading = findChild<QLabel*>(QStringLiteral("ForestHeading"))) {
-        heading->setText(tr("Game settings"));
-    }
-    if (auto* subtitle = findChild<QLabel*>(QStringLiteral("ForestSubtitle"))) {
-        subtitle->setText(tr("Fine-tune this adventure. Global settings stay as they are."));
-    }
     UpdateNavigation();
+    UpdateSettingsShell();
+}
+
+void ConfigurePerGame::UpdateSettingsShell() {
+    QString identity = ui->display_name->text().trimmed();
+    if (identity.isEmpty()) {
+        identity = QString::fromStdString(Common::FS::PathToUTF8String(file_path.filename()));
+    }
+    if (identity.isEmpty()) {
+        identity = QStringLiteral("%1").arg(title_id, 16, 16, QLatin1Char{'0'}).toUpper();
+    }
+    QtCommon::TouchUi::InstallSettingsShell(
+        this, tr("Game settings"),
+        tr("For %1. Global settings stay as they are.").arg(identity));
 }
 
 void ConfigurePerGame::UpdateNavigation() {
@@ -548,10 +555,10 @@ void ConfigurePerGame::UpdateNavigation() {
          tr("shaders textures cache accuracy")},
         {graphics_extensions_tab.get(), tr("Graphics Extensions"), tr("Video"),
          tr("Vulkan extensions compatibility")},
-        {audio_tab.get(), tr("Audio"), tr("Devices and Services"), tr("sound volume output")},
-        {input_tab.get(), tr("Input Profiles"), tr("Devices and Services"),
+        {audio_tab.get(), tr("Audio"), tr("Devices"), tr("sound volume output")},
+        {input_tab.get(), tr("Input Profiles"), tr("Devices"),
          tr("controls controller player gamepad")},
-        {network_tab.get(), tr("Network"), tr("Devices and Services"), tr("internet LAN multiplayer")},
+        {network_tab.get(), tr("Network"), tr("Services"), tr("internet LAN multiplayer")},
     });
 }
 
@@ -561,11 +568,20 @@ void ConfigurePerGame::HandleApplyButtonClicked() {
     }
     UISettings::values.configuration_applied = true;
     ApplyConfiguration();
+    UpdateSettingsShell();
+    QtCommon::TouchUi::MarkApplied(this);
 }
 
 void ConfigurePerGame::LoadFromFile(FileSys::VirtualFile file_) {
     file = std::move(file_);
     LoadConfiguration();
+    if (!ui->buttonBox->button(QDialogButtonBox::Apply)) {
+        auto* apply_button = ui->buttonBox->addButton(QDialogButtonBox::Apply);
+        connect(apply_button, &QAbstractButton::clicked, this,
+                &ConfigurePerGame::HandleApplyButtonClicked);
+    }
+    // Loading a NUP can add its original Apply action. Install the fixed footer afterwards.
+    UpdateSettingsShell();
 }
 
 void ConfigurePerGame::LoadConfiguration() {

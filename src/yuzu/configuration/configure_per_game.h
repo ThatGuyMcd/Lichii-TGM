@@ -77,6 +77,7 @@ private:
     void changeEvent(QEvent* event) override;
     void RetranslateUI();
     void UpdateNavigation();
+    void UpdateSettingsShell();
 
     void HandleApplyButtonClicked();
 

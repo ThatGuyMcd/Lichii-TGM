@@ -31,12 +31,16 @@ narrow ratios show less at the sides, while wide ratios show more. Movies retain
 their original 16:9 shape with side bars on wide screens and top/bottom bars on
 narrow screens. User ExeFS and RomFS mods retain priority; conflicting original
 bytes or occupied executable padding cause the affected built-in patch to skip.
+HUD/movie changes only activate after the executable patch is accepted. The
+selected profile and its memory reservation stay fixed for that application boot.
 Disable external aspect mods before using these profiles.
 
 Narrow profiles retain the original texture heap allocation. Wide profiles grow
 the texture and application heaps with pixel count, rather than borrowing memory
 from other game heaps. 32:9 requires about 306 MiB more guest application memory
 and renders twice the original pixel count, so GPU cost and host memory use rise.
+Disabled Add-Ons and other games receive no aspect memory reservation. Loose game
+dumps use the same lazy RomFS pipeline as NUP/NX loads, avoiding duplicate edits.
 
 The original camera/UI hooks derive from Ivan0xFF's
 [oot-mod](https://github.com/craftycorvid/oot-mod), with heap sizing based on

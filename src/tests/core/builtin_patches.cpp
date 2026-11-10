@@ -488,12 +488,12 @@ constexpr size_t UltrawideCapOffset = sizeof(Loader::NSOHeader) + 0x6505EC;
 constexpr size_t UltrawideCaveOffset = sizeof(Loader::NSOHeader) + 0x3C46700;
 constexpr u32 BneInstruction = 0x54000061;
 // The originals at the picture and scene sizes and at Ivan0xFF's eight hook sites.
-constexpr std::array<std::pair<u32, u32>, 13> UltrawideOriginals{{
+constexpr std::array<std::pair<u32, u32>, 14> UltrawideOriginals{{
     {0x1202EE0, 0xD2814008}, {0x31F39F4, 0xD2814008}, {0x31F3A00, 0xD280F008},
     {0x3485CC0, 0x2D558400}, {0x4F1E8, 0x2D558EA0},  {0x23B9A8, 0x2D558C00},
     {0x33B82C, 0x2D558440},  {0x25D76C, 0x1E2202A1}, {0x774368, 0xAD401041},
     {0x3B5C758, 0xA941A269}, {0x20C2B0, 0x52A89E08}, {0x20C99C, 0x52A89E08},
-    {0x215FB0, 0x52A89E08},
+    {0x215FB0, 0x52A89E08}, {0x25D770, 0x1E221821},
 }};
 
 void PutWord(std::vector<u8>& nso, size_t offset, u32 word) {
@@ -531,8 +531,10 @@ public:
           previous_mode{Settings::values.use_docked_mode.GetValue()} {
         Settings::values.aspect_ratio.SetValue(aspect);
         Settings::values.use_docked_mode.SetValue(mode);
+        Core::OotUltrawide::BeginApplication(OcarinaTitleId, true);
     }
     ~UltrawideSettings() {
+        Core::OotUltrawide::BeginApplication(0, false);
         Settings::values.aspect_ratio.SetValue(previous_aspect);
         Settings::values.use_docked_mode.SetValue(previous_mode);
     }
@@ -632,6 +634,8 @@ TEST_CASE("Ocarina aspect profiles patch cameras, UI and movie bounds together",
         UltrawideSettings settings{profile.aspect, Settings::ConsoleMode::Docked};
         const auto patched = context.Manager().PatchNSO(nso, "main");
         REQUIRE(WordAt(patched, UltrawideSizeOffset) == profile.width);
+        REQUIRE(Core::OotUltrawide::AcceptedProfile() != nullptr);
+        REQUIRE(Core::OotUltrawide::AcceptedProfile()->aspect == profile.aspect);
         REQUIRE(WordAt(patched, UltrawideSizeOffset + 4) == 1440);
         REQUIRE(WordAt(patched, UltrawideIndexOffset) == NopInstruction);
         REQUIRE(WordAt(patched, UltrawideListIndexOffset) == NopInstruction);
@@ -663,20 +667,26 @@ TEST_CASE("Ocarina aspect profiles patch cameras, UI and movie bounds together",
         }};
         for (const auto& [site, entry, exit] : branches) {
             REQUIRE(BranchTarget(patched, site) == 0x3C46800 + entry);
-            REQUIRE(BranchTarget(patched, 0x3C46800 + exit) == site + 4);
+            REQUIRE(BranchTarget(patched, 0x3C46800 + exit) ==
+                    site + (site == 0x25D76C ? 8 : 4));
         }
         Settings::values.disabled_addons[OcarinaTitleId].push_back(std::string{profile.addon});
         REQUIRE(context.Manager().PatchNSO(nso, "main") == nso);
+        REQUIRE(Core::OotUltrawide::AcceptedProfile() == nullptr);
         Settings::values.disabled_addons[OcarinaTitleId].pop_back();
         auto wrong_build = nso;
         wrong_build[offsetof(Loader::NSOHeader, build_id)] ^= 1;
         REQUIRE(context.Manager().PatchNSO(wrong_build, "main") == wrong_build);
+        REQUIRE(Core::OotUltrawide::AcceptedProfile() == nullptr);
         Settings::values.use_docked_mode.SetValue(Settings::ConsoleMode::Handheld);
+        Core::OotUltrawide::BeginApplication(OcarinaTitleId, true);
         REQUIRE(context.Manager().PatchNSO(nso, "main") == nso);
         Settings::values.use_docked_mode.SetValue(Settings::ConsoleMode::Docked);
+        Core::OotUltrawide::BeginApplication(OcarinaTitleId, true);
         auto occupied_cave = nso;
         PutWord(occupied_cave, UltrawideHookCaveOffset + 0x100, 1);
         REQUIRE(context.Manager().PatchNSO(occupied_cave, "main") == occupied_cave);
+        REQUIRE(Core::OotUltrawide::AcceptedProfile() == nullptr);
     }
 }
 
@@ -710,5 +720,21 @@ TEST_CASE("A user aspect hook remains authoritative", "[patch_manager]") {
         auto expected = nso;
         PutWord(expected, UltrawideCanvasOffset, NopInstruction);
         REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
+        REQUIRE(Core::OotUltrawide::AcceptedProfile() == nullptr);
+    }
+}
+
+TEST_CASE("A user modification to the second consumed projection instruction wins",
+          "[patch_manager]") {
+    constexpr size_t offset = sizeof(Loader::NSOHeader) + 0x25D770;
+    PatchManagerTestContext context{NopInstruction, offset};
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution}};
+    const auto nso = MakeUltrawideMain();
+    for (const auto& profile : Core::OotUltrawide::AspectProfiles) {
+        UltrawideSettings settings{profile.aspect, Settings::ConsoleMode::Docked};
+        auto expected = nso;
+        PutWord(expected, offset, NopInstruction);
+        REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
+        REQUIRE(Core::OotUltrawide::AcceptedProfile() == nullptr);
     }
 }

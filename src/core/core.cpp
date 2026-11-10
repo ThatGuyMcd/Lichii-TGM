@@ -68,6 +68,7 @@
 #include "core/memory.h"
 #include "core/memory/cheat_engine.h"
 #include "core/ocarina_photo_mode.h"
+#include "core/oot_ultrawide.h"
 #include "core/perf_stats.h"
 #include "core/reporter.h"
 #include "core/tools/freezer.h"
@@ -128,13 +129,27 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
 
 namespace {
 
-// Detect the platform before initializing the kernel memory layout and guest clock.
-bool IsSwitch2Program(const FileSys::VirtualFile& file, u64 program_id, std::size_t program_index) {
+struct ProgramPlatform {
+    u64 program_id{};
+    bool is_switch2{};
+};
+
+// Read the actual title and platform before sizing kernel memory; the previous game's global
+// program ID is not updated until after process creation.
+ProgramPlatform ReadProgramPlatform(System& system, const FileSys::VirtualFile& file,
+                                    u64 program_id, std::size_t program_index) {
     FileSys::ProgramMetadata metadata;
+    const auto from_exefs = [&](const FileSys::VirtualDir& exefs) -> ProgramPlatform {
+        const auto npdm = exefs != nullptr ? exefs->GetFile("main.npdm") : nullptr;
+        if (npdm == nullptr || metadata.Load(npdm) != Loader::ResultStatus::Success) {
+            return {};
+        }
+        return {metadata.GetTitleID(), metadata.IsSwitch2()};
+    };
     if (FileSys::NupContainer::IsNupFile(file)) {
         FileSys::NupContainer nup{file};
         if (nup.GetStatus() != Loader::ResultStatus::Success) {
-            return false;
+            return {};
         }
         const auto base = nup.FindBasePackage();
         const auto update = nup.FindBestUpdatePackage();
@@ -145,18 +160,22 @@ bool IsSwitch2Program(const FileSys::VirtualFile& file, u64 program_id, std::siz
             program = base;
         }
         const auto exefs = program ? nup.GetExeFSDir(*program) : nullptr;
-        const auto npdm = exefs != nullptr ? exefs->GetFile("main.npdm") : nullptr;
-        return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
-               metadata.IsSwitch2();
+        return from_exefs(exefs);
     }
     const auto type = file != nullptr ? Loader::IdentifyFile(file) : Loader::FileType::Unknown;
     if (type == Loader::FileType::NX) {
-        return Loader::AppLoader_NX::ReadPlatform(file, program_id) == 2;
+        Loader::AppLoader_NX loader{system, file, program_id, program_index};
+        u64 actual_program_id{};
+        if (loader.ReadProgramId(actual_program_id) != Loader::ResultStatus::Success) {
+            return {};
+        }
+        return {actual_program_id,
+                Loader::AppLoader_NX::ReadPlatform(file, actual_program_id) == 2};
     }
     if (type == Loader::FileType::XCI || type == Loader::FileType::XCZ) {
         const FileSys::XCI xci{file, program_id, program_index};
         if (xci.GetStatus() != Loader::ResultStatus::Success) {
-            return false;
+            return {};
         }
         const auto partition = xci.GetSecurePartitionNSP();
         const auto program = partition != nullptr
@@ -164,14 +183,12 @@ bool IsSwitch2Program(const FileSys::VirtualFile& file, u64 program_id, std::siz
                                                      FileSys::ContentRecordType::Program)
                                  : nullptr;
         const auto exefs = program != nullptr ? program->GetExeFS() : nullptr;
-        const auto npdm = exefs != nullptr ? exefs->GetFile("main.npdm") : nullptr;
-        return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
-               metadata.IsSwitch2();
+        return from_exefs(exefs);
     }
     if (type == Loader::FileType::NSP || type == Loader::FileType::NSZ) {
         const FileSys::NSP nsp{file, program_id, program_index};
         if (nsp.GetStatus() != Loader::ResultStatus::Success) {
-            return false;
+            return {};
         }
         auto exefs = nsp.GetExeFS();
         if (!nsp.IsExtractedType()) {
@@ -179,14 +196,15 @@ bool IsSwitch2Program(const FileSys::VirtualFile& file, u64 program_id, std::siz
                 nsp.GetNCA(nsp.GetProgramTitleID(), FileSys::ContentRecordType::Program);
             exefs = program != nullptr ? program->GetExeFS() : nullptr;
         }
-        const auto npdm = exefs != nullptr ? exefs->GetFile("main.npdm") : nullptr;
-        return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
-               metadata.IsSwitch2();
+        return from_exefs(exefs);
+    }
+    if (type == Loader::FileType::NCA) {
+        const FileSys::NCA nca{file};
+        return nca.GetStatus() == Loader::ResultStatus::Success ? from_exefs(nca.GetExeFS())
+                                                               : ProgramPlatform{};
     }
     const auto dir = file != nullptr ? file->GetContainingDirectory() : nullptr;
-    const auto npdm = dir != nullptr ? dir->GetFile("main.npdm") : nullptr;
-    return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
-           metadata.IsSwitch2();
+    return from_exefs(dir);
 }
 
 } // namespace
@@ -207,6 +225,7 @@ struct System::Impl {
         if (device_memory && !device_memory->buffer.BackingBasePointer()) {
             device_memory.reset();
         }
+        device_memory_aspect_extra = OotUltrawide::ApplicationMemoryExtra();
     }
 
     bool Initialize(System& system) {
@@ -241,7 +260,8 @@ struct System::Impl {
         const bool must_reinitialize =
             !device_memory.has_value() ||
             is_multicore != Settings::values.use_multi_core.GetValue() ||
-            memory_layout != Settings::values.memory_layout_mode.GetValue();
+            memory_layout != Settings::values.memory_layout_mode.GetValue() ||
+            device_memory_aspect_extra != OotUltrawide::ApplicationMemoryExtra();
 
         if (!must_reinitialize) {
             return;
@@ -414,13 +434,21 @@ struct System::Impl {
             fs_controller.InitTempStorage();
         }
 
-        const bool switch2_program =
-            virtual_filesystem != nullptr &&
-            IsSwitch2Program(GetGameFileFromPath(virtual_filesystem, filepath), params.program_id,
-                             params.program_index);
+        const bool new_application = params.applet_type == Service::AM::AppletType::Application;
+        if (new_application) {
+            OotUltrawide::BeginApplication(0, false);
+        }
+        const auto platform = virtual_filesystem != nullptr
+            ? ReadProgramPlatform(system, GetGameFileFromPath(virtual_filesystem, filepath),
+                                  params.program_id, params.program_index)
+            : ProgramPlatform{};
+        const bool switch2_program = platform.is_switch2;
         Settings::SetCurrentProgramIsSwitch2(switch2_program);
         Settings::SetAstcRecompressionOverride(std::nullopt);
         Settings::SetGameHandheldOverride(false);
+        if (new_application) {
+            OotUltrawide::BeginApplication(platform.program_id, switch2_program);
+        }
 
         // Switch 2 titles size their heap from the total memory and need the 12 GiB layout. Set it
         // as a per-game value, so RestoreGlobalState brings back the configured layout afterwards.
@@ -635,6 +663,7 @@ struct System::Impl {
             device_memory.reset();
             device_memory_released = true;
         }
+        OotUltrawide::BeginApplication(0, false);
 
         LOG_DEBUG(Core, "Shutdown OK");
     }
@@ -690,6 +719,7 @@ struct System::Impl {
     std::optional<Core::DeviceMemory> device_memory;
     /// ShutdownMainProcess released device_memory; InitializeKernel creates it again.
     bool device_memory_released{};
+    u64 device_memory_aspect_extra{};
     std::optional<AudioCore::AudioCore> audio_core;
     std::optional<Memory::CheatEngine> cheat_engine;
     u64 application_main_base{};

@@ -676,8 +676,7 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             return GetTICEntry(handle & 0xfffff);
         };
         // The aspect Add-On fits the movie into a centred 16:9 viewport in this profile's frame.
-        const auto* movie_profile = Core::OotUltrawide::ProfileForAspect(
-            Settings::values.aspect_ratio.GetValue());
+        const auto* movie_profile = Core::OotUltrawide::AcceptedProfile();
         const auto upscale_pair = [movie_profile](const std::optional<Texture::TICEntry>& from,
                                                 const std::optional<Texture::TICEntry>& to,
                                                 bool same_format) {

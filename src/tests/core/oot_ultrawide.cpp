@@ -4,12 +4,15 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "common/scope_exit.h"
+#include "common/settings.h"
 #include "common/zstd_compression.h"
 #include "core/oot_ultrawide.h"
 
@@ -172,6 +175,129 @@ TEST_CASE("Aspect profiles preserve legacy sizing and grow memory only for extra
             REQUIRE(table == original);
         }
     }
+}
+
+TEST_CASE("Aspect boot state reserves only the actual enabled OOT application profile",
+          "[oot_ultrawide]") {
+    using namespace Core::OotUltrawide;
+    const auto previous_aspect = Settings::values.aspect_ratio.GetValue();
+    const auto previous_console = Settings::values.use_docked_mode.GetValue();
+    const auto previous_aa = Settings::values.oot_anti_aliasing.GetValue();
+    const auto previous_dlss = Settings::values.nvidia_dlss.GetValue();
+    const auto previous_fsr = Settings::values.ocarina_fsr.GetValue();
+    const auto previous_program = Settings::GetCurrentProgramID();
+    const auto disabled = Settings::values.disabled_addons.find(ProgramId);
+    const std::optional<std::vector<std::string>> previous_disabled =
+        disabled != Settings::values.disabled_addons.end()
+            ? std::optional{disabled->second}
+            : std::nullopt;
+    SCOPE_EXIT {
+        Settings::values.aspect_ratio.SetValue(previous_aspect);
+        Settings::values.use_docked_mode.SetValue(previous_console);
+        Settings::values.oot_anti_aliasing.SetValue(previous_aa);
+        Settings::values.nvidia_dlss.SetValue(previous_dlss);
+        Settings::values.ocarina_fsr.SetValue(previous_fsr);
+        Settings::SetCurrentProgramID(previous_program);
+        if (previous_disabled) {
+            Settings::values.disabled_addons[ProgramId] = *previous_disabled;
+        } else {
+            Settings::values.disabled_addons.erase(ProgramId);
+        }
+        BeginApplication(0, false);
+    };
+    Settings::values.use_docked_mode.SetValue(Settings::ConsoleMode::Docked);
+    Settings::values.oot_anti_aliasing.SetValue(Settings::OotAntiAliasing::Game);
+    Settings::values.nvidia_dlss.SetValue(false);
+    Settings::values.ocarina_fsr.SetValue(false);
+    Settings::values.disabled_addons.erase(ProgramId);
+    for (const auto& profile : AspectProfiles) {
+        INFO(profile.addon);
+        Settings::values.aspect_ratio.SetValue(profile.aspect);
+        // A stale global title from the previous game cannot grant another title extra memory.
+        Settings::SetCurrentProgramID(ProgramId);
+        BeginApplication(0x040074A01BF12000, true);
+        REQUIRE(PreparedProfile() == nullptr);
+        REQUIRE(AcceptedProfile() == nullptr);
+        REQUIRE(ApplicationMemoryExtra() == 0);
+        AcceptProfile(profile.aspect);
+        REQUIRE(AcceptedProfile() == nullptr);
+        BeginApplication(ProgramId, false);
+        REQUIRE(PreparedProfile() == nullptr);
+        REQUIRE(ApplicationMemoryExtra() == 0);
+        Settings::values.disabled_addons[ProgramId] = {std::string{profile.addon}};
+        BeginApplication(ProgramId, true);
+        REQUIRE(PreparedProfile() == nullptr);
+        REQUIRE(ApplicationMemoryExtra() == 0);
+        Settings::values.disabled_addons.erase(ProgramId);
+        Settings::SetCurrentProgramID(0x040074A01BF12000);
+        BeginApplication(ProgramId, true);
+        REQUIRE(PreparedProfile() == &profile);
+        REQUIRE(AcceptedProfile() == nullptr);
+        REQUIRE(ApplicationMemoryExtra() == MemoryExtraBytesFor(profile));
+        AcceptProfile(Settings::AspectRatio::R16_9);
+        REQUIRE(AcceptedProfile() == nullptr);
+        AcceptProfile(profile.aspect);
+        REQUIRE(AcceptedProfile() == &profile);
+        BeginApplication(0, false);
+        REQUIRE(PreparedProfile() == nullptr);
+        REQUIRE(AcceptedProfile() == nullptr);
+        REQUIRE(ApplicationMemoryExtra() == 0);
+    }
+}
+
+TEST_CASE("Accepted aspect state and memory stay fixed until the next application boot",
+          "[oot_ultrawide]") {
+    using namespace Core::OotUltrawide;
+    const auto previous_aspect = Settings::values.aspect_ratio.GetValue();
+    const auto previous_console = Settings::values.use_docked_mode.GetValue();
+    const auto previous_aa = Settings::values.oot_anti_aliasing.GetValue();
+    const auto previous_dlss = Settings::values.nvidia_dlss.GetValue();
+    const auto previous_fsr = Settings::values.ocarina_fsr.GetValue();
+    const auto disabled = Settings::values.disabled_addons.find(ProgramId);
+    const std::optional<std::vector<std::string>> previous_disabled =
+        disabled != Settings::values.disabled_addons.end()
+            ? std::optional{disabled->second}
+            : std::nullopt;
+    SCOPE_EXIT {
+        Settings::values.aspect_ratio.SetValue(previous_aspect);
+        Settings::values.use_docked_mode.SetValue(previous_console);
+        Settings::values.oot_anti_aliasing.SetValue(previous_aa);
+        Settings::values.nvidia_dlss.SetValue(previous_dlss);
+        Settings::values.ocarina_fsr.SetValue(previous_fsr);
+        if (previous_disabled) {
+            Settings::values.disabled_addons[ProgramId] = *previous_disabled;
+        } else {
+            Settings::values.disabled_addons.erase(ProgramId);
+        }
+        BeginApplication(0, false);
+    };
+    Settings::values.aspect_ratio.SetValue(Settings::AspectRatio::R32_9);
+    Settings::values.use_docked_mode.SetValue(Settings::ConsoleMode::Docked);
+    Settings::values.oot_anti_aliasing.SetValue(Settings::OotAntiAliasing::Game);
+    Settings::values.nvidia_dlss.SetValue(false);
+    Settings::values.ocarina_fsr.SetValue(false);
+    Settings::values.disabled_addons.erase(ProgramId);
+    BeginApplication(ProgramId, true);
+    const auto* profile = PreparedProfile();
+    REQUIRE(profile == ProfileForAspect(Settings::AspectRatio::R32_9));
+    REQUIRE(AcceptedProfile() == nullptr);
+    REQUIRE(ApplicationMemoryExtra() == (306ULL << 20));
+    AcceptProfile(profile->aspect);
+    Settings::values.aspect_ratio.SetValue(Settings::AspectRatio::R4_3);
+    Settings::values.use_docked_mode.SetValue(Settings::ConsoleMode::Handheld);
+    Settings::values.oot_anti_aliasing.SetValue(Settings::OotAntiAliasing::NvidiaDlss);
+    Settings::values.disabled_addons[ProgramId] = {std::string{profile->addon}};
+    REQUIRE(PreparedProfile() == profile);
+    REQUIRE(AcceptedProfile() == profile);
+    REQUIRE(ApplicationMemoryExtra() == (306ULL << 20));
+    ClearAcceptedProfile();
+    REQUIRE(AcceptedProfile() == nullptr);
+    REQUIRE(PreparedProfile() == profile);
+    REQUIRE(ApplicationMemoryExtra() == (306ULL << 20));
+    BeginApplication(ProgramId, true);
+    REQUIRE(PreparedProfile() == nullptr);
+    REQUIRE(AcceptedProfile() == nullptr);
+    REQUIRE(ApplicationMemoryExtra() == 0);
 }
 
 namespace {

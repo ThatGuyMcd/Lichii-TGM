@@ -56,6 +56,17 @@ inline constexpr std::array<RenderProfile, 7> AspectProfiles{{
 /// Compatibility name: true for any active aspect Add-On, including narrower profiles.
 [[nodiscard]] bool UltrawideRendering();
 
+/// Starts an application boot, clearing acceptance and reserving only its enabled OOT profile.
+void BeginApplication(u64 actual_program_id, bool is_switch2);
+/// The profile selected before kernel initialization; changing settings does not change it.
+[[nodiscard]] const RenderProfile* PreparedProfile();
+/// Called only after every guarded executable record was applied successfully.
+void AcceptProfile(Settings::AspectRatio aspect);
+/// Clears executable acceptance without changing the boot's reserved memory or selected profile.
+void ClearAcceptedProfile();
+/// The successfully patched profile for RomFS and movie rendering, or nullptr.
+[[nodiscard]] const RenderProfile* AcceptedProfile();
+
 /// The game's render targets live in the HeapDef's "DynamicTextureAllocatorMem" heap (312320 KiB,
 /// inside "Graphics"), sized for its 2560x1440 picture. It grows by its size times the 3440x1440
 /// picture's extra pixels, in whole MiB: 312320 KiB * (3440 / 2560 - 1) = 107360 -> 107520 KiB.
@@ -79,7 +90,7 @@ constexpr u64 MemoryExtraBytes = 106ULL << 20;
     return ((u64{TextureHeapExtraKiBFor(profile)} << 10) + page - 1) / page * page;
 }
 
-/// The active profile's memory growth for a Switch 2 program, else 0 (KSystemControl).
+/// The OOT profile's memory reservation captured before kernel initialization, else 0.
 [[nodiscard]] u64 ApplicationMemoryExtra();
 
 /// The HeapDef table (a zstd-compressed BYML) with "DynamicTextureAllocatorMem" and "Graphics" grown

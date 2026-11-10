@@ -429,20 +429,6 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     }
     metadata.Print();
 
-    // Loose-ExeFS loads bypass the NCA/NSP loaders, which are the ones that normally apply
-    // LayeredFS to the RomFS; apply it here so mods in user/load/<titleid>/ work too.
-    if (LooseRomFS() != nullptr) {
-        const FileSys::PatchManager patch_manager(metadata.GetTitleID(),
-                                                  system.GetFileSystemController(),
-                                                  system.GetContentProvider());
-        auto patched = patch_manager.PatchRomFS(nullptr, romfs);
-        if (patched != nullptr) {
-            romfs = std::move(patched);
-            LOG_INFO(Loader, "Applied RomFS patches (LayeredFS) for title {:016X}",
-                     metadata.GetTitleID());
-        }
-    }
-
     // Enable NCE only for applications with 39-bit address space.
     const bool is_39bit =
         metadata.GetAddressSpaceType() == FileSys::ProgramAddressSpaceType::Is39Bit;
@@ -529,6 +515,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
     if (standalone) {
         // Without this, fsp-srv SetCurrentProcess fails with ResultTargetNotFound.
+        // RomFSFactory applies LayeredFS lazily, after executable patches are accepted. Keeping
+        // the source RomFS unpatched here also prevents growing its aspect heap twice.
         system.GetFileSystemController().RegisterProcess(
             process.GetProcessId(), metadata.GetTitleID(),
             std::make_shared<FileSys::RomFSFactory>(*this, system.GetContentProvider(),

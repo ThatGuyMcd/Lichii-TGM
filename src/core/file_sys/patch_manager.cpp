@@ -198,8 +198,11 @@ constexpr std::array<u8, 4> ULTRAWIDE_HOOK_20C2B0_ORIGINAL{0x08, 0x9E, 0xA8, 0x5
 constexpr std::array<u8, 4> ULTRAWIDE_HOOK_20C2B0{0xD5, 0xE8, 0xE8, 0x14};
 constexpr std::array<u8, 4> ULTRAWIDE_HOOK_23B9A8_ORIGINAL{0x00, 0x8C, 0x55, 0x2D};
 constexpr std::array<u8, 4> ULTRAWIDE_HOOK_23B9A8{0xB6, 0x2A, 0xE8, 0x14};
-constexpr std::array<u8, 4> ULTRAWIDE_HOOK_25D76C_ORIGINAL{0xA1, 0x02, 0x22, 0x1E};
-constexpr std::array<u8, 4> ULTRAWIDE_HOOK_25D76C{0x65, 0xA3, 0xE7, 0x14};
+// This routine consumes both scvtf and fdiv; guard both against user modifications.
+constexpr std::array<u8, 8> ULTRAWIDE_HOOK_25D76C_ORIGINAL{
+    0xA1, 0x02, 0x22, 0x1E, 0x21, 0x18, 0x22, 0x1E};
+constexpr std::array<u8, 8> ULTRAWIDE_HOOK_25D76C{
+    0x65, 0xA3, 0xE7, 0x14, 0x21, 0x18, 0x22, 0x1E};
 constexpr std::array<u8, 4> ULTRAWIDE_HOOK_33B82C_ORIGINAL{0x40, 0x84, 0x55, 0x2D};
 constexpr std::array<u8, 4> ULTRAWIDE_HOOK_33B82C{0x25, 0x2B, 0xE4, 0x14};
 constexpr std::array<u8, 4> ULTRAWIDE_HOOK_774368_ORIGINAL{0x41, 0x10, 0x40, 0xAD};
@@ -293,6 +296,7 @@ struct AspectPatchPayload {
     std::array<u8, 8> size = ULTRAWIDE_SIZE;
     std::array<u8, 4> picture = ULTRAWIDE_PICTURE;
     std::array<u8, 4> scene = ULTRAWIDE_SCENE;
+    std::array<u8, 8> projection = ULTRAWIDE_HOOK_25D76C;
     std::array<u8, ULTRAWIDE_CAVE.size()> cave = ULTRAWIDE_CAVE;
     std::array<u8, ULTRAWIDE_MARKER_CAVES.size()> markers = ULTRAWIDE_MARKER_CAVES;
     std::array<std::array<u8, 4>, 8> hooks{};
@@ -319,6 +323,7 @@ struct AspectPatchPayload {
         PutWord(size, 0, profile.width);
         PutWord(picture, 0, 0xD2800008 | (profile.width << 5));
         PutWord(scene, 0, 0xD2800008 | ((profile.width * 3 / 4) << 5));
+        PutWord(projection, 0, 0x14E7A465);
         for (const size_t offset : {0x2C, 0x6C, 0xAC, 0xEC, 0x130}) {
             PutFloat(cave, offset, Core::OotUltrawide::TargetAspect(profile));
         }
@@ -364,6 +369,7 @@ struct AspectPatchPayload {
             case 0x1202EE0:
             case 0x31F39F4: record.bytes = picture; break;
             case 0x31F3A00: record.bytes = scene; break;
+            case 0x25D76C: record.bytes = projection; break;
             case 0x3C46720: record.bytes = markers; break;
             case AspectTemplateOffset:
                 record.module_offset = AspectCaveOffset;
@@ -986,6 +992,9 @@ std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualD
 }
 
 std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::string& name) const {
+    if (title_id == Core::OotUltrawide::ProgramId && name == "main") {
+        Core::OotUltrawide::ClearAcceptedProfile();
+    }
     if (nso.size() < sizeof(Loader::NSOHeader)) {
         return nso;
     }
@@ -1078,7 +1087,7 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         std::optional<AspectPatchPayload> aspect_payload;
         auto records = patch.records;
         if (patch.aspect_ratio) {
-            const auto* profile = Core::OotUltrawide::ActiveProfile();
+            const auto* profile = Core::OotUltrawide::PreparedProfile();
             if (!profile || profile->aspect != *patch.aspect_ratio) {
                 continue;
             }
@@ -1159,6 +1168,9 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         for (const auto& record : records) {
             std::memcpy(out.data() + sizeof(Loader::NSOHeader) + record.module_offset,
                         record.bytes.data(), record.bytes.size());
+        }
+        if (patch.aspect_ratio) {
+            Core::OotUltrawide::AcceptProfile(*patch.aspect_ratio);
         }
         LOG_INFO(Loader, "    - Applying built-in patch \"{}\" ({} records) to {}", patch.name,
                  records.size(), name);
@@ -1314,7 +1326,7 @@ void PatchManager::ApplyLayeredFS(VirtualFile& romfs, ContentRecordType type) co
     const auto load_dir = GetModificationLoadRoot();
     const auto sdmc_load_dir = GetModificationLoadRoot(true);
     const auto disabled = GetDisabledAddons();
-    const auto* profile = Core::OotUltrawide::ActiveProfile();
+    const auto* profile = Core::OotUltrawide::AcceptedProfile();
     const bool aspect_layer = profile &&
         type == ContentRecordType::Program && title_id == Core::OotUltrawide::ProgramId &&
         std::find(disabled.cbegin(), disabled.cend(), profile->addon) == disabled.cend();

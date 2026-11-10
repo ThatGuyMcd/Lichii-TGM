@@ -6,6 +6,8 @@
 // (GrowHeapDef follows NX2navi's res_heapdef_build, runtime/resolution.c,
 // github.com/tangerineturtle1/NX2navi)
 
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -17,6 +19,14 @@
 
 namespace Core::OotUltrawide {
 namespace {
+
+constexpr u32 AcceptedBit = 1u << 31;
+std::atomic<u32> application_profile{};
+
+const RenderProfile* ProfileFromState(u32 state) {
+    const u32 index = state & ~AcceptedBit;
+    return index > 0 && index <= AspectProfiles.size() ? &AspectProfiles[index - 1] : nullptr;
+}
 
 // BYML, version 2..7, little endian ("YB"): header {magic, u16 version, u32 key table, u32 string
 // table, u32 root}; a hash node is {u8 0xC1, u24 count} and count entries {u24 key index, u8 type,
@@ -97,11 +107,50 @@ bool UltrawideRendering() {
     return ActiveProfile() != nullptr;
 }
 
-u64 ApplicationMemoryExtra() {
-    if (!Settings::CurrentProgramIsSwitch2()) {
-        return 0;
+void BeginApplication(u64 actual_program_id, bool is_switch2) {
+    const RenderProfile* profile =
+        actual_program_id == ProgramId && is_switch2 ? ActiveProfile() : nullptr;
+    if (profile) {
+        const auto disabled = Settings::values.disabled_addons.find(actual_program_id);
+        if (disabled != Settings::values.disabled_addons.end() &&
+            std::find(disabled->second.begin(), disabled->second.end(), profile->addon) !=
+                disabled->second.end()) {
+            profile = nullptr;
+        }
     }
-    const auto* profile = ActiveProfile();
+    const u32 state = profile ? static_cast<u32>(profile - AspectProfiles.data()) + 1 : 0;
+    application_profile.store(state, std::memory_order_release);
+}
+
+const RenderProfile* PreparedProfile() {
+    return ProfileFromState(application_profile.load(std::memory_order_acquire));
+}
+
+void AcceptProfile(Settings::AspectRatio aspect) {
+    u32 state = application_profile.load(std::memory_order_acquire);
+    while (const auto* profile = ProfileFromState(state)) {
+        if (profile->aspect != aspect) {
+            return;
+        }
+        if (application_profile.compare_exchange_weak(state, state | AcceptedBit,
+                                                       std::memory_order_acq_rel,
+                                                       std::memory_order_acquire)) {
+            return;
+        }
+    }
+}
+
+void ClearAcceptedProfile() {
+    application_profile.fetch_and(~AcceptedBit, std::memory_order_acq_rel);
+}
+
+const RenderProfile* AcceptedProfile() {
+    const u32 state = application_profile.load(std::memory_order_acquire);
+    return (state & AcceptedBit) != 0 ? ProfileFromState(state) : nullptr;
+}
+
+u64 ApplicationMemoryExtra() {
+    const auto* profile = PreparedProfile();
     return profile ? MemoryExtraBytesFor(*profile) : 0;
 }
 

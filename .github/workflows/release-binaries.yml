@@ -296,6 +296,7 @@ jobs:
             -DYUZU_ROOM=OFF
             -DYUZU_ROOM_STANDALONE=OFF
             -DYUZU_USE_BUNDLED_QT=OFF
+            -DENABLE_QT_TRANSLATION=ON
             "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR"
             -DYUZU_USE_BUNDLED_SDL3=ON
             -DVulkanHeaders_FORCE_BUNDLED=ON
@@ -342,6 +343,7 @@ jobs:
             -DYUZU_ROOM=OFF \
             -DYUZU_ROOM_STANDALONE=OFF \
             -DYUZU_USE_BUNDLED_QT=OFF \
+            -DENABLE_QT_TRANSLATION=ON \
             -DYUZU_USE_BUNDLED_SDL3=ON \
             -DENABLE_UPDATE_CHECKER=ON \
             -DLICHII_BUILD_TAG=build-${{ github.run_number }} \
@@ -377,6 +379,7 @@ jobs:
             -DYUZU_ROOM=OFF \
             -DYUZU_ROOM_STANDALONE=OFF \
             -DYUZU_USE_BUNDLED_QT=OFF \
+            -DENABLE_QT_TRANSLATION=ON \
             "${deps[@]}" \
             -DENABLE_UPDATE_CHECKER=ON \
             -DLICHII_BUILD_TAG=build-${{ github.run_number }} \

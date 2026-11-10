@@ -23,6 +23,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -232,6 +233,53 @@ private:
     QAbstractSpinBox* spin;
     QToolButton* minus;
     QToolButton* plus;
+};
+
+class GroupHeaderTarget final : public QObject {
+public:
+    explicit GroupHeaderTarget(QGroupBox* group) : QObject(group), box(group) {
+        box->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject*, QEvent* event) override {
+        if (!IsComfortable() || !box->isEnabled())
+            return false;
+        if (event->type() == QEvent::MouseMove && pressed &&
+            (static_cast<QMouseEvent*>(event)->position().toPoint() - start).manhattanLength() >=
+                QApplication::startDragDistance()) {
+            pressed = false;
+        }
+        if (event->type() == QEvent::MouseButtonPress ||
+            event->type() == QEvent::MouseButtonRelease) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() != Qt::LeftButton)
+                return false;
+            const QPoint position = mouse->position().toPoint();
+            const bool header =
+                QRect(0, 0, box->width(), 48).contains(position) && !box->childAt(position);
+            if (event->type() == QEvent::MouseButtonPress && header) {
+                pressed = true;
+                start = position;
+                box->setFocus(Qt::MouseFocusReason);
+                return true;
+            }
+            if (event->type() == QEvent::MouseButtonRelease && pressed) {
+                pressed = false;
+                if (header &&
+                    (position - start).manhattanLength() < QApplication::startDragDistance()) {
+                    box->setChecked(!box->isChecked());
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+private:
+    QGroupBox* box;
+    QPoint start;
+    bool pressed{};
 };
 
 class ResponsiveRow final : public QObject {
@@ -724,6 +772,11 @@ void PreparePage(QWidget* page) {
     QList<QWidget*> widgets{page};
     widgets.append(page->findChildren<QWidget*>());
     for (auto* widget : widgets) {
+        if (auto* group = qobject_cast<QGroupBox*>(widget);
+            group && group->isCheckable() && !group->property("touchHeaderPrepared").toBool()) {
+            group->setProperty("touchHeaderPrepared", true);
+            new GroupHeaderTarget(group);
+        }
         if (auto* form = qobject_cast<QFormLayout*>(widget->layout())) {
             form->setRowWrapPolicy(QFormLayout::WrapLongRows);
             form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);

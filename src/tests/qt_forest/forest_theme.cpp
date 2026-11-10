@@ -257,6 +257,7 @@ private slots:
         InstallSettingsShell(&dialog, QStringLiteral("Settings"));
         dialog.show();
         QTRY_VERIFY(dialog.isFullScreen());
+        QVERIFY(slider->height() >= 48);
         auto* windowed = dialog.findChild<QPushButton*>(QStringLiteral("TouchSettingsWindowed"));
         windowed->click();
         QVERIFY(!dialog.isFullScreen());
@@ -267,7 +268,8 @@ private slots:
         QVERIFY(footer->findChild<QLabel*>()->text().contains(QStringLiteral("pending")));
         box->button(QDialogButtonBox::Apply)->click();
         QCOMPARE(footer->findChild<QLabel*>()->text(), QStringLiteral("Ready"));
-        group->setChecked(false);
+        QTest::mouseClick(group, Qt::LeftButton, Qt::NoModifier, QPoint(group->width() - 8, 20));
+        QVERIFY(!group->isChecked());
         QVERIFY(footer->findChild<QLabel*>()->text().contains(QStringLiteral("pending")));
         auto* back = dialog.findChild<QPushButton*>(QStringLiteral("TouchSettingsBack"));
         QTimer::singleShot(0, [] {

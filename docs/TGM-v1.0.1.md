@@ -25,6 +25,33 @@ manifest records their checks, hashes and validation limits.
   The fork retains its existing GPU-shutdown, host-memory diagnostic and delayed
   `nxformat.dll` loading integrations.
 
+## Fritchii OOT review
+
+The review also covers [Fritchii v5.5](https://github.com/Frizti/Fritchii/releases/tag/fritchii-v5.5)
+and its 40 pull requests at the review snapshot. The
+[comparison](TGM-Fritchii-OOT-review.md) records which changes are already covered,
+newly selected, specific to Fritchii, or require further validation.
+
+- Ported [Fritchii's texture-decode bounds checks](https://github.com/Frizti/Fritchii/commit/f52631cf66b3a5014b94c58ebb4b2e2bb938f896),
+  covering ASTC edge texels and rounded unswizzle dispatches. These avoid writes
+  outside destination images; Fritchii reports OOT corruption and GPU faults on AMD.
+- NVIDIA keeps native noperspective interpolation in both shader stages, following
+  [Fritchii's NVIDIA fog regression report](https://github.com/Frizti/Fritchii/commit/9b30eec8ca).
+  The existing AMD clipping correction remains. Paired-stage SPIR-V tests check both
+  paths, and the prepared-code identity changes so old prepared shaders are rebuilt.
+  The affected scenes still need a hardware retest.
+- The inline shader-emission path keeps its verification reference when the queued-IR
+  budget is exhausted, avoiding a second emission of mutated IR in diagnostic mode.
+- The buffer cache's post-copy barrier also orders later transfers, closing the
+  downloads/gathers path identified in [Fritchii's transfer-order fix](https://github.com/Frizti/Fritchii/commit/15f8e4c5c299032b094a48eb6787eed0437a918d).
+- The AppImage has a relocatable Qt launcher, Wayland client deployment and an explicit
+  X11 preference that takes precedence over a desktop's platform environment, adapted
+  from [Fritchii #37](https://github.com/Frizti/Fritchii/pull/37) and
+  [#39](https://github.com/Frizti/Fritchii/pull/39).
+
+The review does not establish a frame-rate gain on the reported PC. The NVIDIA
+system blue screen and damaged game-data findings below still apply.
+
 ## Missing fairy-fountain rooms and grottos
 
 A read-only check confirmed that the installed fairy-fountain normal-map member

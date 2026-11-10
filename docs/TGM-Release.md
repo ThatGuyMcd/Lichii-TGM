@@ -1,10 +1,10 @@
 # Lichii-tgm releases
 
 `CMakeModules/Branding.cmake` defines the product name, numeric version, release tag,
-repository and Linux application ID. Release 1.0 is titled/tagged `Lichii-tgm-v1.0`;
-numeric metadata uses `1.0.0` (Windows `1.0.0.0`).
+repository and Linux application ID. Release 1.0.1 is titled/tagged `Lichii-tgm-v1.0.1`;
+numeric metadata uses `1.0.1` (Windows `1.0.1.0`).
 
-Configure with `-DLICHII_BUILD_TAG=Lichii-tgm-v1.0` and
+Configure with `-DLICHII_BUILD_TAG=Lichii-tgm-v1.0.1` and
 `-DLICHII_BUILD_PLATFORM=windows-x86_64` or `linux-x86_64`. Builds without a release
 tag retain their development revision. Internal CMake targets remain unchanged.
 
@@ -18,8 +18,8 @@ toolchain setup is in the workspace `BUILD-HERE.md`; local helpers/builds are ig
 
 ## Release assets
 
-- `Lichii-tgm-v1.0-windows-x86_64.zip`
-- `Lichii-tgm-v1.0-linux-x86_64.AppImage`
+- `Lichii-tgm-v1.0.1-windows-x86_64.zip`
+- `Lichii-tgm-v1.0.1-linux-x86_64.AppImage`
 - `SHA256SUMS` and a JSON build manifest
 - Reviewed integration and branding audits
 
@@ -41,7 +41,7 @@ CMake targets and upstream compatibility-service API/header names remain compati
 Copyright/attribution, upstream issue/PR references, historical documentation, PGO
 profile filenames, fixtures, icon resource keys and original source artwork retain
 their provenance. Source icon filenames may still contain the upstream name; the
-visible fruit icon has no text. The new release wordmark is used by the fork README.
+visible fruit icon has no text. Previous release wordmarks remain archived in source.
 
 Protected dependencies, submodules, RecompiledFuncs and RecompiledPatches are not
 edited. Source edits use the patch pipeline. The legacy upstream release workflow

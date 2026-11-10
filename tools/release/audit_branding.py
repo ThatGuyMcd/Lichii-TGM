@@ -48,9 +48,10 @@ for name in paths:
             category = 'inherited internal resource/tool/package identifier'
         references.append({'path': name, 'line': number, 'category': category,
                            'excerpt': line.strip()[:240]})
+branding = (root / 'CMakeModules/Branding.cmake').read_text(encoding='utf-8')
 report = {
-    'release': 'Lichii-tgm-v1.0',
-    'numeric_version': '1.0.0',
+    'release': re.search(r'set\(LICHII_TGM_RELEASE_TAG "([^"]+)"\)', branding)[1],
+    'numeric_version': re.search(r'set\(LICHII_TGM_VERSION "([^"]+)"\)', branding)[1],
     'scope': 'Tracked project files, including hidden workflows; binary asset filenames included.',
     'counts': dict(collections.Counter(item['category'] for item in references)),
     'references': references,

@@ -6,7 +6,7 @@ on:
       tag:
         description: Tested release tag with a draft and verified assets
         required: true
-        default: Lichii-tgm-v1.0
+        default: Lichii-tgm-v1.0.1
         type: string
 
 permissions:

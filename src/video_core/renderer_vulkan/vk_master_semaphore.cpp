@@ -113,6 +113,10 @@ void MasterSemaphore::Wait(u64 tick) {
     } catch (const vk::Exception& exception) {
         // The throw ends the process; say why first (a device loss reached nothing else here).
         LOG_CRITICAL(Render_Vulkan, "Waiting for GPU tick {} failed: {}", tick, exception.what());
+        if (exception.GetResult() == VK_ERROR_DEVICE_LOST) {
+            // Guest CPU readbacks can discover loss before queue submission does.
+            device.ReportLoss();
+        }
         throw;
     }
 

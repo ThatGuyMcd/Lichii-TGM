@@ -46,6 +46,13 @@ newly selected, specific to Fritchii, or require further validation.
   downloads/gathers path identified in [Fritchii's transfer-order fix](https://github.com/Frizti/Fritchii/commit/15f8e4c5c299032b094a48eb6787eed0437a918d).
 - Host-sync requests arriving after GPU shutdown are rejected, so a late GPU tick
   cannot execute callbacks whose waiting stack frames have already returned.
+- Inline QMD launches mirror their implicit compute-register update on the split's
+  front, so later macros read the same state as the back. A production front/back
+  macro regression fails on the old code and passes for mapped/control boundaries.
+- The sysmix audio queue adapts to the host callback size, within its ring capacity,
+  using the focused change from [Fritchii #22](https://github.com/Frizti/Fritchii/pull/22).
+  The old three-block queue could not feed a 1,024-frame PipeWire callback. Playback,
+  admission-limit and surround-capacity tests cover the change.
 - The AppImage has a relocatable Qt launcher, Wayland client deployment and an explicit
   X11 preference that takes precedence over a desktop's platform environment, adapted
   from [Fritchii #37](https://github.com/Frizti/Fritchii/pull/37) and
@@ -76,8 +83,11 @@ The application dump identifies `VK_ERROR_DEVICE_LOST` in the GPU semaphore wait
 reached by a guest CPU readback. Independently, Windows Error Reporting recorded a
 `0x7F`, trap `0x8` blue screen with the bucket
 `nvlddmkm!CNvLAdapter::queryNodePerfData` and stack-usage classification.
-The kernel dump could not be read with the current process permissions, so the
-full kernel stack and original driver trigger have not been established.
+The recovered kernel stack shows a hardware-monitoring service querying GPU node
+performance through `DxgkQueryStatistics` / `GetNodePerfData`, followed by extensive
+NVIDIA kernel-driver stack use. This is a concrete lead for a monitoring/driver
+interaction; it does not establish the original driver defect or prove that every
+reported application crash has the same cause.
 
 The two reports do not prove an out-of-memory condition or a DLSS fault, and this
 release does not claim to fix the system blue screen. A driver-level investigation

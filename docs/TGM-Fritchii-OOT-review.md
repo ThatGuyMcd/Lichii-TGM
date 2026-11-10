@@ -20,6 +20,7 @@ replacement PRs are used instead of importing those whole branches.
 | `8b11f2500b` | Fritchii's async-translation architecture differs. Review found a related diagnostic edge here: pass the existing reference SPIR-V to the inline path after an IR-budget refusal. Default diagnostic mode stays off. |
 | `15f8e4c5c` | Port the missing post-copy barrier hunk: later transfers must wait for downloads/gathers too. The corresponding CopyBuffer barrier was already covered by upstream #805. This is vendor-neutral ordering, not a measured FPS gain. |
 | `a04eb9a800` | Port the late-request rejection missing from the upstream shutdown merge: do not enqueue captured callbacks after shutdown has released their waiters. |
+| `763f3abb`, `5c173ca274` | Port the final unconditional inline-QMD register mirror. Production MME front/back tests expose the old mismatch in mapped-launch cases and check the control/unmapped boundaries. |
 | `464fbb45bb` | The allocator already retries over-budget buffers. Do not duplicate its fallback or import its catch-all staging retry, which also catches device-loss exceptions. |
 | `b3396c01f9` | Address-based guards protect Fritchii's EXP43 relocation. This fork has no such relocation architecture, so the patch is inapplicable. |
 | `834026ac81`, `1c63b2b268` | Fritchii corrects its AMD shader-library default. This fork already defaults graphics pipeline libraries off; preserve users' explicit choices. |
@@ -56,7 +57,7 @@ it does not require importing a second copy or the fork's commit ancestry.
 | #19 | Fritchii portability fixes; current fork already builds on Linux with its own preparation implementation. |
 | #20 | Covered: base-package metadata fallback and exact en-us NUP title priority. |
 | #21 | Native Linux NGX DLSS already exists here, with separate runtime discovery and compatible settings. |
-| #22 | Mixed Linux/AMD branch: pinning, upstream movie/audio fixes and Linux builds are covered. Fritchii preparation/pacing and additional optional tuning require separate integration proof. |
+| #22 | Selected the bounded adaptive sysmix queue, with real 1,024-frame playback and capacity tests. Pinning, upstream movie/audio fixes and Linux builds are covered. Fritchii preparation/pacing and remaining optional tuning require separate integration proof. |
 | #23 | Core fixes covered: valid history/motion state, image usage/barriers and scheduler-managed interpolation descriptors. Fritchii UI/counters differ. |
 | #24 | Upstream #805 macro work and vector fence operations are covered. Remaining opt-in offloads/query batching lack an isolated OOT FPS gain in the PR; retain for a future measured experiment. |
 | #25 | Older Linux portability alternative; no additional applicable fix over the current build. |

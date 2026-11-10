@@ -42,7 +42,11 @@ hide their UI chrome and restore it afterwards.
 Existing configuration keys, data paths, profiles, saves and cache formats are
 retained. New UI preferences do not change emulation values. This build inherits
 the reviewed v1.0.1 OOT integration and does not claim new gameplay, controller
-detection, damaged-game-data or driver fixes.
+detection or driver fixes. The subsequent upstream synchronization adds OOT audio,
+GPU mapping and memory-pressure fixes, optional recommended settings, and a
+RomFS-only damaged-texture workaround. The workaround uses a different texture
+without changing the original archive bytes; it does not reconstruct original
+artwork. See [the integration notes](TGM-upstream-sync-2026-11-10.md).
 
 ## Validation
 

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <optional>
 
 #include "common/common_types.h"
 
@@ -37,5 +38,9 @@ struct ProcessMemoryUsage {
 [[nodiscard]] constexpr bool IsLowOnMemory(u64 available, u64 total) {
     return available != 0 && available < (std::min<u64>)(total / 4, u64{4} << 30);
 }
+
+/// Commit the system can still hand out, in bytes: its commit limit (RAM plus the page files)
+/// minus what is committed. No value where the host reports no such limit (anything but Windows).
+[[nodiscard]] std::optional<u64> GetSystemCommitRoom();
 
 } // namespace Common

@@ -37,6 +37,10 @@ class ConfigureWeb;
 
 class HotkeyRegistry;
 
+namespace ConfigurationShared {
+class SettingsNavigation;
+}
+
 namespace InputCommon {
 class InputSubsystem;
 }
@@ -71,10 +75,12 @@ private:
     void HandleApplyButtonClicked();
 
     void SetConfiguration();
-    void UpdateVisibleTabs();
     void PopulateSelectionList();
+    void UpdateHeader();
 
     std::unique_ptr<Ui::ConfigureDialog> ui;
+    ConfigurationShared::SettingsNavigation* navigation{};
+    QWidget* header{};
     HotkeyRegistry& registry;
 
     Core::System& system;

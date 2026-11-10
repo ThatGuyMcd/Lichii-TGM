@@ -5,11 +5,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <memory>
+#include <QScreen>
 #include "common/logging.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "core/core.h"
 #include "qt_common/config/uisettings.h"
+#include "qt_common/forest_theme.h"
 #include "qt_common/util/vk.h"
 #include "ui_configure.h"
 #include "yuzu/configuration/configure_applets.h"
@@ -30,6 +32,7 @@
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/configuration/configure_ui.h"
 #include "yuzu/configuration/configure_web.h"
+#include "yuzu/configuration/settings_navigation.h"
 #include "yuzu/hotkeys.h"
 
 ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
@@ -65,23 +68,18 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     Settings::SetConfiguringGlobal(true);
 
     ui->setupUi(this);
+    setProperty("forestDialogPrepared", true);
 
-    ui->tabWidget->addTab(applets_tab.get(), tr("Applets"));
-    ui->tabWidget->addTab(audio_tab.get(), tr("Audio"));
-    ui->tabWidget->addTab(cpu_tab.get(), tr("CPU"));
-    ui->tabWidget->addTab(debug_tab_tab.get(), tr("Debug"));
-    ui->tabWidget->addTab(filesystem_tab.get(), tr("Filesystem"));
-    ui->tabWidget->addTab(general_tab.get(), tr("General"));
-    ui->tabWidget->addTab(graphics_tab.get(), tr("Graphics"));
-    ui->tabWidget->addTab(graphics_advanced_tab.get(), tr("GraphicsAdvanced"));
-    ui->tabWidget->addTab(graphics_extensions_tab.get(), tr("GraphicsExtra"));
-    ui->tabWidget->addTab(hotkeys_tab.get(), tr("Hotkeys"));
-    ui->tabWidget->addTab(input_tab.get(), tr("Controls"));
-    ui->tabWidget->addTab(profile_tab.get(), tr("Profiles"));
-    ui->tabWidget->addTab(network_tab.get(), tr("Network"));
-    ui->tabWidget->addTab(system_tab.get(), tr("System"));
-    ui->tabWidget->addTab(ui_tab.get(), tr("Game List"));
-    ui->tabWidget->addTab(web_tab.get(), tr("Web"));
+    // Keep the generated form's footer and its accepted/rejected connections. All original
+    // settings widgets move once into the new navigation, with their child tabs left intact.
+    ui->horizontalLayout->removeWidget(ui->selectorList);
+    ui->selectorList->hide();
+    ui->horizontalLayout->removeWidget(ui->tabWidget);
+    ui->tabWidget->hide();
+    navigation = new ConfigurationShared::SettingsNavigation(this);
+    ui->horizontalLayout->addWidget(navigation, 1);
+    ui->label->setWordWrap(true);
+    UpdateHeader();
 
     web_tab->SetWebServiceConfigEnabled(enable_web_config);
     hotkeys_tab->Populate(registry);
@@ -93,16 +91,9 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     SetConfiguration();
     PopulateSelectionList();
 
-    connect(ui->tabWidget, &QTabWidget::currentChanged, this, [this](int index) {
-        if (index != -1) {
-            debug_tab_tab->SetCurrentIndex(0);
-        }
-    });
     connect(ui_tab.get(), &ConfigureUi::LanguageChanged, this, &ConfigureDialog::OnLanguageChanged);
     connect(general_tab.get(), &ConfigureGeneral::ExternalContentDirsChanged, this,
             &ConfigureDialog::ExternalContentDirsChanged);
-    connect(ui->selectorList, &QListWidget::itemSelectionChanged, this,
-            &ConfigureDialog::UpdateVisibleTabs);
 
     if (system.IsPoweredOn()) {
         QPushButton* apply_button = ui->buttonBox->addButton(QDialogButtonBox::Apply);
@@ -110,8 +101,10 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
                 &ConfigureDialog::HandleApplyButtonClicked);
     }
 
-    adjustSize();
-    ui->selectorList->setCurrentRow(0);
+    setSizeGripEnabled(true);
+    const QSize available = screen()->availableGeometry().size() - QSize(48, 64);
+    setMinimumSize(QSize(760, 480).boundedTo(available));
+    resize(QSize(1120, 800).boundedTo(available));
 
     // Selects the leftmost button on the bottom bar (Cancel as of writing)
     ui->buttonBox->setFocus();
@@ -151,16 +144,20 @@ void ConfigureDialog::changeEvent(QEvent* event) {
 }
 
 void ConfigureDialog::RetranslateUI() {
-    const int old_row = ui->selectorList->currentRow();
-    const int old_index = ui->tabWidget->currentIndex();
-
     ui->retranslateUi(this);
-
+    UpdateHeader();
     PopulateSelectionList();
-    ui->selectorList->setCurrentRow(old_row);
+}
 
-    UpdateVisibleTabs();
-    ui->tabWidget->setCurrentIndex(old_index);
+void ConfigureDialog::UpdateHeader() {
+    if (header) {
+        ui->verticalLayout->removeWidget(header);
+        header->hide();
+        header->deleteLater();
+    }
+    header = QtCommon::ForestTheme::CreateHeader(
+        this, tr("Settings"), tr("Make Lichii-tgm feel at home."));
+    ui->verticalLayout->insertWidget(0, header);
 }
 
 void ConfigureDialog::HandleApplyButtonClicked() {
@@ -168,31 +165,37 @@ void ConfigureDialog::HandleApplyButtonClicked() {
     ApplyConfiguration();
 }
 
-Q_DECLARE_METATYPE(QList<QWidget*>);
-
 void ConfigureDialog::PopulateSelectionList() {
-    const std::array<std::pair<QString, QList<QWidget*>>, 6> items{
-        {{tr("General"),
-          {general_tab.get(), hotkeys_tab.get(), ui_tab.get(), web_tab.get(), debug_tab_tab.get()}},
-         {tr("System"),
-          {system_tab.get(), profile_tab.get(), network_tab.get(), filesystem_tab.get(),
-           applets_tab.get()}},
-         {tr("CPU"), {cpu_tab.get()}},
-         {tr("Graphics"),
-          {graphics_tab.get(), graphics_advanced_tab.get(), graphics_extensions_tab.get()}},
-         {tr("Audio"), {audio_tab.get()}},
-         {tr("Controls"), input_tab->GetSubTabs()}},
-    };
-
-    [[maybe_unused]] const QSignalBlocker blocker(ui->selectorList);
-
-    ui->selectorList->clear();
-    for (const auto& entry : items) {
-        auto* const item = new QListWidgetItem(entry.first);
-        item->setData(Qt::UserRole, QVariant::fromValue(entry.second));
-
-        ui->selectorList->addItem(item);
-    }
+    navigation->SetPages({
+        {general_tab.get(), tr("General"), tr("Application"),
+         tr("language updates interface directories reset")},
+        {ui_tab.get(), tr("Appearance and Library"), tr("Application"),
+         tr("appearance theme screenshots library folders icons")},
+        {hotkeys_tab.get(), tr("Hotkeys"), tr("Application"),
+         tr("keyboard shortcuts key bindings")},
+        {system_tab.get(), tr("System"), tr("Emulation"),
+         tr("console region time clock language memory")},
+        {profile_tab.get(), tr("Profiles"), tr("Emulation"), tr("users accounts avatars")},
+        {filesystem_tab.get(), tr("Filesystem"), tr("Emulation"),
+         tr("storage NAND SD card paths directories cache")},
+        {applets_tab.get(), tr("Applets"), tr("Emulation"), tr("keyboard software controller")},
+        {cpu_tab.get(), tr("CPU"), tr("Emulation"), tr("processor accuracy multicore emulation")},
+        {graphics_tab.get(), tr("Graphics"), tr("Video"),
+         tr("GPU renderer Vulkan OpenGL resolution DLSS DLAA FSR HDR frame generation")},
+        {graphics_advanced_tab.get(), tr("Advanced Graphics"), tr("Video"),
+         tr("GPU shaders cache accuracy textures performance asynchronous")},
+        {graphics_extensions_tab.get(), tr("Graphics Extensions"), tr("Video"),
+         tr("GPU Vulkan extensions drivers compatibility")},
+        {audio_tab.get(), tr("Audio"), tr("Devices"), tr("sound volume output latency backend")},
+        {input_tab.get(), tr("Controls"), tr("Devices"),
+         tr("input controllers gamepad player joystick keyboard mouse microphone mic voice")},
+        {network_tab.get(), tr("Network"), tr("Services and Diagnostics"),
+         tr("internet multiplayer LAN interface")},
+        {web_tab.get(), tr("Web"), tr("Services and Diagnostics"),
+         tr("services telemetry account privacy")},
+        {debug_tab_tab.get(), tr("Debug"), tr("Services and Diagnostics"),
+         tr("logging diagnostics CPU debugging advanced")},
+    });
 }
 
 void ConfigureDialog::OnLanguageChanged(const QString& locale) {
@@ -203,22 +206,4 @@ void ConfigureDialog::OnLanguageChanged(const QString& locale) {
     ApplyConfiguration();
     RetranslateUI();
     SetConfiguration();
-}
-
-void ConfigureDialog::UpdateVisibleTabs() {
-    const auto items = ui->selectorList->selectedItems();
-    if (items.isEmpty()) {
-        return;
-    }
-
-    [[maybe_unused]] const QSignalBlocker blocker(ui->tabWidget);
-
-    ui->tabWidget->clear();
-
-    const auto tabs = qvariant_cast<QList<QWidget*>>(items[0]->data(Qt::UserRole));
-
-    for (auto* const tab : tabs) {
-        LOG_DEBUG(Frontend, "{}", tab->accessibleName().toStdString());
-        ui->tabWidget->addTab(tab, tab->accessibleName());
-    }
 }

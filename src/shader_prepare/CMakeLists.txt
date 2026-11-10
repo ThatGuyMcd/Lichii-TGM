@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 add_library(shader_preparation_gpu STATIC gpu_preparation.cpp gpu_preparation.h)
-target_link_libraries(shader_preparation_gpu PUBLIC core video_core common input_common frontend_common
-    ${PLATFORM_LIBRARIES} Threads::Threads)
+if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED OR CMAKE_LINK_GROUP_USING_RESCAN_SUPPORTED)
+    target_link_libraries(shader_preparation_gpu PUBLIC
+        "$<LINK_GROUP:RESCAN,core,video_core,frontend_common>")
+else()
+    target_link_libraries(shader_preparation_gpu PUBLIC core video_core frontend_common)
+endif()
+target_link_libraries(shader_preparation_gpu PUBLIC common input_common ${PLATFORM_LIBRARIES} Threads::Threads)
 add_executable(lichii-shader-prepare main.cpp vma.cpp)
 add_executable(shader_preparation_gpu_smoke EXCLUDE_FROM_ALL
     ../tests/video_core/shader_preparation_gpu_smoke.cpp vma.cpp)

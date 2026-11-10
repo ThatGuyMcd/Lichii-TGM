@@ -1510,10 +1510,19 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     if (options.full_scan) {
         return BuildFullNativeFiles(system, game_path, title_id, options, progress, stop);
     }
-    // The compute precache comes first; a recipe adds the native graphics and compute pipelines.
-    auto result = BuildComputeWarmFiles(system, game_path, title_id, options, progress, stop);
     const auto dir = options.output_dir.empty() ? TitleDir(title_id) : options.output_dir;
     std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        return {.error = "Cannot create the shader cache folder: " + ec.message()};
+    }
+    Common::FS::FileLock preparation_lock(dir / "native-preparation.lock", {}, stop);
+    if (!preparation_lock.Held()) {
+        return {.error = "Another instance is using this game's shader cache, or the cache "
+                         "folder cannot be locked. Close that game or preparation job first."};
+    }
+    // The compute precache comes first; a recipe adds the native graphics and compute pipelines.
+    auto result = BuildComputeWarmFiles(system, game_path, title_id, options, progress, stop);
     auto native_options = options;
     if (native_options.recipe_path.empty() && !fs::exists(dir / "native.nx2recipe", ec) &&
         options.output_dir.empty()) {

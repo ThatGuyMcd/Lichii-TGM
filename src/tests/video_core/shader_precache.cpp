@@ -13,6 +13,8 @@
 
 #include "shader_recompiler/exception.h"
 #include "common/zstd_compression.h"
+#include "common/fs/file_lock.h"
+#include "core/core.h"
 #include "core/file_sys/nx2_shader_extract.h"
 #include "core/file_sys/vfs/vfs_vector.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -360,4 +362,19 @@ TEST_CASE("Full preparation refuses recipes with mismatched provenance or game i
     ++profile.cache_version;
     REQUIRE(ShaderWarm::ValidateNativeRecipeProfile(profile, recipe, title, 131072,
                                                     "verified-build"));
+}
+
+TEST_CASE("Quick preparation cannot overwrite a cache held by full preparation",
+          "[video_core][shader_scan]") {
+    TempDir temporary;
+    Common::FS::FileLock lock(temporary.path / "native-preparation.lock");
+    REQUIRE(lock.Held());
+    auto system = std::make_unique<Core::System>();
+    ShaderWarm::BuildOptions options;
+    options.output_dir = temporary.path;
+    const auto result = ShaderWarm::BuildWarmFilesWith(
+        *system, temporary.path / "missing-game.nup", 0x0400486024DEC000, options, {}, {});
+    REQUIRE_FALSE(result.ok);
+    REQUIRE(result.error.find("locked") != std::string::npos);
+    REQUIRE_FALSE(std::filesystem::exists(temporary.path / "native-preparation.bin"));
 }

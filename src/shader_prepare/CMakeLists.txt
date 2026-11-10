@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-add_library(shader_preparation_gpu STATIC gpu_preparation.cpp gpu_preparation.h vma.cpp)
+add_library(shader_preparation_gpu STATIC gpu_preparation.cpp gpu_preparation.h)
 target_link_libraries(shader_preparation_gpu PUBLIC core video_core common input_common frontend_common
     ${PLATFORM_LIBRARIES} Threads::Threads)
-add_executable(lichii-shader-prepare main.cpp)
+add_executable(lichii-shader-prepare main.cpp vma.cpp)
 add_executable(shader_preparation_gpu_smoke EXCLUDE_FROM_ALL
-    ../tests/video_core/shader_preparation_gpu_smoke.cpp)
+    ../tests/video_core/shader_preparation_gpu_smoke.cpp vma.cpp)
 target_link_libraries(shader_preparation_gpu_smoke PRIVATE shader_preparation_gpu)
 if(MSVC)
     target_link_options(shader_preparation_gpu_smoke PRIVATE /ENTRY:wmainCRTStartup)

@@ -3651,6 +3651,13 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::MakePrecompiledGraphicsPipeline
     std::shared_ptr<std::vector<FileEnvironment>> recorded,
     const std::array<Shader::Info, 5>& infos, const std::array<bool, 5>& present,
     const std::optional<std::array<std::pair<u64, u32>, 5>>& spirv_blobs) {
+    VideoCommon::EvictedPointerSlots::Slots mapped_pointers;
+    size_t mapped_env = 0;
+    for (size_t program = 0; program < graphics_key.unique_hashes.size(); ++program) {
+        if (graphics_key.unique_hashes[program] != 0) {
+            mapped_pointers[program] = recorded->at(mapped_env++).MappedStoragePointerKeys();
+        }
+    }
     std::array<const Shader::Info*, 5> info_ptrs{};
     for (size_t stage = 0; stage < info_ptrs.size(); ++stage) {
         info_ptrs[stage] = present[stage] ? &infos[stage] : nullptr;
@@ -3675,6 +3682,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::MakePrecompiledGraphicsPipeline
             BuildQueue(true, 0, infos[0].is_task || infos[0].is_mesh), nullptr, render_pass_cache, graphics_key,
             std::array<vk::ShaderModule, Maxwell::MaxShaderStage>{}, info_ptrs,
             std::move(build_kept), std::nullopt);
+        pipeline->SetMappedPointers(std::move(mapped_pointers));
         pipeline->MarkPrecompiled();
         return pipeline;
     }
@@ -3725,6 +3733,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::MakePrecompiledGraphicsPipeline
         nullptr, render_pass_cache, graphics_key,
         std::array<vk::ShaderModule, Maxwell::MaxShaderStage>{}, info_ptrs,
         std::move(emit_stages), std::nullopt);
+    pipeline->SetMappedPointers(std::move(mapped_pointers));
     pipeline->MarkPrecompiled();
     return pipeline;
 }
@@ -4209,7 +4218,7 @@ void PipelineCache::EvictUnusedPipelines() {
         if (used_this_session.erase(it->second.get()) != 0) {
             used_and_evicted.insert(it->first.Hash());
         }
-        evicted_pointer_slots.Remember(it->first.Hash(), pipeline->MappedPointers());
+        evicted_pointer_slots.Remember(it->first.Hash(), it->second->MappedPointers());
         evicted_pipelines.emplace_back(tick, std::move(it->second));
         ++evicted;
         return graphics_cache.erase(it);

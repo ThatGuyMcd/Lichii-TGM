@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <sstream>
 #include <catch2/catch_test_macros.hpp>
 
 #include "video_core/evicted_pointer_slots.h"
@@ -24,6 +25,7 @@ public:
         code = {0x123456789abcdef0, 0xfedcba9876543210};
         cached_lowest = 0;
         cached_highest = sizeof(u64);
+        viewport_transform_state = 1;
     }
 
     u32 ReadCbufValue(u32, u32) override {
@@ -100,4 +102,44 @@ TEST_CASE("Evicted pointer slots are taken once and bounded",
     REQUIRE(evicted.Size() == EvictedPointerSlots::MaxEntries);
     evicted.Remember(EvictedPointerSlots::MaxEntries + 50, slots);
     REQUIRE(evicted.Size() == EvictedPointerSlots::MaxEntries);
+}
+
+TEST_CASE("Prepared records cannot discard pointer bindings carried after eviction",
+          "[video_core][evicted_pointer_slots][preparation]") {
+    constexpr u64 Slot = SlotKey(0, 0x690);
+    constexpr u64 TableSlot = (u64{1} << 63) | (u64{0x20} << 40) | SlotKey(0, 0x110);
+    const std::array slots{Slot, TableSlot};
+    const auto record = [](const SlotEnvironment& source) {
+        std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+        source.Serialize(stream, 0);
+        VideoCommon::FileEnvironment recorded;
+        recorded.Deserialize(stream, static_cast<std::streamoff>(stream.str().size()));
+        return recorded;
+    };
+
+    SlotEnvironment unclassified{0};
+    auto absent = record(unclassified);
+    SlotEnvironment live{0};
+    live.KeepStoragePointers(slots);
+    const char* why = nullptr;
+    REQUIRE_FALSE(absent.AnswersHoldFor(live, &why));
+    REQUIRE(std::string_view{why} == "recorded storage pointers omit kept mappings");
+
+    SlotEnvironment null_slot{0};
+    REQUIRE_FALSE(null_slot.IsCbufStorageBufferPointer(0, 0x690));
+    auto stale = record(null_slot);
+    REQUIRE_FALSE(stale.AnswersHoldFor(live));
+
+    SlotEnvironment captured{0};
+    captured.KeepStoragePointers(slots);
+    auto compatible = record(captured);
+    REQUIRE(compatible.AnswersHoldFor(live));
+    REQUIRE(compatible.MappedStoragePointerKeys() == std::vector<u64>{Slot, TableSlot});
+    EvictedPointerSlots evicted;
+    EvictedPointerSlots::Slots by_program;
+    by_program[1] = compatible.MappedStoragePointerKeys();
+    evicted.Remember(0xabc, by_program);
+    const auto taken = evicted.Take(0xabc);
+    REQUIRE(taken.has_value());
+    REQUIRE((*taken)[1] == by_program[1]);
 }

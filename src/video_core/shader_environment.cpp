@@ -1394,6 +1394,14 @@ bool FileEnvironment::AnswersHoldFor(Shader::Environment& live, const char** why
             return fail("storage buffer pointer");
         }
     }
+    // Eviction can carry bindings that an older record never classified. Its kept SPIR-V
+    // must not discard a known binding merely because the record did not ask about that slot.
+    for (const u64 key : live.MappedStoragePointerKeys()) {
+        const auto it = storage_pointer_types.find(key);
+        if (it == storage_pointer_types.end() || it->second == 0) {
+            return fail("recorded storage pointers omit kept mappings");
+        }
+    }
     return true;
 }
 

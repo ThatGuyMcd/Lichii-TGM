@@ -1,7 +1,7 @@
 # Upstream synchronization — 10 November 2026
 
-Integrates all nine commits after `d2eaae4f3abca636b030b726f107bace06f61079`
-through Lichii `nx2` at `e8be28e5d6a74c54c05b505c7caa7884403f80b6`.
+Integrates all eighteen commits after `d2eaae4f3abca636b030b726f107bace06f61079`
+through Lichii `nx2` at `80197189dd704c49cb3e5b9ae171fb24d7fbe183`.
 The fork's prior local source is `07390bea197045eb156655d9a105d8d901b381be`;
 the integration retains its Forest Lantern themes, handheld controls, selected-game
 covers, full-screen settings and prior OOT integrations. Product revision remains
@@ -20,6 +20,15 @@ covers, full-screen settings and prior OOT integrations. Product revision remain
 | `093e264c8a` | #1212 | Avoid shadowing the global settings object. |
 | `9d90f25bfe` | #1236 | Release destroyed GPU backing and refresh reused device ranges; targets stale OOT meshes after area changes. |
 | `e8be28e5d6` | #1231 | Extend read-only native compute buffer bindings to their continuous mapping. |
+| `7fcfb64123` | #1246 | Keep a dispatch's barrier with its command; already present in the fork, including native-list dispatches. |
+| `4d7412ac7e` | #1245 | In-order upload batching; retain the fork's richer implementation and add per-region bounds and overlap checks. |
+| `2aa201ac56` | #941 | Treat a completed DLSS evaluation's VRAM-budget warning as success; already present in the fork's shared NVIDIA interface. |
+| `fb6a2689fa` | #1168 | Avoid waiting for unstarted time services when applying settings during loading. |
+| `75b11063a1` | #1128 | OOT upscaler and pipeline-builder shadowing corrections; already present in the fork. |
+| `76f144b530` | #972 | Shut down initialized kernel state when no loader is available. |
+| `9703d5e29d` | #1108 | Portable IPSwitch escape character; already present in the fork. |
+| `7d727554ae` | #1126 | Make MSVC diagnostic severity follow ENABLE_WERROR; already present in the fork. |
+| `80197189dd` | #959 | Retry over-budget Vulkan buffer allocations; already present in the fork. |
 
 ## Merge decisions
 
@@ -41,6 +50,14 @@ Recommended settings require an explicit choice, retain a restore backup, and do
 not change per-game settings, language, region, resolution or graphics backend.
 Their Help actions remain accessible through the handheld Menu. Existing
 configuration application paths are retained.
+
+The second upstream batch ports several fixes the fork already carries. The merge
+keeps its source-location tracing, reordered uploads, native-list dispatch barriers
+and shared Windows/Linux NVIDIA upscaler interface. A duplicated DLSS helper and
+obsolete header introduced by automatic merging are removed. The new per-region
+upload check is shared with regression tests: one 66-region span must split into
+64/1/1 batches, keeping an overlapping final write in a later batch; dependent
+source buffers also flush earlier writes first.
 
 Protected dependency/submodule and recompiled-source directories are unchanged.
 No emulator is started or stopped for verification. The NVIDIA/iCUE blue screen

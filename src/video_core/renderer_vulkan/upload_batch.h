@@ -63,6 +63,22 @@ public:
         return true;
     }
 
+    /// Flush clears this batch; begin marks the start of each new batch for its scheduler.
+    template <typename Flush, typename Begin>
+    void Append(VkBuffer src, VkBuffer dst, std::span<const VkBufferCopy> new_copies,
+                Flush&& flush, Begin&& begin) {
+        for (const VkBufferCopy& copy : new_copies) {
+            const std::span<const VkBufferCopy> region{&copy, 1};
+            if (!Empty() && !CanAdd(src, dst, region)) {
+                flush();
+            }
+            if (Empty()) {
+                begin();
+            }
+            Add(src, dst, region);
+        }
+    }
+
     /// Records a batch: the barrier before an in-order buffer copy (BufferCacheRuntime::
     /// CopyBuffer's), the copies, and the barrier after one, made to reach transfers as well.
     /// Recorded one by one, the barriers between two uploads ordered the copies before them

@@ -31,6 +31,7 @@
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/gpu_wait_stats.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/renderer_vulkan/upload_batch.h"
 #include "video_core/renderer_vulkan/vk_command_pool.h"
 #include "video_core/renderer_vulkan/vk_gpu_cost.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
@@ -38,7 +39,6 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
-#include "video_core/renderer_vulkan/upload_batch.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -564,14 +564,12 @@ void Scheduler::RecordUpload(VkBuffer src, VkBuffer dst, std::span<const VkBuffe
     if (copies.empty()) {
         return;
     }
-    if (uploads_pending && !upload_batch->CanAdd(src, dst, copies)) {
-        FlushUploads();
-    }
-    if (!uploads_pending) {
-        upload_batch_site = location;
-    }
-    upload_batch->Add(src, dst, copies);
-    uploads_pending = true;
+    upload_batch->Append(
+        src, dst, copies, [this] { FlushUploads(); },
+        [this, location] {
+            upload_batch_site = location;
+            uploads_pending = true;
+        });
 }
 
 void Scheduler::FlushUploads() {

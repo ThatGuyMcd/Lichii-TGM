@@ -21,6 +21,7 @@
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "core/oot_ultrawide.h"
 #include "shader_recompiler/exception.h"
 #include "core/core.h"
 #include "video_core/gpu_split.h"
@@ -674,11 +675,10 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             if (handle == 0 || (handle & 0xfffff) > regs.tic.limit) return std::nullopt;
             return GetTICEntry(handle & 0xfffff);
         };
-        // Ocarina at 21:9 (Ultrawide Add-On): the network's output is the 21:9 frame's size and the
-        // game's movie layer draws it into the centred 16:9 (patch_manager.cpp).
-        const bool wide_movies = Settings::values.aspect_ratio.GetValue() ==
-                                 Settings::AspectRatio::R21_9;
-        const auto upscale_pair = [wide_movies](const std::optional<Texture::TICEntry>& from,
+        // The aspect Add-On fits the movie into a centred 16:9 viewport in this profile's frame.
+        const auto* movie_profile = Core::OotUltrawide::ProfileForAspect(
+            Settings::values.aspect_ratio.GetValue());
+        const auto upscale_pair = [movie_profile](const std::optional<Texture::TICEntry>& from,
                                                 const std::optional<Texture::TICEntry>& to,
                                                 bool same_format) {
             if (!from || !to || (same_format && from->format != to->format) ||
@@ -688,9 +688,10 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
                 return false;
             const u64 from_width = from->Width(), from_height = from->Height();
             const u64 to_width = to->Width(), to_height = to->Height();
-            if (wide_movies && from_width >= 64 &&
-                VideoCommon::OotUltrawide::IsWideMovieOutput(from->Width(), from->Height(),
-                                                             to->Width(), to->Height())) {
+            if (movie_profile && from_width >= 64 &&
+                VideoCommon::OotUltrawide::IsAspectMovieOutput(
+                    from->Width(), from->Height(), to->Width(), to->Height(),
+                    movie_profile->width, Core::OotUltrawide::TargetHeight)) {
                 return true;
             }
             const u64 cross_a = to_width * from_height, cross_b = to_height * from_width;

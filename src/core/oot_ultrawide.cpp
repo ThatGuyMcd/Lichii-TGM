@@ -83,16 +83,26 @@ struct Byml {
 
 } // Anonymous namespace
 
-bool UltrawideRendering() {
+const RenderProfile* ActiveProfile() {
     const bool legacy_upscaler =
         Settings::values.oot_anti_aliasing.GetValue() == Settings::OotAntiAliasing::Game &&
         (Settings::values.nvidia_dlss.GetValue() || Settings::values.ocarina_fsr.GetValue());
-    return Settings::values.aspect_ratio.GetValue() == Settings::AspectRatio::R21_9 &&
-           Settings::IsDockedMode() && !VideoCommon::OotDlss::Requested() && !legacy_upscaler;
+    if (!Settings::IsDockedMode() || VideoCommon::OotDlss::Requested() || legacy_upscaler) {
+        return nullptr;
+    }
+    return ProfileForAspect(Settings::values.aspect_ratio.GetValue());
+}
+
+bool UltrawideRendering() {
+    return ActiveProfile() != nullptr;
 }
 
 u64 ApplicationMemoryExtra() {
-    return Settings::CurrentProgramIsSwitch2() && UltrawideRendering() ? MemoryExtraBytes : 0;
+    if (!Settings::CurrentProgramIsSwitch2()) {
+        return 0;
+    }
+    const auto* profile = ActiveProfile();
+    return profile ? MemoryExtraBytesFor(*profile) : 0;
 }
 
 std::optional<std::vector<u8>> GrowHeapDef(std::span<const u8> compressed, u32 extra_kib) {
@@ -284,9 +294,16 @@ bool ShiftPanes(std::vector<u8>& sarc, std::span<const PaneShift> shifts) {
 
 std::optional<std::vector<u8>> AnchorHudToEdges(std::span<const u8> compressed,
                                                 std::span<const u8> dictionary) {
+    return AnchorHudToEdges(compressed, dictionary, AspectProfiles.front());
+}
+
+std::optional<std::vector<u8>> AnchorHudToEdges(std::span<const u8> compressed,
+                                                std::span<const u8> dictionary,
+                                                const RenderProfile& profile) {
     auto archive = Common::Compression::TryDecompressDataZSTDWithDictionary(compressed, dictionary,
                                                                           256ULL << 20);
-    if (!archive || !ShiftPanes(*archive, HudEdgeShifts)) {
+    const auto shifts = HudEdgeShiftsFor(profile);
+    if (!archive || !ShiftPanes(*archive, shifts)) {
         return std::nullopt;
     }
     auto out = Common::Compression::CompressDataZSTDWithDictionary(*archive, dictionary);

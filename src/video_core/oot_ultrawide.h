@@ -30,4 +30,17 @@ namespace VideoCommon::OotUltrawide {
            output_height > input_height && output_height <= input_height * 4;
 }
 
+/// Restrict the stand-in to the selected game profile; narrow profiles letterbox vertically.
+[[nodiscard]] constexpr bool IsAspectMovieOutput(u32 input_width, u32 input_height, u32 output_width,
+                                                u32 output_height, u32 target_width,
+                                                u32 target_height) {
+    const u64 a = u64{output_width} * target_height;
+    const u64 b = u64{output_height} * target_width;
+    return target_width != 0 && target_height != 0 && output_width != 0 &&
+           IsSixteenNine(input_width, input_height) &&
+           !IsSixteenNine(output_width, output_height) &&
+           output_height > input_height && u64{output_height} <= u64{input_height} * 4 &&
+           (a > b ? a - b : b - a) * 100 <= b;
+}
+
 } // namespace VideoCommon::OotUltrawide

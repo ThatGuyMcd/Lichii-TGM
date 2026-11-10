@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <string_view>
 #include <utility>
@@ -124,6 +125,55 @@ TEST_CASE("The 3440x1440 heap growth is the shipped heap's share of the extra pi
                                            0x200000);
 }
 
+TEST_CASE("Aspect profiles preserve legacy sizing and grow memory only for extra pixels",
+          "[oot_ultrawide]") {
+    using namespace Core::OotUltrawide;
+    struct Expected {
+        Settings::AspectRatio aspect;
+        u32 width;
+        u32 scene_width;
+        u32 heap_kib;
+        u32 memory_mib;
+        f32 shift;
+    };
+    constexpr Expected expected[]{
+        {Settings::AspectRatio::R21_9, 3440, 2580, 107520, 106, 660.0f},
+        {Settings::AspectRatio::R4_3, 1920, 1440, 0, 0, -480.0f},
+        {Settings::AspectRatio::R16_10, 2304, 1728, 0, 0, -192.0f},
+        {Settings::AspectRatio::R3_2, 2160, 1620, 0, 0, -300.0f},
+        {Settings::AspectRatio::R2_1, 2880, 2160, 39936, 40, 240.0f},
+        {Settings::AspectRatio::R32_9, 5120, 3840, 312320, 306, 1920.0f},
+        {Settings::AspectRatio::R32_10, 4608, 3456, 249856, 244, 1536.0f},
+    };
+    STATIC_REQUIRE(AspectProfiles.size() == std::size(expected));
+    STATIC_REQUIRE(TextureHeapExtraKiBFor(AspectProfiles.front()) == TextureHeapExtraKiB);
+    STATIC_REQUIRE(MemoryExtraBytesFor(AspectProfiles.front()) == MemoryExtraBytes);
+    STATIC_REQUIRE(EdgeShiftFor(AspectProfiles.front()) == EdgeShift);
+    STATIC_REQUIRE(AspectProfiles.front().addon == "Ultrawide 21:9 (built-in)");
+    STATIC_REQUIRE(ProfileForAspect(Settings::AspectRatio::R16_9) == nullptr);
+    STATIC_REQUIRE(ProfileForAspect(Settings::AspectRatio::Stretch) == nullptr);
+    for (const auto& value : expected) {
+        const auto* profile = ProfileForAspect(value.aspect);
+        REQUIRE(profile != nullptr);
+        REQUIRE(profile->width == value.width);
+        REQUIRE(TargetAspect(*profile) == static_cast<f32>(value.width) / TargetHeight);
+        REQUIRE(profile->width * SceneHeight / TargetHeight == value.scene_width);
+        REQUIRE(TextureHeapExtraKiBFor(*profile) == value.heap_kib);
+        REQUIRE(MemoryExtraBytesFor(*profile) == (u64{value.memory_mib} << 20));
+        REQUIRE(EdgeShiftFor(*profile) == value.shift);
+        const auto original = HeapDef(ShippedTextureHeapKiB, 861184);
+        const auto compressed = Compress(original);
+        const auto grown = GrowHeapDef(compressed, TextureHeapExtraKiBFor(*profile));
+        REQUIRE(grown.has_value());
+        const auto table = Common::Compression::DecompressDataZSTD(*grown);
+        REQUIRE(Get32(table, 96) == ShippedTextureHeapKiB + value.heap_kib);
+        REQUIRE(Get32(table, 108) == 861184 + value.heap_kib);
+        if (value.heap_kib == 0) {
+            REQUIRE(table == original);
+        }
+    }
+}
+
 namespace {
 
 void Put64(std::vector<u8>& out, size_t at, u64 value) {
@@ -222,6 +272,12 @@ f32 PaneXAt(const std::vector<u8>& sarc, size_t file, size_t pane) {
     return x;
 }
 
+void SetPaneX(std::vector<u8>& sarc, size_t file, size_t pane, f32 x) {
+    const u32 data_offset = Get32(sarc, 0x0C);
+    const u32 begin = Get32(sarc, 0x20 + 16 * file + 8);
+    std::memcpy(sarc.data() + data_offset + begin + 0x100 + 68 * pane + 28, &x, sizeof(x));
+}
+
 } // Anonymous namespace
 
 TEST_CASE("The HUD's edge anchors and the minimap move to the 21:9 screen's edges",
@@ -270,6 +326,58 @@ TEST_CASE("The HUD edge move refuses unexpected layouts", "[oot_ultrawide]") {
         Common::Compression::TryDecompressDataZSTDWithDictionary(*anchored, dictionary, 1 << 20);
     REQUIRE(back.has_value());
     REQUIRE(PaneXAt(*back, 3, 1) == 2130.0f);
+}
+
+TEST_CASE("Aspect HUD anchors move inward and outward without changing other layout bytes",
+          "[oot_ultrawide]") {
+    using namespace Core::OotUltrawide;
+    const std::vector<u8> dictionary(4096, 0x5A);
+    const auto original = HudArchive();
+    const auto compressed =
+        Common::Compression::CompressDataZSTDWithDictionary(original, dictionary);
+    REQUIRE_FALSE(compressed.empty());
+    const auto original_compressed = compressed;
+    constexpr f32 shifts[]{660.0f, -480.0f, -192.0f, -300.0f, 240.0f, 1920.0f, 1536.0f};
+    for (size_t i = 0; i < AspectProfiles.size(); ++i) {
+        const auto& profile = AspectProfiles[i];
+        const auto anchored = AnchorHudToEdges(compressed, dictionary, profile);
+        REQUIRE(anchored.has_value());
+        const auto back =
+            Common::Compression::TryDecompressDataZSTDWithDictionary(*anchored, dictionary, 1 << 20);
+        REQUIRE(back.has_value());
+        auto expected = original;
+        for (const size_t copy : {size_t{0}, size_t{2}}) {
+            SetPaneX(expected, copy, 0, 1626.0f + shifts[i]);
+            SetPaneX(expected, copy, 1, -1920.0f - shifts[i]);
+            SetPaneX(expected, copy, 2, 1920.0f + shifts[i]);
+        }
+        for (const size_t copy : {size_t{1}, size_t{3}}) {
+            constexpr f32 baseline[]{1536.0f, 1470.0f, 1536.0f, 1706.0f, 1536.0f};
+            for (size_t pane = 0; pane < std::size(baseline); ++pane) {
+                SetPaneX(expected, copy, pane, baseline[pane] + shifts[i]);
+            }
+        }
+        REQUIRE(*back == expected);
+        REQUIRE(compressed == original_compressed);
+        // The baseline guard also prevents applying a different profile over a patched archive.
+        REQUIRE_FALSE(AnchorHudToEdges(*anchored, dictionary, profile).has_value());
+    }
+    REQUIRE(AnchorHudToEdges(compressed, dictionary) ==
+            AnchorHudToEdges(compressed, dictionary, AspectProfiles.front()));
+}
+
+TEST_CASE("Every aspect HUD profile refuses unexpected baseline data", "[oot_ultrawide]") {
+    using namespace Core::OotUltrawide;
+    const std::vector<u8> dictionary(4096, 0x5A);
+    const auto compressed =
+        Common::Compression::CompressDataZSTDWithDictionary(HudArchive(-1900.0f), dictionary);
+    const auto original = compressed;
+    const std::vector<u8> invalid(64, 0);
+    for (const auto& profile : AspectProfiles) {
+        REQUIRE_FALSE(AnchorHudToEdges(compressed, dictionary, profile).has_value());
+        REQUIRE_FALSE(AnchorHudToEdges(invalid, dictionary, profile).has_value());
+        REQUIRE(compressed == original);
+    }
 }
 
 TEST_CASE("The HUD edge move refuses overflowing pane offsets", "[oot_ultrawide]") {

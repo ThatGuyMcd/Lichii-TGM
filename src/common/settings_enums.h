@@ -158,7 +158,8 @@ ENUM(OotDlssOutput, Dlaa4k, Quality4k);
 ENUM(DlssPreset, Auto, K, L, M);
 ENUM(NvidiaDlssQuality, Automatic, Native);
 ENUM(NeuralRendering, Off, Standard, Natural, Cinematic);
-ENUM(AspectRatio, R16_9, R4_3, R21_9, R16_10, Stretch);
+// Keep existing values stable: saved configurations store their numeric IDs.
+ENUM(AspectRatio, R16_9, R4_3, R21_9, R16_10, Stretch, R3_2, R2_1, R32_9, R32_10);
 ENUM(ConsoleMode, Handheld, Docked);
 ENUM(AppletMode, HLE, LLE, Disabled);
 ENUM(SpirvOptimizeMode, Never, OnLoad, Always);

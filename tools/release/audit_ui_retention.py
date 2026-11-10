@@ -83,6 +83,14 @@ def main():
     for path in ['src/common/settings.h', 'src/common/settings_enums.h']:
         original = git('show', f'{baseline}:{path}')
         expected = expected_content(path, original)
+        if path.endswith('settings_enums.h'):
+            old_aspects = b'ENUM(AspectRatio, R16_9, R4_3, R21_9, R16_10, Stretch);'
+            new_aspects = (
+                b'// Keep existing values stable: saved configurations store their numeric IDs.\n'
+                b'ENUM(AspectRatio, R16_9, R4_3, R21_9, R16_10, Stretch, R3_2, R2_1, R32_9, R32_10);'
+            )
+            assert expected.count(old_aspects) == 1
+            expected = expected.replace(old_aspects, new_aspects)
         assert expected.replace(b'\r\n', b'\n') == (root / path).read_bytes().replace(b'\r\n', b'\n'), path
 
     result = {
@@ -95,6 +103,7 @@ def main():
         'retained_form_widgets': widget_count,
         'unchanged_apply_paths': list(apply_paths),
         'setting_definitions_match_baseline_plus_upstream': True,
+        'reviewed_setting_extensions': {'AspectRatio': ['R3_2', 'R2_1', 'R32_9', 'R32_10']},
         'forms_digest': hashlib.sha256('\n'.join(forms).encode()).hexdigest(),
         'note': 'Navigation/theme runtime retention is covered separately by standalone Qt tests.',
     }

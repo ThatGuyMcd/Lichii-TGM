@@ -50,6 +50,12 @@ artwork. See [the integration notes](TGM-upstream-sync-2026-11-10.md).
 
 ## Validation
 
+The built-in OOT aspect Add-Ons now include 4:3, 16:10, 3:2, 2:1, 32:9 and 32:10
+alongside the existing 21:9 profile. Camera, HUD and movies follow the selected
+ratio; the aspect hook no longer overlaps Photo Mode. Choose the ratio before
+starting the game, use Docked mode and disable fixed-size upscalers. See
+[aspect setup and validation limits](TGM-oot-aspect-ratios.md).
+
 Build Windows x86_64 and Linux x86_64 AppImage from the same source commit.
 Run all nine CTest groups, including 199 navigation checks and shared UI tests
 for retained edits/buttons, real tap targets, popup choice heights, full-screen

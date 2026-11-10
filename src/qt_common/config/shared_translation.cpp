@@ -266,7 +266,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, aspect_ratio, tr("Aspect Ratio:"),
            tr("Stretches the renderer to fit the specified aspect ratio.\nMost games only support "
               "16:9, so modifications are required to get other ratios.\nAlso controls the "
-              "aspect ratio of captured screenshots."));
+              "aspect ratio of captured screenshots.\nOcarina of Time Remake includes aspect "
+              "Add-Ons: choose the ratio before starting the game, use Docked mode, and disable "
+              "fixed-size DLSS/FSR upscaling. Restart the game after changing its ratio."));
     INSERT(Settings, use_disk_shader_cache, tr("Use persistent pipeline cache"),
            tr("Allows saving shaders to storage for faster loading on following game "
               "boots.\nDisabling it is only intended for debugging."));
@@ -772,6 +774,10 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(AspectRatio, R21_9, tr("Force 21:9")),
                               PAIR(AspectRatio, R16_10, tr("Force 16:10")),
                               PAIR(AspectRatio, Stretch, tr("Stretch to Window")),
+                              PAIR(AspectRatio, R3_2, tr("Force 3:2")),
+                              PAIR(AspectRatio, R2_1, tr("Force 2:1")),
+                              PAIR(AspectRatio, R32_9, tr("Force 32:9")),
+                              PAIR(AspectRatio, R32_10, tr("Force 32:10")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::AnisotropyMode>::Index(),
                           {

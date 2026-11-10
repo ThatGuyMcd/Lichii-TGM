@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstring>
 #include <optional>
@@ -74,13 +75,9 @@ struct BuiltinPatch {
     std::string_view replaces{};
     // When set, the patch applies only with this DLSS mode chosen and is not listed in Add-Ons.
     std::optional<Settings::OcarinaDlssMode> render_scale{};
-    /// Applies only while the game renders for a 21:9 display (UltrawideRendering()).
-    bool ultrawide = false;
+    /// Selects one guarded game-rendering patch for the chosen display ratio.
+    std::optional<Settings::AspectRatio> aspect_ratio{};
 };
-
-using Core::OotUltrawide::UltrawideRendering;
-
-constexpr std::string_view UltrawideAddOn = "Ultrawide 21:9 (built-in)";
 
 constexpr std::array<u8, 4> MAX_RESOLUTION_ORIGINAL{0xE8, 0x41, 0x00, 0x36};
 constexpr std::array<u8, 4> MAX_RESOLUTION_BRANCH{0x0F, 0x02, 0x00, 0x14};
@@ -282,6 +279,110 @@ constexpr std::array ULTRAWIDE_RECORDS{
     BuiltinPatchRecord{0x3485CC0, ULTRAWIDE_HOOK_3485CC0, ULTRAWIDE_HOOK_3485CC0_ORIGINAL},
     BuiltinPatchRecord{0x3B5C758, ULTRAWIDE_HOOK_3B5C758, ULTRAWIDE_HOOK_3B5C758_ORIGINAL},
     BuiltinPatchRecord{0x3C46400, ULTRAWIDE_CAVE, {}, true},
+};
+
+// Keep the aspect hooks away from Photo Mode's cave at 0x3C46420. Both locations are on
+// the same executable padding page, so ADRP targets keep their original page-relative meaning.
+constexpr u32 AspectCaveOffset = 0x3C46800;
+constexpr u32 AspectTemplateOffset = 0x3C46400;
+static_assert((AspectCaveOffset >> 12) == (AspectTemplateOffset >> 12));
+static_assert(AspectCaveOffset >= Core::OcarinaPhotoMode::CaveOffset +
+                                      Core::OcarinaPhotoMode::Cave.size());
+
+struct AspectPatchPayload {
+    std::array<u8, 8> size = ULTRAWIDE_SIZE;
+    std::array<u8, 4> picture = ULTRAWIDE_PICTURE;
+    std::array<u8, 4> scene = ULTRAWIDE_SCENE;
+    std::array<u8, ULTRAWIDE_CAVE.size()> cave = ULTRAWIDE_CAVE;
+    std::array<u8, ULTRAWIDE_MARKER_CAVES.size()> markers = ULTRAWIDE_MARKER_CAVES;
+    std::array<std::array<u8, 4>, 8> hooks{};
+    std::array<BuiltinPatchRecord, ULTRAWIDE_RECORDS.size()> records = ULTRAWIDE_RECORDS;
+
+    static void PutWord(std::span<u8> bytes, size_t offset, u32 word) {
+        for (size_t i = 0; i < sizeof(word); ++i) {
+            bytes[offset + i] = static_cast<u8>(word >> (i * 8));
+        }
+    }
+
+    static void PutFloat(std::span<u8> bytes, size_t offset, float value) {
+        const u32 bits = std::bit_cast<u32>(value);
+        for (size_t half = 0; half < 2; ++half) {
+            const size_t at = offset + half * sizeof(u32);
+            u32 word = u32{bytes[at]} | (u32{bytes[at + 1]} << 8) |
+                       (u32{bytes[at + 2]} << 16) | (u32{bytes[at + 3]} << 24);
+            word = (word & ~(0xFFFFu << 5)) | (((bits >> (half * 16)) & 0xFFFFu) << 5);
+            PutWord(bytes, at, word);
+        }
+    }
+
+    explicit AspectPatchPayload(const Core::OotUltrawide::RenderProfile& profile) {
+        PutWord(size, 0, profile.width);
+        PutWord(picture, 0, 0xD2800008 | (profile.width << 5));
+        PutWord(scene, 0, 0xD2800008 | ((profile.width * 3 / 4) << 5));
+        for (const size_t offset : {0x2C, 0x6C, 0xAC, 0xEC, 0x130}) {
+            PutFloat(cave, offset, Core::OotUltrawide::TargetAspect(profile));
+        }
+        const float ui_scale = 2560.0f / static_cast<float>(profile.width);
+        const float marker_scale = static_cast<float>(profile.width) * 0.75f;
+        PutFloat(cave, 0x1B8, ui_scale);
+        PutFloat(cave, 0x204, marker_scale);
+        PutFloat(markers, 0, marker_scale);
+        PutFloat(markers, 12, marker_scale);
+        if (profile.width < 2560) {
+            // sead::Viewport inherits BoundBox2f: minX/minY/maxX/maxY are +8/+12/+16/+20.
+            // Narrow frames fit 16:9 movies vertically, with top/bottom bars.
+            PutWord(cave, 0x1D0, 0xBD400E10); // ldr s16, [x16, #12]
+            PutWord(cave, 0x1D4, 0xBD401611); // ldr s17, [x16, #20]
+            PutWord(cave, 0x1F4, 0xBD000E10); // str s16, [x16, #12]
+            PutWord(cave, 0x1F8, 0xBD001611); // str s17, [x16, #20]
+            PutFloat(cave, 0x1DC, (1.0f - static_cast<float>(profile.width) / 2560.0f) * 0.5f);
+        } else {
+            PutFloat(cave, 0x1DC, (1.0f - ui_scale) * 0.5f);
+        }
+        // Only returns to the original program move relative to the relocated cave.
+        // Internal conditional branches and same-page ADRPs retain their encoding.
+        constexpr std::array<std::pair<size_t, u32>, 8> returns{{
+            {0x03C, 0x17E0FD22}, {0x07C, 0x1710225C}, {0x0BC, 0x1717D43C},
+            {0x0FC, 0x171BD3CD}, {0x13C, 0x17185B8E}, {0x1C8, 0x172CB669},
+            {0x200, 0x17FC5757}, {0x20C, 0x1717162A},
+        }};
+        for (const auto& [offset, word] : returns) {
+            PutWord(cave, offset, word);
+        }
+        constexpr std::array<std::pair<size_t, u32>, 8> sites{{
+            {0x3485CC0, 0x141F02D0}, {0x4F1E8, 0x14EFDD96},
+            {0x23B9A8, 0x14E82BB6}, {0x33B82C, 0x14E42C25},
+            {0x25D76C, 0x14E7A465}, {0x774368, 0x14D34976},
+            {0x3B5C758, 0x1403A89D}, {0x20C2B0, 0x14E8E9D5},
+        }};
+        for (size_t i = 0; i < sites.size(); ++i) {
+            PutWord(hooks[i], 0, sites[i].second);
+        }
+        for (auto& record : records) {
+            switch (record.module_offset) {
+            case 0x3F58568: record.bytes = size; break;
+            case 0x1202EE0:
+            case 0x31F39F4: record.bytes = picture; break;
+            case 0x31F3A00: record.bytes = scene; break;
+            case 0x3C46720: record.bytes = markers; break;
+            case AspectTemplateOffset:
+                record.module_offset = AspectCaveOffset;
+                record.bytes = cave;
+                break;
+            default:
+                for (size_t i = 0; i < sites.size(); ++i) {
+                    if (record.module_offset == sites[i].first) {
+                        record.bytes = hooks[i];
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    AspectPatchPayload(const AspectPatchPayload&) = delete;
+    AspectPatchPayload& operator=(const AspectPatchPayload&) = delete;
 };
 
 // The render pipeline's settings are mirrored into nodes (main+0x11ac..., per setting: init, then
@@ -495,14 +596,34 @@ constexpr std::array BUILTIN_PATCHES{
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
         .records = OOT_POLL_BACKOFF_RECORDS,
     },
-    BuiltinPatch{
-        .name = UltrawideAddOn,
-        .title_id = 0x0400486024DEC000,
-        .module = "main",
-        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
-        .records = ULTRAWIDE_RECORDS,
-        .ultrawide = true,
-    },
+    BuiltinPatch{.name = Core::OotUltrawide::AspectProfiles[0].addon,
+                 .title_id = Core::OotUltrawide::ProgramId, .module = "main",
+                 .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+                 .records = ULTRAWIDE_RECORDS, .aspect_ratio = Settings::AspectRatio::R21_9},
+    BuiltinPatch{.name = Core::OotUltrawide::AspectProfiles[1].addon,
+                 .title_id = Core::OotUltrawide::ProgramId, .module = "main",
+                 .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+                 .records = ULTRAWIDE_RECORDS, .aspect_ratio = Settings::AspectRatio::R4_3},
+    BuiltinPatch{.name = Core::OotUltrawide::AspectProfiles[2].addon,
+                 .title_id = Core::OotUltrawide::ProgramId, .module = "main",
+                 .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+                 .records = ULTRAWIDE_RECORDS, .aspect_ratio = Settings::AspectRatio::R16_10},
+    BuiltinPatch{.name = Core::OotUltrawide::AspectProfiles[3].addon,
+                 .title_id = Core::OotUltrawide::ProgramId, .module = "main",
+                 .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+                 .records = ULTRAWIDE_RECORDS, .aspect_ratio = Settings::AspectRatio::R3_2},
+    BuiltinPatch{.name = Core::OotUltrawide::AspectProfiles[4].addon,
+                 .title_id = Core::OotUltrawide::ProgramId, .module = "main",
+                 .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+                 .records = ULTRAWIDE_RECORDS, .aspect_ratio = Settings::AspectRatio::R2_1},
+    BuiltinPatch{.name = Core::OotUltrawide::AspectProfiles[5].addon,
+                 .title_id = Core::OotUltrawide::ProgramId, .module = "main",
+                 .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+                 .records = ULTRAWIDE_RECORDS, .aspect_ratio = Settings::AspectRatio::R32_9},
+    BuiltinPatch{.name = Core::OotUltrawide::AspectProfiles[6].addon,
+                 .title_id = Core::OotUltrawide::ProgramId, .module = "main",
+                 .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+                 .records = ULTRAWIDE_RECORDS, .aspect_ratio = Settings::AspectRatio::R32_10},
 };
 
 enum class TitleVersionFormat : u8 {
@@ -954,10 +1075,15 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
                      patch.build_id);
             continue;
         }
-        if (patch.ultrawide && !UltrawideRendering()) {
-            LOG_INFO(Loader, "    - Skipping \"{}\": requires docked 21:9 without fixed-size upscaling",
-                     patch.name);
-            continue;
+        std::optional<AspectPatchPayload> aspect_payload;
+        auto records = patch.records;
+        if (patch.aspect_ratio) {
+            const auto* profile = Core::OotUltrawide::ActiveProfile();
+            if (!profile || profile->aspect != *patch.aspect_ratio) {
+                continue;
+            }
+            aspect_payload.emplace(*profile);
+            records = aspect_payload->records;
         }
         const auto fits = [](const std::vector<u8>& data, size_t offset, size_t size) {
             return data.size() >= sizeof(Loader::NSOHeader) &&
@@ -987,7 +1113,7 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
             }
         }
         bool apply = true;
-        for (const auto& record : patch.records) {
+        for (const auto& record : records) {
             if (!fits(nso, record.module_offset, record.bytes.size()) ||
                 !fits(out, record.module_offset, record.bytes.size()) ||
                 !fits(nso, record.module_offset, record.original.size())) {
@@ -1030,12 +1156,12 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         if (!apply) {
             continue;
         }
-        for (const auto& record : patch.records) {
+        for (const auto& record : records) {
             std::memcpy(out.data() + sizeof(Loader::NSOHeader) + record.module_offset,
                         record.bytes.data(), record.bytes.size());
         }
         LOG_INFO(Loader, "    - Applying built-in patch \"{}\" ({} records) to {}", patch.name,
-                 patch.records.size(), name);
+                 records.size(), name);
         if (!patch.replaces.empty()) {
             replaced.push_back(patch.replaces);
         }
@@ -1138,25 +1264,27 @@ void PlaceFile(VectorVfsDirectory& root, std::string_view path, std::vector<u8> 
     dir->AddFile(std::make_shared<VectorVfsFile>(std::move(data), std::string{path}));
 }
 
-/// Ocarina at 21:9: its render-target heap grown for the 3440x1440 picture and its HUD's edge
-/// anchors moved to the 21:9 screen's edges, as a RomFS layer; nullptr when neither applies.
-VirtualDir UltrawideLayer(const VirtualDir& romfs) {
+/// Profile-sized render-target heap and HUD anchors, below user RomFS mods.
+VirtualDir AspectLayer(const VirtualDir& romfs, const Core::OotUltrawide::RenderProfile& profile) {
     namespace Uw = Core::OotUltrawide;
     auto layer = std::make_shared<VectorVfsDirectory>();
     bool any = false;
-    if (const auto file = romfs->GetFileRelative(Uw::HeapDefPath)) {
-        if (auto grown = Uw::GrowHeapDef(file->ReadAllBytes(), Uw::TextureHeapExtraKiB)) {
-            LOG_INFO(Loader,
-                     "    RomFS: \"{}\" grows DynamicTextureAllocatorMem and Graphics by {} KiB",
-                     UltrawideAddOn, Uw::TextureHeapExtraKiB);
-            PlaceFile(*layer, Uw::HeapDefPath, std::move(*grown));
-            any = true;
+    const auto extra_kib = Uw::TextureHeapExtraKiBFor(profile);
+    if (extra_kib != 0) {
+        if (const auto file = romfs->GetFileRelative(Uw::HeapDefPath)) {
+            if (auto grown = Uw::GrowHeapDef(file->ReadAllBytes(), extra_kib)) {
+                LOG_INFO(Loader,
+                         "    RomFS: \"{}\" grows DynamicTextureAllocatorMem and Graphics by {} KiB",
+                         profile.addon, extra_kib);
+                PlaceFile(*layer, Uw::HeapDefPath, std::move(*grown));
+                any = true;
+            } else {
+                LOG_WARNING(Loader, "    RomFS: {} is not the HeapDef table \"{}\" expects",
+                            Uw::HeapDefPath, profile.addon);
+            }
         } else {
-            LOG_WARNING(Loader, "    RomFS: {} is not the HeapDef table \"{}\" expects",
-                        Uw::HeapDefPath, UltrawideAddOn);
+            LOG_WARNING(Loader, "    RomFS: no {} for \"{}\"", Uw::HeapDefPath, profile.addon);
         }
-    } else {
-        LOG_WARNING(Loader, "    RomFS: no {} for \"{}\"", Uw::HeapDefPath, UltrawideAddOn);
     }
     const auto archive = romfs->GetFileRelative(Uw::LayoutArchivePath);
     const auto pack = romfs->GetFileRelative(Uw::DictionaryPackPath);
@@ -1166,16 +1294,16 @@ VirtualDir UltrawideLayer(const VirtualDir& romfs) {
     const auto dictionary =
         pack_data ? Uw::SarcFile(*pack_data, Uw::LayoutDictionaryName) : std::nullopt;
     auto anchored = archive && dictionary
-                        ? Uw::AnchorHudToEdges(archive->ReadAllBytes(), *dictionary)
+                        ? Uw::AnchorHudToEdges(archive->ReadAllBytes(), *dictionary, profile)
                         : std::nullopt;
     if (anchored) {
-        LOG_INFO(Loader, "    RomFS: \"{}\" moves the HUD's edge anchors out by {} units",
-                 UltrawideAddOn, Uw::EdgeShift);
+        LOG_INFO(Loader, "    RomFS: \"{}\" adjusts the HUD's edge anchors by {} units",
+                 profile.addon, Uw::EdgeShiftFor(profile));
         PlaceFile(*layer, Uw::LayoutArchivePath, std::move(*anchored));
         any = true;
     } else {
         LOG_WARNING(Loader, "    RomFS: {} is not the layout archive \"{}\" expects",
-                    Uw::LayoutArchivePath, UltrawideAddOn);
+                    Uw::LayoutArchivePath, profile.addon);
     }
     return any ? layer : nullptr;
 }
@@ -1186,15 +1314,13 @@ void PatchManager::ApplyLayeredFS(VirtualFile& romfs, ContentRecordType type) co
     const auto load_dir = GetModificationLoadRoot();
     const auto sdmc_load_dir = GetModificationLoadRoot(true);
     const auto disabled = GetDisabledAddons();
-    // Ocarina at 21:9 draws a 3440x1440 picture: its render-target heap grows with it
-    // (core/oot_ultrawide.h), as a built-in layer below the user's mods.
-    const bool ultrawide_heap =
+    const auto* profile = Core::OotUltrawide::ActiveProfile();
+    const bool aspect_layer = profile &&
         type == ContentRecordType::Program && title_id == Core::OotUltrawide::ProgramId &&
-        UltrawideRendering() &&
-        std::find(disabled.cbegin(), disabled.cend(), UltrawideAddOn) == disabled.cend();
+        std::find(disabled.cbegin(), disabled.cend(), profile->addon) == disabled.cend();
     if ((type != ContentRecordType::Program && type != ContentRecordType::Data &&
          type != ContentRecordType::HtmlDocument) ||
-        (load_dir == nullptr && sdmc_load_dir == nullptr && !ultrawide_heap)) {
+        (load_dir == nullptr && sdmc_load_dir == nullptr && !aspect_layer)) {
         return;
     }
 
@@ -1239,7 +1365,7 @@ void PatchManager::ApplyLayeredFS(VirtualFile& romfs, ContentRecordType type) co
     }
 
     // When there are no layers to apply, return early as there is no need to rebuild the RomFS
-    if (layers.empty() && layers_ext.empty() && !ultrawide_heap) {
+    if (layers.empty() && layers_ext.empty() && !aspect_layer) {
         return;
     }
 
@@ -1248,9 +1374,9 @@ void PatchManager::ApplyLayeredFS(VirtualFile& romfs, ContentRecordType type) co
         return;
     }
 
-    if (ultrawide_heap) {
-        if (auto ultrawide_layer = UltrawideLayer(extracted)) {
-            layers.emplace_back(std::move(ultrawide_layer));
+    if (aspect_layer) {
+        if (auto layer = AspectLayer(extracted, *profile)) {
+            layers.emplace_back(std::move(layer));
         } else if (layers.empty() && layers_ext.empty()) {
             return;
         }

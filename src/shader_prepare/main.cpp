@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Offline shader preparation only: no guest process, kernel initialization or game loop.
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <numeric>
 #include <mutex>
+#include <numeric>
 #include <stop_token>
 #include <thread>
 #include <QCoreApplication>
@@ -19,34 +18,13 @@
 #include "common/logging.h"
 #include "common/settings.h"
 #include "common/scm_rev.h"
-#include "shader_prepare/gpu_preparation.h"
 #include "core/core.h"
-#include "core/device_memory.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/hle/service/filesystem/filesystem.h"
-#include "video_core/host1x/gpu_device_memory_manager.h"
-#include "video_core/renderer_vulkan/blit_image.h"
-#include "video_core/renderer_vulkan/vk_buffer_cache.h"
-#include "video_core/renderer_vulkan/vk_descriptor_buffer.h"
-#include "video_core/renderer_vulkan/vk_descriptor_pool.h"
-#include "video_core/renderer_vulkan/vk_pipeline_cache.h"
-#include "video_core/renderer_vulkan/vk_render_pass_cache.h"
-#include "video_core/renderer_vulkan/vk_scheduler.h"
-#include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
-#include "video_core/renderer_vulkan/vk_state_tracker.h"
-#include "video_core/renderer_vulkan/vk_texture_cache.h"
-#include "video_core/renderer_vulkan/vk_update_descriptor.h"
-#include "video_core/shader_notify.h"
 #include "video_core/oot_dlss.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
-#include "video_core/vulkan_common/vulkan_device.h"
-#include "video_core/vulkan_common/vulkan_instance.h"
-#include "video_core/vulkan_common/vulkan_library.h"
-#include "video_core/vulkan_common/vulkan_memory_allocator.h"
-#ifdef EGLANTINE_NVIDIA_DLSS
-#include "video_core/vulkan_common/nvidia_dlss.h"
-#endif
+#include "shader_prepare/gpu_preparation.h"
 
 #ifdef LoadString
 #undef LoadString
@@ -62,9 +40,7 @@ void Emit(Json value) {
     std::scoped_lock lock{output};
     std::cout << line << '\n' << std::flush;
 }
-
-
-}
+} // namespace
 
 int main(int argc, char** argv) try {
     QCoreApplication application(argc, argv);

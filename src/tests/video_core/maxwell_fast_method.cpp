@@ -1614,6 +1614,75 @@ TEST_CASE("Split tells guest memory writes from what only the GPU caches hold",
     CHECK(queued->payload == 5);
 }
 
+TEST_CASE("Compute front macros read the inline launch state the back produced",
+          "[video_core][gpu_split_dependencies][inline_qmd_state]") {
+    using Access = VideoCommon::GpuSplitTestAccess;
+    struct Case {
+        bool mapped;
+        u32 control;
+        u32 qmd_flags;
+    };
+    for (const Case test : {Case{true, 0, 0}, Case{true, 0, 1U << 12},
+                           Case{true, 1U << 24, 1U << 12}, Case{false, 0, 0},
+                           Case{false, 1U << 24, 1U << 12}}) {
+        CAPTURE(test.mapped, test.control, test.qmd_flags);
+        Fixture f;
+        f.system.Initialize();
+        MappedPages pages{f};
+        Tegra::Engines::KeplerCompute compute{f.memory};
+        Tegra::MacroEngine macros{true};
+        macros.native_turing = true;
+        std::array<u32, 128> positions{};
+        std::array<u32, 0xc00> data_ram{};
+        compute.SetNativeMacroMode(&macros, positions);
+        compute.SetNativeDataRam(&data_ram);
+        compute.BindRasterizer(&f.rasterizer);
+        VideoCommon::GpuSplit split;
+        Access::Initialize(split, f.system);
+        const auto send = [&](u32 method, u32 argument) {
+            compute.FrontCallMethod(f.system, split, method, argument, true, nullptr);
+        };
+        // The real MME read stores register 0xb0's value in shared data RAM, making the front's
+        // private state observable without a test-only accessor or duplicate launch rule.
+        const Mme read{.end = true, .op = {22, 0}, .dst = {0, 24},
+                       .src_a = {25, 24}, .imm = {0xb0, 0}};
+        const Mme store{.op = {31, 0}, .src_a = {25, 24}, .src_b = {0, 24},
+                        .imm = {0x40, 0}};
+        send(0x45, 0);
+        for (const auto instruction : {Encode(read), Encode(store)}) {
+            for (const u32 word : instruction) {
+                send(0x46, word);
+            }
+        }
+        send(0x47, 0);
+        send(0x48, 0);
+        send(0xb0, 1); // An ignored action: establish a previous register value.
+        const GPUVAddr address = MappedPages::gpu_address + (test.mapped ? 0 : 0x2000);
+        Tegra::NativeQmdScheduler::Descriptor qmd{};
+        qmd[4] = test.qmd_flags;
+        qmd[18] = 0x30;
+        if (test.mapped) {
+            // Null rasterizer inline uploads do not write: seed its actual QMD read instead.
+            std::memcpy(pages.backing, qmd.data(), sizeof(qmd));
+        }
+        send(0xa7, test.control);
+        send(0xc6, static_cast<u32>((address >> 8) >> 32));
+        send(0xc7, static_cast<u32>(address >> 8));
+        for (u32 index = 0; index < 64; ++index) {
+            send(0xc8 + index, qmd[index]);
+        }
+        send(0xe00, 0);
+        const u32 front_value = data_ram[0x40];
+        // Execute queued methods through the production back path, then run that same macro
+        // there. A launch can leave 3 or the prior 1; the front must agree in both cases.
+        Access::RunBack(split);
+        data_ram[0x40] = 0;
+        compute.CallMethod(f.system, 0xe00, 0, true);
+        CHECK((data_ram[0x40] == 1 || data_ram[0x40] == 3));
+        CHECK(front_value == data_ram[0x40]);
+    }
+}
+
 TEST_CASE("Split front values the releases of the QMD launches it sends as the back runs them",
           "[video_core][gpu_split_dependencies]") {
     using Access = VideoCommon::GpuSplitTestAccess;

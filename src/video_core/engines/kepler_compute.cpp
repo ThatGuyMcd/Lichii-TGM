@@ -2358,6 +2358,17 @@ void KeplerCompute::FrontApply(FrontState& fs, u32 method, u32 argument) {
                                       [&fs](u32 reg) { return fs.registers[reg]; });
     fs.registers[method] = argument;
     switch (method) {
+    case 0x107: {
+        // The inline launch sets 0xb0 to 3 on the back. Later front macros read the same state.
+        const GPUVAddr address =
+            ((GPUVAddr{fs.registers[0xc6]} << 32) | fs.registers[0xc7]) << 8;
+        const u32 control = fs.registers[0xa7];
+        if (memory_manager.IsFullyMappedRange(address, 256) &&
+            ((control & (1U << 24)) || !(fs.registers[0xcc] & (1U << 12)))) {
+            fs.registers[0xb0] = 3;
+        }
+        break;
+    }
     case 0x45:
         FrontMacroEngine(fs).ClearCode(argument);
         break;

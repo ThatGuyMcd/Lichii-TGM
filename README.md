@@ -4,8 +4,9 @@
 
 Lichii-tgm is ThatGuyMcd's independent Nintendo Switch and Switch 2 emulator fork,
 based on Lichii, Eglantine, Eden, yuzu and Sudachi. Version 1.0.2 introduces Forest
-Lantern dark and light themes, woodland artwork, a playback toolbar and searchable,
-organised settings. Every existing setting and per-game override is retained. See the
+Lantern dark and light themes, selected-game cover artwork, a larger playback toolbar
+and full-screen settings designed for touch and gaming handhelds. Every existing
+setting and per-game override is retained. See the
 [release notes](docs/TGM-v1.0.2.md) for validation and known limitations.
 
 This is an experimental emulator. Compatibility and performance depend on the game,

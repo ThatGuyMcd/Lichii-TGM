@@ -1,4 +1,4 @@
-QWidget { color: @TEXT@; font-size: 10pt; }
+QWidget { color: @TEXT@; font-size: @FONT@; }
 QMainWindow, QDialog { background: @WINDOW@; }
 QWidget:disabled { color: @DISABLED@; }
 QLabel { background: transparent; }
@@ -19,7 +19,7 @@ QToolBar { background: @WINDOW@; border: 0; border-bottom: 1px solid @BORDER@; s
 QToolBar::separator { background: @BORDER@; width: 1px; margin: 5px 6px; }
 QPushButton, QToolButton {
     background: @PANEL@; border: 1px solid @BORDER@; border-radius: 7px;
-    padding: 5px 10px; min-height: 20px;
+    padding: 5px 10px; min-height: @FIELDHEIGHT@;
 }
 QPushButton:hover, QToolButton:hover { background: @HOVER@; border-color: @ACCENT@; }
 QPushButton:pressed, QToolButton:pressed { background: @SELECTION@; }
@@ -34,7 +34,7 @@ QPushButton:focus, QToolButton:focus, QLineEdit:focus, QComboBox:focus,
 QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus { border: 2px solid @ACCENT@; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
     background: @BASE@; border: 1px solid @BORDER@; border-radius: 6px;
-    padding: 4px 7px; min-height: 20px; selection-background-color: @SELECTION@;
+    padding: 4px 7px; min-height: @FIELDHEIGHT@; selection-background-color: @SELECTION@;
     selection-color: @SELECTEDTEXT@;
 }
 QComboBox { padding-right: 24px; }
@@ -55,12 +55,12 @@ QTabWidget::pane { background: @BASE@; border: 1px solid @BORDER@; border-radius
 QTabBar::tab { background: @WINDOW@; color: @MUTED@; border: 1px solid transparent; border-radius: 5px; padding: 7px 10px; margin: 2px; }
 QTabBar::tab:selected { background: @PANEL@; color: @TEXT@; border-bottom: 2px solid @ACCENT@; }
 QTabBar::tab:hover { color: @TEXT@; background: @HOVER@; }
-QCheckBox, QRadioButton { spacing: 7px; min-height: 23px; }
-QCheckBox::indicator { width: 16px; height: 16px; }
-QRadioButton::indicator { width: 16px; height: 16px; }
+QCheckBox, QRadioButton { spacing: 7px; min-height: @TARGET@; }
+QCheckBox::indicator { width: @INDICATOR@; height: @INDICATOR@; }
+QRadioButton::indicator { width: @INDICATOR@; height: @INDICATOR@; }
 QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: 0; }
-QScrollBar:vertical { background: @WINDOW@; border: 0; width: 12px; margin: 2px; }
-QScrollBar:horizontal { background: @WINDOW@; border: 0; height: 12px; margin: 2px; }
+QScrollBar:vertical { background: @WINDOW@; border: 0; width: 24px; margin: 2px; }
+QScrollBar:horizontal { background: @WINDOW@; border: 0; height: 24px; margin: 2px; }
 QScrollBar::handle { background: @BORDER@; border-radius: 5px; min-height: 24px; min-width: 24px; }
 QScrollBar::handle:hover { background: @ACCENT@; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
@@ -72,7 +72,15 @@ QProgressBar::chunk { background: @ACCENT@; border-radius: 5px; }
 QToolTip { background: @PANEL@; color: @TEXT@; border: 1px solid @AMBER@; padding: 6px; }
 QStatusBar { background: @WINDOW@; color: @MUTED@; border-top: 1px solid @BORDER@; padding: 3px; }
 QStatusBar::item { border: 0; }
-QStatusBar QPushButton { padding: 3px 7px; min-height: 18px; }
+QStatusBar QPushButton { padding: 3px 7px; min-height: @TARGET@; }
 QSplitter::handle { background: @WINDOW@; }
 QDialogButtonBox { background: transparent; }
 QDialogButtonBox QPushButton { min-width: 74px; padding: 6px 14px; }
+
+QToolBar QToolButton { min-height: 40px; padding: 7px 12px; }
+QAbstractItemView::item { min-height: @TARGET@; }
+QTabBar::tab { min-height: @FIELDHEIGHT@; min-width: 32px; }
+QWidget#TouchSettingsHeader, QWidget#TouchSettingsFooter { background: @WINDOW@; }
+QWidget#TouchSettingsFooter { border-top: 1px solid @BORDER@; padding-top: 8px; }
+QSlider::groove:horizontal { height: 8px; }
+QSlider::handle:horizontal { width: 28px; margin: -10px 0; border-radius: 14px; }

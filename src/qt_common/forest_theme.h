@@ -11,6 +11,10 @@ class QDialog;
 class QLabel;
 class QPushButton;
 
+namespace QtCommon {
+class CoverArt;
+}
+
 namespace QtCommon::ForestTheme {
 
 bool IsForestTheme();
@@ -19,18 +23,18 @@ void Apply(const QString& name);
 void Clear();
 QIcon Icon(const QString& name);
 QWidget* CreateHeader(QWidget* parent, const QString& title, const QString& subtitle = {});
-QWidget* CreateFooter(QWidget* parent);
 void PrepareDialog(QDialog* dialog);
 
 class LibraryPanel final : public QFrame {
     Q_OBJECT
 public:
     explicit LibraryPanel(QWidget* parent = nullptr);
-    void SetGame(const QString& title, const QString& path, const QPixmap& icon = {});
+    void SetGame(const QString& title, const QString& path, const QByteArray& artwork = {});
 
 signals:
     void PlayRequested();
     void PropertiesRequested();
+    void MoreRequested();
 
 protected:
     void changeEvent(QEvent* event) override;
@@ -40,9 +44,10 @@ private:
     QString game_path;
     QLabel* title_label{};
     QLabel* path_label{};
-    QLabel* icon_label{};
+    QtCommon::CoverArt* cover{};
     QPushButton* play_button{};
     QPushButton* properties_button{};
+    QPushButton* more_button{};
 };
 
 } // namespace QtCommon::ForestTheme

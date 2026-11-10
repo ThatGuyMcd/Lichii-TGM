@@ -2,7 +2,11 @@
 
 `style.qss` uses palette tokens replaced by `QtCommon::ForestTheme::Apply`.
 The theme is bundled as a Qt resource, so it needs no network, font download or
-external image files at runtime. Dark and light themes share the same artwork.
+external theme files at runtime. Dark and light themes share the same lantern header.
+Only `header-bough.png` is bundled. The fox and forest-glade images remain archived
+in source for provenance; the UI no longer displays or packages them. Library
+covers use the selected game's existing metadata, decoded asynchronously and fitted
+without stretching. Touch spacing is independent of the selected palette.
 
 The three PNG assets are original images generated for Lichii-tgm on 10 November
 2026 using OpenAI image generation, guided by the selected Forest Lantern concept.

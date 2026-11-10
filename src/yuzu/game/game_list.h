@@ -41,6 +41,8 @@ enum class StartGameType;
 class GameCarousel;
 
 class QAbstractItemView;
+class QSplitter;
+class QResizeEvent;
 namespace Core {
 class System;
 }
@@ -145,6 +147,8 @@ private slots:
 private:
     void SetupViews();
     void UpdateForestSelection();
+    void UpdateLibraryLayout();
+    void resizeEvent(QResizeEvent* event) override;
     void SetupScrollAnimation();
     bool eventFilter(QObject* obj, QEvent* event) override;
     void changeEvent(QEvent*) override;
@@ -170,6 +174,11 @@ private:
     QVBoxLayout* layout = nullptr;
 
     QtCommon::ForestTheme::LibraryPanel* forest_panel = nullptr;
+    QSplitter* library_splitter = nullptr;
+    QWidget* library_browser = nullptr;
+    QPushButton* library_back = nullptr;
+    bool showing_details{};
+    qint64 last_touch_time{};
 
     GameTree* tree_view = nullptr;
     GameGrid* grid_view = nullptr;

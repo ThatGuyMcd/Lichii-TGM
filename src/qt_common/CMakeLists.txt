@@ -7,6 +7,10 @@ set(CMAKE_AUTORCC ON)
 add_library(qt_common STATIC
     forest_theme.cpp
     forest_theme.h
+    touch_ui.cpp
+    touch_ui.h
+    cover_art.cpp
+    cover_art.h
     ${PROJECT_SOURCE_DIR}/dist/qt_themes/forest/forest.qrc
     qt_common.h
     qt_common.cpp

@@ -7,6 +7,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QDir>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -35,6 +36,7 @@
 #include "qt_common/game_list/game_list_p.h"
 #include "qt_common/game_list/model.h"
 #include "qt_common/qt_common.h"
+#include "qt_common/touch_ui.h"
 #include "qt_common/util/game.h"
 #include "yuzu/game/carousel.h"
 #include "yuzu/game/game_grid.h"
@@ -54,22 +56,27 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
     this->main_window = parent;
     layout = new QVBoxLayout;
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    layout->setSpacing(8);
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(12, 0, 12, 0);
     outer->setSpacing(12);
     outer->addWidget(QtCommon::ForestTheme::CreateHeader(
         this, tr("Your library"), tr("A little adventure starts here.")));
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
-    auto* browser = new QWidget(splitter);
-    browser->setLayout(layout);
-    forest_panel = new QtCommon::ForestTheme::LibraryPanel(splitter);
-    splitter->addWidget(browser);
-    splitter->addWidget(forest_panel);
-    splitter->setStretchFactor(0, 1);
-    splitter->setSizes({760, 310});
-    outer->addWidget(splitter, 1);
-    outer->addWidget(QtCommon::ForestTheme::CreateFooter(this));
+    library_back = new QPushButton(tr("← Back to library"), this);
+    outer->addWidget(library_back, 0, Qt::AlignLeft);
+    connect(library_back, &QPushButton::clicked, this, [this] {
+        showing_details = false;
+        UpdateLibraryLayout();
+    });
+    library_splitter = new QSplitter(Qt::Horizontal, this);
+    library_browser = new QWidget(library_splitter);
+    library_browser->setLayout(layout);
+    forest_panel = new QtCommon::ForestTheme::LibraryPanel(library_splitter);
+    library_splitter->addWidget(library_browser);
+    library_splitter->addWidget(forest_panel);
+    library_splitter->setStretchFactor(0, 1);
+    library_splitter->setSizes({760, 360});
+    outer->addWidget(library_splitter, 1);
 
     item_model = new GameListModel(vfs, provider, play_time_manager, system, this);
 
@@ -77,18 +84,25 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
 
     search_field = new GameListSearchField(this);
     layout->addWidget(search_field);
+    auto* add_folder = new QPushButton(tr("Add a game folder"), library_browser);
+    add_folder->setObjectName(QStringLiteral("TouchAddGameFolder"));
+    layout->addWidget(add_folder, 0, Qt::AlignLeft);
+    connect(add_folder, &QPushButton::clicked, this, &GameList::AddDirectory);
 
     controller_navigation = new ControllerNavigation(system.HIDCore(), this);
 
     SetupScrollAnimation();
 
-    connect(tree_view, &QTreeView::activated, this, &GameList::ValidateEntry);
+    auto activate = [this](const QModelIndex& index) {
+        if (QDateTime::currentMSecsSinceEpoch() - last_touch_time > 700) ValidateEntry(index);
+    };
+    connect(tree_view, &QTreeView::activated, this, activate);
     connect(tree_view, &QTreeView::customContextMenuRequested, this, &GameList::PopupContextMenu);
 
-    connect(grid_view, &QListView::activated, this, &GameList::ValidateEntry);
+    connect(grid_view, &QListView::activated, this, activate);
     connect(grid_view, &QListView::customContextMenuRequested, this, &GameList::PopupContextMenu);
 
-    connect(carousel_view, &QListView::activated, this, &GameList::ValidateEntry);
+    connect(carousel_view, &QListView::activated, this, activate);
     connect(carousel_view, &QListView::customContextMenuRequested, this, &GameList::PopupContextMenu);
 
     connect(controller_navigation, &ControllerNavigation::TriggerKeyboardEvent, this,
@@ -123,6 +137,12 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
                        static_cast<QAbstractItemView*>(carousel_view)}) {
         connect(view->selectionModel(), &QItemSelectionModel::currentChanged, this,
                 &GameList::UpdateForestSelection);
+        connect(view, &QAbstractItemView::clicked, this, [this] {
+            if (HasGameSelection()) {
+                showing_details = true;
+                UpdateLibraryLayout();
+            }
+        });
     }
     connect(forest_panel, &QtCommon::ForestTheme::LibraryPanel::PlayRequested, this,
             &GameList::ActivateSelection);
@@ -133,7 +153,30 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
                 index.data(GameListItemPath::FullPathRole).toString().toStdString());
         }
     });
+    connect(forest_panel, &QtCommon::ForestTheme::LibraryPanel::MoreRequested, this, [this] {
+        if (!HasGameSelection()) return;
+        const auto index = m_currentView->currentIndex().siblingAtColumn(0);
+        QMenu menu(this);
+        AddGamePopup(menu, index.data(GameListItemPath::ProgramIdRole).toULongLong(),
+                     index.data(GameListItemPath::FullPathRole).toString().toStdString());
+        menu.exec(forest_panel->mapToGlobal(QPoint(0, forest_panel->height())));
+    });
+    connect(item_model, &QAbstractItemModel::dataChanged, this, [this] { UpdateForestSelection(); });
     UpdateForestSelection();
+}
+
+void GameList::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    UpdateLibraryLayout();
+}
+
+void GameList::UpdateLibraryLayout() {
+    if (!library_splitter) return;
+    const bool narrow = width() < 1050;
+    library_back->setVisible(narrow && showing_details);
+    library_browser->setVisible(!narrow || !showing_details);
+    forest_panel->setVisible(!narrow || showing_details);
+    forest_panel->setMaximumWidth(narrow ? QWIDGETSIZE_MAX : 420);
 }
 
 bool GameList::HasGameSelection() const {
@@ -160,10 +203,12 @@ void GameList::UpdateForestSelection() {
         if (title.isEmpty()) {
             title = QFileInfo(path).completeBaseName();
         }
-        forest_panel->SetGame(title, path, qvariant_cast<QPixmap>(index.data(Qt::DecorationRole)));
+        forest_panel->SetGame(title, path, index.data(GameListItemPath::CoverDataRole).toByteArray());
     } else {
         forest_panel->SetGame({}, {});
+        showing_details = false;
     }
+    UpdateLibraryLayout();
     emit SelectionChanged(selected);
 }
 
@@ -294,16 +339,17 @@ void GameList::ResetViewMode() {
     // MainWindow switches the view right after starting the first populate; keep it disabled
     // until that finishes, as OnPopulate does for every other populate.
     m_currentView->setEnabled(!m_populating);
-    layout->insertWidget(0, m_currentView);
+    layout->insertWidget(1, m_currentView, 1);
     UpdateForestSelection();
 
     auto view = m_currentView->viewport();
     view->installEventFilter(this);
+    m_currentView->installEventFilter(this);
 
     view->grabGesture(Qt::SwipeGesture);
     view->grabGesture(Qt::PanGesture);
 
-    QScroller::grabGesture(view, QScroller::LeftMouseButtonGesture);
+    QScroller::grabGesture(view, QScroller::TouchGesture);
 
     auto scroller = QScroller::scroller(view);
     QScrollerProperties props;
@@ -848,6 +894,10 @@ void GameList::changeEvent(QEvent* event) {
 
 void GameList::RetranslateUI() {
     item_model->RetranslateUI();
+    if (auto* add = findChild<QPushButton*>(QStringLiteral("TouchAddGameFolder"))) {
+        add->setText(tr("Add a game folder"));
+    }
+    library_back->setText(tr("← Back to library"));
     if (auto* heading = findChild<QLabel*>(QStringLiteral("ForestHeading"))) {
         heading->setText(tr("Your library"));
     }
@@ -875,6 +925,20 @@ void GameList::SetupScrollAnimation() {
 }
 
 bool GameList::eventFilter(QObject* obj, QEvent* event) {
+    if (m_currentView && (obj == m_currentView || obj == m_currentView->viewport())) {
+        if (event->type() == QEvent::TouchBegin || event->type() == QEvent::TouchUpdate ||
+            event->type() == QEvent::TouchEnd) {
+            last_touch_time = QDateTime::currentMSecsSinceEpoch();
+        } else if (event->type() == QEvent::KeyPress) {
+            last_touch_time = 0;
+        } else if (event->type() == QEvent::MouseButtonPress ||
+                   event->type() == QEvent::MouseButtonDblClick) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->source() != Qt::MouseEventNotSynthesized) {
+                last_touch_time = QDateTime::currentMSecsSinceEpoch();
+            }
+        }
+    }
     if (obj == m_currentView->viewport() && event->type() == QEvent::Wheel) {
         QWheelEvent* wheelEvent = static_cast<QWheelEvent*>(event);
 
@@ -944,11 +1008,10 @@ bool GameList::eventFilter(QObject* obj, QEvent* event) {
 
 GameListPlaceholder::GameListPlaceholder(MainWindow* parent) : QWidget{parent} {
     layout = new QVBoxLayout;
-    image = new QLabel;
+    image = new QLabel(this);
     text = new QLabel;
     layout->setAlignment(Qt::AlignCenter);
-    image->setPixmap(QPixmap(QStringLiteral(":/forest/forest-glade.png"))
-                         .scaled(680, 340, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    image->hide();
 
     RetranslateUI();
     QFont font = text->font();
@@ -957,13 +1020,11 @@ GameListPlaceholder::GameListPlaceholder(MainWindow* parent) : QWidget{parent} {
     text->setAlignment(Qt::AlignHCenter);
     image->setAlignment(Qt::AlignHCenter);
 
-    layout->addWidget(image);
     layout->addWidget(text);
     auto* add_folder = new QPushButton(tr("Add a game folder"), this);
     add_folder->setProperty("forestPrimary", true);
     layout->addWidget(add_folder, 0, Qt::AlignHCenter);
     connect(add_folder, &QPushButton::clicked, this, &GameListPlaceholder::AddDirectory);
-    layout->addWidget(QtCommon::ForestTheme::CreateFooter(this));
     setLayout(layout);
 }
 
@@ -982,7 +1043,7 @@ void GameListPlaceholder::changeEvent(QEvent* event) {
 }
 
 void GameListPlaceholder::RetranslateUI() {
-    text->setText(tr("Your next adventure starts here.\nDouble-click to add a game folder."));
+    text->setText(tr("Your next adventure starts here.\nAdd a game folder to build your library."));
     text->setObjectName(QStringLiteral("ForestHeading"));
     if (auto* button = findChild<QPushButton*>()) {
         button->setText(tr("Add a game folder"));

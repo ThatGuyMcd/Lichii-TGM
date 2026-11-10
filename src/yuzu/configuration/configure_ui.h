@@ -15,6 +15,9 @@ namespace Ui {
 class ConfigureUi;
 }
 
+class QComboBox;
+class QCheckBox;
+
 class ConfigureUi : public QWidget {
     Q_OBJECT
 
@@ -51,6 +54,8 @@ private:
     void UpdateWidthText();
 
     std::unique_ptr<Ui::ConfigureUi> ui;
+    QComboBox* density_choice{};
+    QCheckBox* fullscreen_settings{};
 
     Settings::AspectRatio ratio;
     Settings::ResolutionSetup resolution_setting;

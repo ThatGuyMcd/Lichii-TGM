@@ -14,6 +14,8 @@
 #include <QCoreApplication>
 #include <QDirIterator>
 #include <QFileDialog>
+#include <QFormLayout>
+#include <QGroupBox>
 #include <QLocale>
 #include <QString>
 #include <QToolButton>
@@ -30,6 +32,8 @@
 
 #include "qt_common/config/uisettings.h"
 #include "qt_common/qt_compat.h"
+#include "qt_common/forest_theme.h"
+#include "qt_common/touch_ui.h"
 
 namespace {
 
@@ -102,6 +106,19 @@ ConfigureUi::ConfigureUi(Core::System& system_, QWidget* parent)
       resolution_setting{Settings::values.resolution_setup.GetValue()}, system{system_} {
     ui->setupUi(this);
 
+    auto* touch_group = new QGroupBox(tr("Touch and handheld"), this);
+    touch_group->setObjectName(QStringLiteral("TouchHandheldGroup"));
+    auto* touch_layout = new QFormLayout(touch_group);
+    density_choice = new QComboBox(touch_group);
+    density_choice->setObjectName(QStringLiteral("InterfaceDensity"));
+    density_choice->addItem(tr("Comfortable — larger touch targets"), true);
+    density_choice->addItem(tr("Compact"), false);
+    touch_layout->addRow(tr("Interface spacing"), density_choice);
+    fullscreen_settings = new QCheckBox(tr("Open settings full-screen"), touch_group);
+    fullscreen_settings->setObjectName(QStringLiteral("SettingsFullscreen"));
+    touch_layout->addRow(fullscreen_settings);
+    ui->verticalLayout->insertWidget(0, touch_group);
+
     InitializeLanguageComboBox();
 
     for (const auto& theme : UISettings::themes) {
@@ -158,6 +175,10 @@ ConfigureUi::ConfigureUi(Core::System& system_, QWidget* parent)
 ConfigureUi::~ConfigureUi() = default;
 
 void ConfigureUi::ApplyConfiguration() {
+    UISettings::values.comfortable_ui = density_choice->currentData().toBool();
+    UISettings::values.settings_fullscreen = fullscreen_settings->isChecked();
+    QtCommon::TouchUi::Initialize(UISettings::values.comfortable_ui.GetValue(),
+                                  UISettings::values.settings_fullscreen.GetValue());
     UISettings::values.theme =
         ui->theme_combobox->itemData(ui->theme_combobox->currentIndex()).toString().toStdString();
     UISettings::values.show_add_ons = ui->show_add_ons->isChecked();
@@ -176,6 +197,11 @@ void ConfigureUi::ApplyConfiguration() {
     UISettings::values.screenshot_height.SetValue(height);
 
     RequestGameListUpdate();
+    if (QtCommon::ForestTheme::IsForestTheme() && QtCommon::ForestTheme::IsForestThemeName(
+            QString::fromStdString(UISettings::values.theme))) {
+        QtCommon::ForestTheme::Apply(QString::fromStdString(UISettings::values.theme));
+    }
+    QtCommon::TouchUi::PreparePage(window());
     system.ApplySettings();
 }
 
@@ -184,6 +210,8 @@ void ConfigureUi::RequestGameListUpdate() {
 }
 
 void ConfigureUi::SetConfiguration() {
+    density_choice->setCurrentIndex(density_choice->findData(UISettings::values.comfortable_ui.GetValue()));
+    fullscreen_settings->setChecked(UISettings::values.settings_fullscreen.GetValue());
     ui->theme_combobox->setCurrentIndex(
         ui->theme_combobox->findData(QString::fromStdString(UISettings::values.theme)));
     const QString language = QString::fromStdString(UISettings::values.language.GetValue());
@@ -229,6 +257,17 @@ void ConfigureUi::changeEvent(QEvent* event) {
 
 void ConfigureUi::RetranslateUI() {
     ui->retranslateUi(this);
+    if (auto* group = findChild<QGroupBox*>(QStringLiteral("TouchHandheldGroup"))) {
+        group->setTitle(tr("Touch and handheld"));
+        if (auto* form = qobject_cast<QFormLayout*>(group->layout())) {
+            if (auto* label = qobject_cast<QLabel*>(form->labelForField(density_choice))) {
+                label->setText(tr("Interface spacing"));
+            }
+        }
+    }
+    density_choice->setItemText(0, tr("Comfortable — larger touch targets"));
+    density_choice->setItemText(1, tr("Compact"));
+    fullscreen_settings->setText(tr("Open settings full-screen"));
 
     for (int i = 0; i < ui->folder_icon_size_combobox->count(); i++) {
         ui->folder_icon_size_combobox->setItemText(

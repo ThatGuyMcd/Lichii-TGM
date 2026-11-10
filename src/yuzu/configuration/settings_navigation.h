@@ -6,8 +6,8 @@
 #include <utility>
 #include <vector>
 
-#include <QComboBox>
 #include <QApplication>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFontMetrics>
@@ -27,8 +27,8 @@
 #include <QTabWidget>
 #include <QTextDocumentFragment>
 #include <QTimer>
-#include <QTreeWidgetItemIterator>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 namespace ConfigurationShared {
@@ -115,12 +115,11 @@ public:
         body->addWidget(sidebar, 1);
         body->addWidget(content, 3);
         connect(search, &QLineEdit::textChanged, this, [this] { Filter(); });
-        connect(selection, &QListWidget::currentItemChanged, this,
-                [this](QListWidgetItem* item) {
-                    if (item) {
-                        Select(item->data(Qt::UserRole).toInt());
-                    }
-                });
+        connect(selection, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* item) {
+            if (item) {
+                Select(item->data(Qt::UserRole).toInt());
+            }
+        });
         connect(selection, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
             const int index = item->data(Qt::UserRole).toInt();
             if (index >= 0) {
@@ -132,7 +131,8 @@ public:
         });
         connect(sections, &QPushButton::toggled, this, [this](bool open) {
             SetDrawerOpen(open);
-            if (open) selection->setFocus(Qt::ShortcutFocusReason);
+            if (open)
+                selection->setFocus(Qt::ShortcutFocusReason);
         });
         auto* find = new QShortcut(QKeySequence::Find, this);
         connect(find, &QShortcut::activated, this, [this] {
@@ -146,16 +146,16 @@ public:
 
     void SetPages(std::vector<PageSpec> specifications) {
         const bool initialized = !pages.empty();
-        const QPointer<QWidget> expanded = expanded_group >= 0 &&
-            static_cast<size_t>(expanded_group) < groups.size()
-            ? pages[groups[expanded_group].first].spec.widget : nullptr;
+        const QPointer<QWidget> expanded =
+            expanded_group >= 0 && static_cast<size_t>(expanded_group) < groups.size()
+                ? pages[groups[expanded_group].first].spec.widget
+                : nullptr;
         const QSignalBlocker blocker(selection);
         std::vector<Page> updated;
         updated.reserve(specifications.size());
         for (auto& specification : specifications) {
-            const auto old = std::ranges::find_if(pages, [&](const Page& page) {
-                return page.spec.widget == specification.widget;
-            });
+            const auto old = std::ranges::find_if(
+                pages, [&](const Page& page) { return page.spec.widget == specification.widget; });
             if (old != pages.end()) {
                 updated.push_back(std::move(*old));
             } else {
@@ -195,7 +195,8 @@ public:
         expanded_group = initialized || pages.empty() ? -1 : 0;
         if (expanded) {
             for (const auto& page : pages) {
-                if (page.spec.widget == expanded) expanded_group = page.group;
+                if (page.spec.widget == expanded)
+                    expanded_group = page.group;
             }
         }
         Retranslate();
@@ -252,7 +253,8 @@ protected:
             auto* item = selection->currentItem();
             if (item && (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space)) {
                 const int index = item->data(Qt::UserRole).toInt();
-                if (index < 0) ToggleGroup(item->data(Qt::UserRole + 1).toInt());
+                if (index < 0)
+                    ToggleGroup(item->data(Qt::UserRole + 1).toInt());
                 else {
                     Select(index);
                     SetDrawerOpen(false);
@@ -261,10 +263,11 @@ protected:
             }
             if (item && terms.empty() && (key == Qt::Key_Left || key == Qt::Key_Right)) {
                 const int index = item->data(Qt::UserRole).toInt();
-                const int group = index < 0 ? item->data(Qt::UserRole + 1).toInt()
-                                           : pages[index].group;
+                const int group =
+                    index < 0 ? item->data(Qt::UserRole + 1).toInt() : pages[index].group;
                 if ((key == Qt::Key_Left && expanded_group == group) ||
-                    (key == Qt::Key_Right && expanded_group != group)) ToggleGroup(group);
+                    (key == Qt::Key_Right && expanded_group != group))
+                    ToggleGroup(group);
                 return true;
             }
         }
@@ -317,7 +320,8 @@ private:
     }
 
     void SetDrawerOpen(bool open) {
-        if (narrow && open && !drawer_open) focus_before_drawer = QApplication::focusWidget();
+        if (narrow && open && !drawer_open)
+            focus_before_drawer = QApplication::focusWidget();
         drawer_open = narrow && open;
         Reflow();
         if (narrow && !drawer_open) {
@@ -330,7 +334,8 @@ private:
     }
 
     void ScheduleRowSizes() {
-        if (row_sizes_pending) return;
+        if (row_sizes_pending)
+            return;
         row_sizes_pending = true;
         QTimer::singleShot(0, this, [this] {
             row_sizes_pending = false;
@@ -339,8 +344,10 @@ private:
                 auto* item = selection->item(row);
                 const bool heading = item->data(Qt::UserRole).toInt() < 0;
                 const QFontMetrics metrics(heading ? item->font() : selection->font());
-                const int text_height = metrics.boundingRect(
-                    QRect(0, 0, width, 0), Qt::TextWordWrap, item->text()).height() + 16;
+                const int text_height =
+                    metrics.boundingRect(QRect(0, 0, width, 0), Qt::TextWordWrap, item->text())
+                        .height() +
+                    16;
                 item->setSizeHint(QSize(0, std::max(target_size + (heading ? 8 : 0), text_height)));
             }
         });
@@ -363,7 +370,8 @@ private:
     }
 
     void ToggleGroup(int index) {
-        if (index < 0 || static_cast<size_t>(index) >= groups.size()) return;
+        if (index < 0 || static_cast<size_t>(index) >= groups.size())
+            return;
         auto& group = groups[index];
         if (terms.empty() && expanded_group == index) {
             expanded_group = -1;
@@ -435,8 +443,8 @@ private:
 
     void Filter() {
         const bool was_searching = !terms.empty();
-        terms = SearchText(search->text()).split(QRegularExpression(QStringLiteral("\\s+")),
-                                                  Qt::SkipEmptyParts);
+        terms = SearchText(search->text())
+                    .split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
         const QSignalBlocker blocker(selection);
         int first = -1;
         int selected = -1;
@@ -465,10 +473,12 @@ private:
             selected = first;
         }
         if (selected >= 0) {
-            if (was_searching && terms.empty()) expanded_group = pages[selected].group;
+            if (was_searching && terms.empty())
+                expanded_group = pages[selected].group;
             Select(selected, false);
             selection->setCurrentItem(pages[selected].item->isHidden()
-                ? groups[pages[selected].group].item : pages[selected].item);
+                                          ? groups[pages[selected].group].item
+                                          : pages[selected].item);
         } else {
             RefreshVisibility();
             selection->setCurrentRow(-1);
@@ -485,7 +495,8 @@ private:
         auto& page = pages[index];
         current = page.spec.widget;
         groups[page.group].last = current;
-        if (expand || !terms.empty()) expanded_group = page.group;
+        if (expand || !terms.empty())
+            expanded_group = page.group;
         title->setText(page.spec.title);
         breadcrumb->setText(page.spec.group + QStringLiteral(" › ") + page.spec.title);
         stack->setCurrentWidget(page.scroll);

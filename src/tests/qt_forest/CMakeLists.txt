@@ -7,15 +7,19 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     include(CTest)
 endif()
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets Test Concurrent)
 add_library(forest_test_widgets STATIC
     ../../qt_common/forest_theme.cpp
     ../../qt_common/forest_theme.h
+    ../../qt_common/touch_ui.cpp
+    ../../qt_common/touch_ui.h
+    ../../qt_common/cover_art.cpp
+    ../../qt_common/cover_art.h
     ../../../dist/qt_themes/forest/forest.qrc)
 set_target_properties(forest_test_widgets PROPERTIES AUTOMOC ON AUTORCC ON)
 target_compile_features(forest_test_widgets PUBLIC cxx_std_20)
 target_include_directories(forest_test_widgets PUBLIC ../..)
-target_link_libraries(forest_test_widgets PUBLIC Qt6::Widgets)
+target_link_libraries(forest_test_widgets PUBLIC Qt6::Widgets Qt6::Concurrent)
 target_compile_definitions(forest_test_widgets PUBLIC
     QT_NO_CAST_FROM_ASCII QT_NO_CAST_TO_ASCII QT_USE_QSTRINGBUILDER)
 add_executable(forest_theme_tests forest_theme.cpp)

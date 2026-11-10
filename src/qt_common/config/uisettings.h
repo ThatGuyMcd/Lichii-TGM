@@ -175,6 +175,8 @@ struct Values {
     Setting<std::string> steamgriddb_api_key{linkage, {}, "steamgriddb_api_key", Category::Ui};
 
     std::string theme;
+    Setting<bool> comfortable_ui{linkage, true, "comfortable_ui", Category::Ui};
+    Setting<bool> settings_fullscreen{linkage, true, "settings_fullscreen", Category::Ui};
 
     // Shortcut name <Shortcut, context>
     std::vector<Shortcut> shortcuts;

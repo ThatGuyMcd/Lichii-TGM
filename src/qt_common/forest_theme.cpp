@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "qt_common/cover_art.h"
 #include "qt_common/forest_theme.h"
+#include "qt_common/touch_ui.h"
 
 #include <QApplication>
 #include <QDialog>
@@ -26,10 +28,9 @@ namespace {
 
 class Artwork final : public QFrame {
 public:
-    Artwork(QWidget* parent, const QString& resource, bool footer = false)
-        : QFrame(parent), picture(resource), is_footer(footer) {
+    Artwork(QWidget* parent, const QString& resource) : QFrame(parent), picture(resource) {
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setFixedHeight(footer ? 80 : 88);
+        setFixedHeight(88);
     }
 
 protected:
@@ -37,46 +38,13 @@ protected:
         QFrame::paintEvent(event);
         QPainter painter(this);
         painter.setRenderHint(QPainter::SmoothPixmapTransform);
-        if (is_footer) {
-            painter.drawPixmap(QRect(0, -22, 315, 105), picture);
-        } else {
-            const int width = qMin(420, this->width());
-            painter.drawPixmap(QRect(this->width() - width, -26, width, width / 3), picture);
-        }
-    }
-
-private:
-    QPixmap picture;
-    bool is_footer;
-};
-
-class Landscape final : public QWidget {
-public:
-    explicit Landscape(QWidget* parent) : QWidget(parent), picture(QStringLiteral(":/forest/forest-glade.png")) {
-        setFixedHeight(180);
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    }
-
-protected:
-    void paintEvent(QPaintEvent*) override {
-        QPainter painter(this);
-        const QPixmap scaled = picture.scaled(size(), Qt::KeepAspectRatioByExpanding,
-                                               Qt::SmoothTransformation);
-        painter.drawPixmap((width() - scaled.width()) / 2, (height() - scaled.height()) / 2, scaled);
+        const int width = qMin(420, this->width());
+        painter.drawPixmap(QRect(this->width() - width, -26, width, width / 3), picture);
     }
 
 private:
     QPixmap picture;
 };
-
-void RemoveFromLayout(QLayout* layout, QWidget* widget) {
-    layout->removeWidget(widget);
-    for (int i = 0; i < layout->count(); ++i) {
-        if (auto* child = layout->itemAt(i)->layout()) {
-            RemoveFromLayout(child, widget);
-        }
-    }
-}
 
 class DialogDecorator final : public QObject {
 public:
@@ -122,12 +90,16 @@ void Apply(const QString& name) {
         {QStringLiteral("MUTED"), dark ? QStringLiteral("#b4c7b7") : QStringLiteral("#516955")},
         {QStringLiteral("BORDER"), dark ? QStringLiteral("#3d5c49") : QStringLiteral("#a8bd9e")},
         {QStringLiteral("ACCENT"), dark ? QStringLiteral("#9cddad") : QStringLiteral("#3f7750")},
-        {QStringLiteral("ACCENTLABEL"), dark ? QStringLiteral("#c3eac9") : QStringLiteral("#326541")},
-        {QStringLiteral("ACCENTTEXT"), dark ? QStringLiteral("#142f22") : QStringLiteral("#ffffff")},
-        {QStringLiteral("ACCENTHOVER"), dark ? QStringLiteral("#b9ebc4") : QStringLiteral("#326541")},
+        {QStringLiteral("ACCENTLABEL"),
+         dark ? QStringLiteral("#c3eac9") : QStringLiteral("#326541")},
+        {QStringLiteral("ACCENTTEXT"),
+         dark ? QStringLiteral("#142f22") : QStringLiteral("#ffffff")},
+        {QStringLiteral("ACCENTHOVER"),
+         dark ? QStringLiteral("#b9ebc4") : QStringLiteral("#326541")},
         {QStringLiteral("HOVER"), dark ? QStringLiteral("#254738") : QStringLiteral("#d8e8cf")},
         {QStringLiteral("SELECTION"), dark ? QStringLiteral("#365c43") : QStringLiteral("#c9e3c3")},
-        {QStringLiteral("SELECTEDTEXT"), dark ? QStringLiteral("#f4f2dc") : QStringLiteral("#203b2d")},
+        {QStringLiteral("SELECTEDTEXT"),
+         dark ? QStringLiteral("#f4f2dc") : QStringLiteral("#203b2d")},
         {QStringLiteral("AMBER"), dark ? QStringLiteral("#e8bd6a") : QStringLiteral("#9b6a22")},
     };
     auto color = [&colors](const QString& key) {
@@ -139,7 +111,9 @@ void Apply(const QString& name) {
         return QColor();
     };
     if (!qApp->property("forestStyleInitialized").toBool()) {
-        qApp->setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+        TouchUi::Initialize(TouchUi::IsComfortable(),
+                            !qApp->property("touchSettingsFullscreen").isValid() ||
+                                qApp->property("touchSettingsFullscreen").toBool());
         auto* decorator = new DialogDecorator(qApp);
         qApp->installEventFilter(decorator);
         qApp->setProperty("forestStyleInitialized", true);
@@ -152,8 +126,8 @@ void Apply(const QString& name) {
         palette.setColor(group, QPalette::Button, color(QStringLiteral("PANEL")));
         const QColor text = color(group == QPalette::Disabled ? QStringLiteral("DISABLED")
                                                               : QStringLiteral("TEXT"));
-        for (auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText,
-                          QPalette::ToolTipText}) {
+        for (auto role :
+             {QPalette::WindowText, QPalette::Text, QPalette::ButtonText, QPalette::ToolTipText}) {
             palette.setColor(group, role, text);
         }
         palette.setColor(group, QPalette::ToolTipBase, color(QStringLiteral("PANEL")));
@@ -167,9 +141,9 @@ void Apply(const QString& name) {
     }
     qApp->setPalette(palette);
     QFont font = qApp->font();
-    font.setFamilies({QStringLiteral("Segoe UI"), QStringLiteral("Noto Sans"),
-                      QStringLiteral("DejaVu Sans")});
-    font.setPointSize(10);
+    font.setFamilies(
+        {QStringLiteral("Segoe UI"), QStringLiteral("Noto Sans"), QStringLiteral("DejaVu Sans")});
+    font.setPointSize(TouchUi::IsComfortable() ? 12 : 10);
     qApp->setFont(font);
     QFile stylesheet(QStringLiteral(":/forest/style.qss"));
     if (!stylesheet.open(QFile::ReadOnly)) {
@@ -180,6 +154,14 @@ void Apply(const QString& name) {
     for (const auto& entry : colors) {
         css.replace(QStringLiteral("@%1@").arg(entry.first), entry.second);
     }
+    css.replace(QStringLiteral("@FONT@"),
+                TouchUi::IsComfortable() ? QStringLiteral("12pt") : QStringLiteral("10pt"));
+    css.replace(QStringLiteral("@FIELDHEIGHT@"),
+                TouchUi::IsComfortable() ? QStringLiteral("38px") : QStringLiteral("20px"));
+    css.replace(QStringLiteral("@TARGET@"),
+                TouchUi::IsComfortable() ? QStringLiteral("48px") : QStringLiteral("24px"));
+    css.replace(QStringLiteral("@INDICATOR@"),
+                TouchUi::IsComfortable() ? QStringLiteral("24px") : QStringLiteral("16px"));
     qApp->setProperty("forestTheme", true);
     qApp->setStyleSheet(css);
 }
@@ -200,11 +182,12 @@ QIcon Icon(const QString& name) {
         QPainter painter(&pixmap);
         painter.setRenderHint(QPainter::Antialiasing);
         painter.scale(2, 2);
-        const auto color = qApp->palette().color(mode == QIcon::Disabled ? QPalette::Disabled
-                                                                        : QPalette::Active,
-                                               QPalette::WindowText);
+        const auto color = qApp->palette().color(
+            mode == QIcon::Disabled ? QPalette::Disabled : QPalette::Active, QPalette::WindowText);
         painter.setPen(QPen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        if (name == QStringLiteral("play")) {
+        if (name == QStringLiteral("menu")) {
+            for (int y : {6, 12, 18}) painter.drawLine(4, y, 20, y);
+        } else if (name == QStringLiteral("play")) {
             painter.setBrush(color);
             painter.drawPolygon(QPolygonF{QPointF(8, 5), QPointF(19, 12), QPointF(8, 19)});
         } else if (name == QStringLiteral("pause")) {
@@ -216,11 +199,12 @@ QIcon Icon(const QString& name) {
             painter.drawArc(QRectF(5, 5, 14, 14), 30 * 16, 295 * 16);
             painter.drawPolyline(QPolygonF{QPointF(15, 3), QPointF(20, 5), QPointF(17, 10)});
         } else if (name == QStringLiteral("fullscreen")) {
-            for (const auto& point : {QPointF(4, 4), QPointF(20, 4), QPointF(20, 20), QPointF(4, 20)}) {
+            for (const auto& point :
+                 {QPointF(4, 4), QPointF(20, 4), QPointF(20, 20), QPointF(4, 20)}) {
                 const qreal dx = point.x() < 12 ? 5 : -5;
                 const qreal dy = point.y() < 12 ? 5 : -5;
-                painter.drawPolyline(QPolygonF{point + QPointF(0, dy), point,
-                                               point + QPointF(dx, 0)});
+                painter.drawPolyline(
+                    QPolygonF{point + QPointF(0, dy), point, point + QPointF(dx, 0)});
             }
         } else if (name == QStringLiteral("open")) {
             painter.drawPolyline(QPolygonF{QPointF(3, 19), QPointF(3, 5), QPointF(10, 5),
@@ -258,93 +242,77 @@ QWidget* CreateHeader(QWidget* parent, const QString& title, const QString& subt
     return header;
 }
 
-QWidget* CreateFooter(QWidget* parent) {
-    InitializeForestResources();
-    return new Artwork(parent, QStringLiteral(":/forest/footer-fox.png"), true);
-}
-
 void PrepareDialog(QDialog* dialog) {
-    if (!IsForestTheme() || dialog->property("forestDialogPrepared").toBool() || !dialog->layout()) {
+    if (!IsForestTheme() || dialog->property("forestDialogPrepared").toBool() ||
+        !dialog->layout()) {
         return;
     }
-    dialog->setProperty("forestDialogPrepared", true);
-    auto* old_layout = dialog->layout();
-    const auto boxes = dialog->findChildren<QDialogButtonBox*>(QString(), Qt::FindDirectChildrenOnly);
-    for (auto* box : boxes) {
-        RemoveFromLayout(old_layout, box);
+    if (QByteArray(dialog->metaObject()->className()) == "AboutDialog") {
+        dialog->setProperty("touchFullscreenOptOut", true);
     }
-    auto* content = new QWidget;
-    content->setLayout(old_layout);
-    auto* layout = new QVBoxLayout(dialog);
-    layout->setContentsMargins(12, 8, 12, 12);
-    layout->addWidget(CreateHeader(dialog, dialog->windowTitle()));
-    auto* scroll = new QScrollArea(dialog);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidget(content);
-    layout->addWidget(scroll, 1);
-    for (auto* box : boxes) {
-        layout->addWidget(box);
-    }
-    dialog->setSizeGripEnabled(true);
-    const QSize available = dialog->screen()->availableGeometry().size() - QSize(48, 64);
-    dialog->setMinimumSize(QSize(460, 340).boundedTo(available));
-    dialog->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
-    dialog->resize((dialog->sizeHint() + QSize(40, 40)).boundedTo(available));
+    TouchUi::InstallSettingsShell(dialog, dialog->windowTitle());
 }
 
 LibraryPanel::LibraryPanel(QWidget* parent) : QFrame(parent) {
     InitializeForestResources();
     setObjectName(QStringLiteral("ForestLibraryPanel"));
-    setMinimumWidth(230);
-    setMaximumWidth(380);
+    setMinimumWidth(280);
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(12);
-    layout->addWidget(new Landscape(this));
-    icon_label = new QLabel(this);
-    layout->addWidget(icon_label);
-    title_label = new QLabel(this);
+    auto* body = new QWidget(this);
+    auto* body_layout = new QVBoxLayout(body);
+    body_layout->setContentsMargins(0, 0, 0, 0);
+    cover = new QtCommon::CoverArt(body);
+    body_layout->addWidget(cover, 1);
+    title_label = new QLabel(body);
     title_label->setObjectName(QStringLiteral("ForestGameTitle"));
     title_label->setWordWrap(true);
-    layout->addWidget(title_label);
-    path_label = new QLabel(this);
+    body_layout->addWidget(title_label);
+    path_label = new QLabel(body);
     path_label->setObjectName(QStringLiteral("ForestHint"));
     path_label->setWordWrap(true);
     path_label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     path_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(path_label);
-    layout->addStretch();
+    body_layout->addWidget(path_label);
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(body);
+    layout->addWidget(scroll, 1);
     play_button = new QPushButton(tr("Play"), this);
     play_button->setProperty("forestPrimary", true);
     layout->addWidget(play_button);
     properties_button = new QPushButton(tr("Game settings"), this);
     layout->addWidget(properties_button);
+    more_button = new QPushButton(tr("More actions"), this);
+    layout->addWidget(more_button);
     connect(play_button, &QPushButton::clicked, this, &LibraryPanel::PlayRequested);
     connect(properties_button, &QPushButton::clicked, this, &LibraryPanel::PropertiesRequested);
+    connect(more_button, &QPushButton::clicked, this, &LibraryPanel::MoreRequested);
     SetGame({}, {});
 }
 
-void LibraryPanel::SetGame(const QString& title, const QString& path, const QPixmap& icon) {
+void LibraryPanel::SetGame(const QString& title, const QString& path, const QByteArray& artwork) {
     game_title = title;
     game_path = path;
     const bool selected = !path.isEmpty();
     title_label->setText(selected ? title : tr("Your next adventure"));
     path_label->setText(selected ? path : tr("Select a game in your library to get started."));
-    icon_label->setPixmap(icon.isNull() ? QPixmap{} : icon.scaled(64, 64, Qt::KeepAspectRatio,
-                                                               Qt::SmoothTransformation));
-    icon_label->setVisible(!icon.isNull());
+    cover->SetSource(path, artwork);
     play_button->setEnabled(selected);
     properties_button->setEnabled(selected);
+    more_button->setEnabled(selected);
 }
 
 void LibraryPanel::changeEvent(QEvent* event) {
     if (event->type() == QEvent::LanguageChange) {
         play_button->setText(tr("Play"));
         properties_button->setText(tr("Game settings"));
+        more_button->setText(tr("More actions"));
         title_label->setText(game_path.isEmpty() ? tr("Your next adventure") : game_title);
-        path_label->setText(game_path.isEmpty() ? tr("Select a game in your library to get started.")
-                                              : game_path);
+        path_label->setText(
+            game_path.isEmpty() ? tr("Select a game in your library to get started.") : game_path);
     }
     QFrame::changeEvent(event);
 }

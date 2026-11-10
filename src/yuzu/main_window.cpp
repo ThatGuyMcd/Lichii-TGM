@@ -34,6 +34,7 @@
 #include "network/network.h"
 #include "qt_common/discord/discord.h"
 #include "qt_common/forest_theme.h"
+#include "qt_common/touch_ui.h"
 #include "ui_main.h"
 
 // Other Yuzu stuff //
@@ -105,6 +106,7 @@
 #include <QRegion>
 #include <QStatusBar>
 #include <QToolBar>
+#include <QToolButton>
 #include <QtConcurrentRun>
 
 #ifdef __APPLE__
@@ -970,7 +972,18 @@ void MainWindow::InitializeWidgets() {
     playback_toolbar->setObjectName(QStringLiteral("ForestPlaybackToolbar"));
     playback_toolbar->setMovable(false);
     playback_toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    playback_toolbar->setIconSize(QSize(20, 20));
+    playback_toolbar->setIconSize(QSize(26, 26));
+    auto* menu_button = new QToolButton(playback_toolbar);
+    menu_button->setText(tr("Menu"));
+    menu_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    menu_button->setObjectName(QStringLiteral("TouchMainMenu"));
+    menu_button->setPopupMode(QToolButton::InstantPopup);
+    auto* complete_menu = new QMenu(menu_button);
+    for (auto* action : ui->menubar->actions()) {
+        if (action->menu()) complete_menu->addMenu(action->menu());
+    }
+    menu_button->setMenu(complete_menu);
+    playback_toolbar->addWidget(menu_button);
     playback_toolbar->addAction(ui->action_Load_File);
     playback_toolbar->addSeparator();
     play_library_action = playback_toolbar->addAction(tr("Play"));
@@ -985,6 +998,15 @@ void MainWindow::InitializeWidgets() {
     playback_toolbar->addAction(ui->action_Fullscreen);
     playback_toolbar->addAction(ui->action_Configure);
     ui->menu_View->addAction(playback_toolbar->toggleViewAction());
+    connect(playback_toolbar, &QToolBar::visibilityChanged, this, [this](bool visible) {
+        const bool fullscreen_game = emulation_running && ui->action_Single_Window_Mode->isChecked() &&
+                                     ui->action_Fullscreen->isChecked();
+        bool hidden_chrome = fullscreen_game;
+#ifdef HAS_RESHADE
+        hidden_chrome |= photo_hotsampled;
+#endif
+        ui->menubar->setVisible(!hidden_chrome && (!QtCommon::TouchUi::IsComfortable() || !visible));
+    });
     UpdatePlaybackToolbar();
 
     game_list_placeholder = new GameListPlaceholder(this);
@@ -3918,7 +3940,7 @@ void MainWindow::HideFullscreen() {
         }
 
         statusBar()->setVisible(ui->action_Show_Status_Bar->isChecked());
-        ui->menubar->show();
+        ui->menubar->setVisible(!QtCommon::TouchUi::IsComfortable() || !playback_toolbar->isVisible());
         playback_toolbar->setVisible(fullscreen_saved_toolbar);
     } else {
         if (UsingExclusiveFullscreen()) {
@@ -3976,8 +3998,9 @@ void MainWindow::ResetWindowSize(u32 width, u32 height) {
     }
     const bool show_status_bar = ui->action_Show_Status_Bar->isChecked();
     const auto status_bar_height = (single_window && show_status_bar) ? statusBar()->height() : 0;
-    const auto menu_bar_height = single_window ? menuBar()->height() : 0;
-    const auto extra_height = menu_bar_height + status_bar_height;
+    const auto menu_bar_height = single_window && menuBar()->isVisible() ? menuBar()->height() : 0;
+    const auto toolbar_height = single_window && playback_toolbar->isVisible() ? playback_toolbar->height() : 0;
+    const auto extra_height = menu_bar_height + status_bar_height + toolbar_height;
 
     auto* current_screen = this->screen();
     if (!current_screen) {
@@ -4147,6 +4170,7 @@ void MainWindow::OnConfigure() {
     if (UISettings::values.theme != old_theme) {
         UpdateUITheme();
     }
+    UpdatePlaybackToolbar();
     if (UISettings::values.enable_discord_presence.GetValue() != old_discord_presence) {
         SetDiscordEnabled(UISettings::values.enable_discord_presence.GetValue());
     }
@@ -5435,6 +5459,7 @@ private:
 } // Anonymous namespace
 
 void MainWindow::EnterPhotoHotsample(u32 width, u32 height) {
+    photo_hotsampled = true;
     QWidget* const window = ui->action_Single_Window_Mode->isChecked()
                                 ? static_cast<QWidget*>(this)
                                 : static_cast<QWidget*>(render_window);
@@ -5470,6 +5495,7 @@ void MainWindow::EnterPhotoHotsample(u32 width, u32 height) {
 }
 
 void MainWindow::LeavePhotoHotsample() {
+    photo_hotsampled = false;
     QWidget* const window = ui->action_Single_Window_Mode->isChecked()
                                 ? static_cast<QWidget*>(this)
                                 : static_cast<QWidget*>(render_window);
@@ -6233,6 +6259,8 @@ static void AdjustLinkColor() {
 }
 
 void MainWindow::UpdateUITheme() {
+    QtCommon::TouchUi::Initialize(UISettings::values.comfortable_ui.GetValue(),
+                                  UISettings::values.settings_fullscreen.GetValue());
     const QString default_theme = QStringLiteral("colorful_dark");
     QString current_theme = QString::fromStdString(UISettings::values.theme);
 
@@ -6306,14 +6334,29 @@ void MainWindow::UpdatePlaybackToolbar() {
     }
     using QtCommon::ForestTheme::Icon;
     playback_toolbar->setWindowTitle(tr("Playback"));
+    if (auto* menu = playback_toolbar->findChild<QToolButton*>(QStringLiteral("TouchMainMenu"))) {
+        menu->setText(tr("Menu"));
+        menu->setIcon(Icon(QStringLiteral("menu")));
+        menu->setVisible(QtCommon::TouchUi::IsComfortable());
+    }
+    const bool fullscreen_game = emulation_running && ui->action_Single_Window_Mode->isChecked() &&
+                                 ui->action_Fullscreen->isChecked();
+    bool hidden_chrome = fullscreen_game;
+#ifdef HAS_RESHADE
+    hidden_chrome |= photo_hotsampled;
+#endif
+    ui->menubar->setVisible(!hidden_chrome &&
+        (!QtCommon::TouchUi::IsComfortable() || playback_toolbar->isHidden()));
     play_library_action->setText(tr("Play"));
     play_library_action->setIcon(Icon(QStringLiteral("play")));
     ui->action_Load_File->setIcon(Icon(QStringLiteral("open")));
+    ui->action_Load_File->setIconText(tr("Open"));
     ui->action_Stop->setIcon(Icon(QStringLiteral("stop")));
     ui->action_Restart->setIcon(Icon(QStringLiteral("restart")));
     ui->action_Pause->setIcon(Icon(QStringLiteral("pause")));
     ui->action_Fullscreen->setIcon(Icon(QStringLiteral("fullscreen")));
     ui->action_Configure->setIcon(Icon(QStringLiteral("settings")));
+    ui->action_Configure->setIconText(tr("Settings"));
 }
 
 void MainWindow::LoadTranslation() {

@@ -65,4 +65,16 @@ if (BUILD_TESTING OR YUZU_TESTS)
     set_tests_properties(forest_theme PROPERTIES TIMEOUT 30
         ENVIRONMENT "${forest_test_environment}"
         ENVIRONMENT_MODIFICATION "${forest_test_modification}")
+    if (TARGET common)
+        add_executable(shader_preparation_ui_tests shader_preparation.cpp
+            ../../yuzu/shader_preparation_job.cpp ../../yuzu/shader_preparation_job.h)
+        set_target_properties(shader_preparation_ui_tests PROPERTIES AUTOMOC ON)
+        target_compile_features(shader_preparation_ui_tests PRIVATE cxx_std_20)
+        target_include_directories(shader_preparation_ui_tests PRIVATE ../..)
+        target_link_libraries(shader_preparation_ui_tests PRIVATE common Qt6::Widgets Qt6::Test)
+        add_test(NAME shader_preparation_ui COMMAND shader_preparation_ui_tests)
+        set_tests_properties(shader_preparation_ui PROPERTIES TIMEOUT 45
+            ENVIRONMENT "${forest_test_environment}"
+            ENVIRONMENT_MODIFICATION "${forest_test_modification}")
+    endif()
 endif()

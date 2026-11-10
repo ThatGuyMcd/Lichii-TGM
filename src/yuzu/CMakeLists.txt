@@ -275,6 +275,9 @@ add_custom_command(TARGET yuzu POST_BUILD
         "${PROJECT_SOURCE_DIR}/dist/nx2_switches.txt" "$<TARGET_FILE_DIR:yuzu>/nx2_switches.txt"
     VERBATIM)
 
+target_sources(yuzu PRIVATE shader_preparation_job.cpp shader_preparation_job.h)
+add_dependencies(yuzu lichii-shader-prepare)
+
 if (YUZU_CRASH_DUMPS)
     target_sources(yuzu PRIVATE
         breakpad.cpp

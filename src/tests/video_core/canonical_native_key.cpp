@@ -6,6 +6,7 @@
 
 #include "shader_recompiler/program_header.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/renderer_vulkan/native_key_compatibility.h"
 #include "video_core/shader_cache.h"
 
 namespace {
@@ -27,6 +28,52 @@ Vulkan::FixedPipelineState MakeState() {
     return state;
 }
 } // Anonymous namespace
+
+TEST_CASE("Recorded native logic operations normalize only the known disabled case",
+          "[canonical_native_key]") {
+    Vulkan::DynamicFeatures features{};
+    for (const bool dynamic_operation : {false, true}) {
+        for (const bool dynamic_enable : {false, true}) {
+            for (const bool enabled : {false, true}) {
+                features.has_extended_dynamic_state_2_logic_op = dynamic_operation;
+                features.has_dynamic_state3_logic_op_enable = dynamic_enable;
+                auto recorded = MakeState();
+                recorded.extended_dynamic_state_2_logic_op.Assign(1);
+                recorded.dynamic_state.logic_op_enable.Assign(enabled);
+                recorded.dynamic_state.logic_op.Assign(7);
+                recorded.extended_dynamic_state_3_blend.Assign(1);
+                const auto before = recorded;
+                Vulkan::NormalizeRecordedNativeLogicOp(recorded, features);
+                const bool known_disabled = !dynamic_enable && !enabled;
+                CHECK(recorded.extended_dynamic_state_2_logic_op ==
+                      (!dynamic_operation && known_disabled ? 0 : 1));
+                CHECK(recorded.dynamic_state.logic_op == (known_disabled ? 0 : 7));
+                // Unrelated dynamic-state mismatches must still be rejected by device checks.
+                CHECK(recorded.extended_dynamic_state_3_blend ==
+                      before.extended_dynamic_state_3_blend);
+                CHECK(recorded.attribute_types == before.attribute_types);
+                CHECK(recorded.dynamic_state.logic_op_enable == enabled);
+            }
+        }
+    }
+}
+
+TEST_CASE("A converted recipe key matches a native disabled-logic-op draw",
+          "[canonical_native_key]") {
+    Vulkan::DynamicFeatures features{};
+    auto live = MakeState();
+    live.dynamic_state.logic_op.Assign(3);
+    live.extended_dynamic_state_2_logic_op.Assign(0);
+    auto recorded = live;
+    recorded.dynamic_state.logic_op.Assign(7);
+    recorded.extended_dynamic_state_2_logic_op.Assign(1);
+    live.CanonicalizeNative(~0U);
+    recorded.CanonicalizeNative(~0U);
+    Vulkan::CanonicalizeNativeLogicOp(live, features);
+    Vulkan::NormalizeRecordedNativeLogicOp(recorded, features);
+    CHECK(recorded == live);
+    CHECK(recorded.Hash() == live.Hash());
+}
 
 TEST_CASE("Canonical native keys keep the attribute types the vertex program reads",
           "[canonical_native_key]") {

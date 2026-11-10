@@ -50,6 +50,11 @@ artwork. See [the integration notes](TGM-upstream-sync-2026-11-10.md).
 
 ## Validation
 
+More actions includes **Prepare game shaders…**. It scans supported game content
+and prepares validated OOT pipeline records on the selected Vulkan GPU without
+starting the game. Coverage, failures and skipped work are reported separately;
+existing cache actions remain available. See [shader preparation](TGM-oot-shader-preparation.md).
+
 The built-in OOT aspect Add-Ons now include 4:3, 16:10, 3:2, 2:1, 32:9 and 32:10
 alongside the existing 21:9 profile. Camera, HUD and movies follow the selected
 ratio; the aspect hook no longer overlaps Photo Mode. Choose the ratio before

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -23,7 +24,10 @@
 #include "native_preparation_revision.h"
 
 #include "common/cityhash.h"
+#include "common/common_funcs.h"
+#include "common/hex_util.h"
 #include "common/fs/fs_util.h"
+#include "common/fs/file_lock.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -31,11 +35,13 @@
 #include "core/core.h"
 #include "core/file_sys/nup_container.h"
 #include "core/file_sys/nx2_shader_extract.h"
+#include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/romfs_factory.h"
 #include "core/file_sys/vfs/vfs.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/loader.h"
+#include "core/loader/nso.h"
 #include "video_core/pipeline_cache_files.h"
 #include "video_core/nx2_recipe.h"
 #include "video_core/shader_warm/prepared_store.h"
@@ -95,8 +101,7 @@ std::optional<std::string> OpenGame(Core::System& system, const fs::path& game_p
     if (filesystem == nullptr) {
         filesystem = std::make_shared<FileSys::RealVfsFilesystem>();
     }
-    const auto file =
-        filesystem->OpenFile(Common::FS::PathToUTF8String(game_path), FileSys::OpenMode::Read);
+    const auto file = Core::GetGameFileFromPath(filesystem, Common::FS::PathToUTF8String(game_path));
     if (file == nullptr) {
         return "Cannot open the game file";
     }
@@ -543,6 +548,18 @@ bool WritePrecachedPipelines(const fs::path& file, const DriverStamp& stamp,
 }
 
 bool DeleteWarmFiles(u64 title_id, std::string* error) {
+    std::error_code status_error;
+    const bool exists = fs::exists(TitleDir(title_id), status_error);
+    if (status_error) {
+        if (error) *error = status_error.message();
+        return false;
+    }
+    if (!exists) return true;
+    Common::FS::FileLock lock{TitleDir(title_id) / "native-preparation.lock"};
+    if (!lock.Held()) {
+        if (error) *error = "This game's shader cache is in use by another instance";
+        return false;
+    }
     bool ok = true;
     const auto remove = [&](const fs::path& path) {
         std::error_code ec;
@@ -565,8 +582,10 @@ bool DeleteWarmFiles(u64 title_id, std::string* error) {
     remove(PrecachedPipelinesPath(title_id));
     for (const auto& path : {NativeRecipePath(title_id), NativePreparationPath(title_id),
                              TitleDir(title_id) / "native-prepared.journal",
+                             TitleDir(title_id) / "native-driver-cache.txt",
                              TitleDir(title_id) / "native-source.txt"}) {
         remove(path);
+        remove(fs::path{path}.concat(".tmp"));
     }
     return ok;
 }
@@ -585,8 +604,7 @@ FileSys::VirtualDir OpenEffectiveRomFS(Core::System& system, const fs::path& gam
     if (filesystem == nullptr) {
         filesystem = std::make_shared<FileSys::RealVfsFilesystem>();
     }
-    const auto file =
-        filesystem->OpenFile(Common::FS::PathToUTF8String(game_path), FileSys::OpenMode::Read);
+    const auto file = Core::GetGameFileFromPath(filesystem, Common::FS::PathToUTF8String(game_path));
     auto loader = file ? Loader::GetLoader(system, file) : nullptr;
     u64 program_id{};
     if (!loader || loader->ReadProgramId(program_id) != Loader::ResultStatus::Success ||
@@ -604,6 +622,200 @@ FileSys::VirtualDir OpenEffectiveRomFS(Core::System& system, const fs::path& gam
         error = "Cannot read the game's files (are the keys installed?)";
     }
     return root;
+}
+
+std::string Sha256(std::span<const u8> bytes) {
+    std::array<u8, 32> digest{};
+    unsigned length{};
+    if (EVP_Digest(bytes.data(), bytes.size(), digest.data(), &length, EVP_sha256(), nullptr) != 1 ||
+        length != digest.size()) {
+        return {};
+    }
+    std::string result;
+    for (const u8 byte : digest) {
+        result += fmt::format("{:02x}", byte);
+    }
+    return result;
+}
+
+struct NativeGameIdentity {
+    std::optional<u32> version;
+    std::string build_id;
+};
+
+NativeGameIdentity ReadNativeIdentity(Core::System& system, const fs::path& path, u64 title_id) {
+    auto filesystem = system.GetFilesystem();
+    if (!filesystem) {
+        filesystem = std::make_shared<FileSys::RealVfsFilesystem>();
+    }
+    const auto file = Core::GetGameFileFromPath(filesystem, Common::FS::PathToUTF8String(path));
+    FileSys::VirtualFile main;
+    NativeGameIdentity result;
+    if (file && FileSys::NupContainer::IsNupFile(file)) {
+        FileSys::NupContainer nup{file, 16 * 1024 * 1024};
+        if (nup.GetStatus() != Loader::ResultStatus::Success) {
+            return result;
+        }
+        auto selected = nup.FindBestUpdatePackage();
+        if (!selected || !nup.GetExeFSDir(*selected)) {
+            selected = nup.FindBasePackage();
+        }
+        if (!selected) {
+            return result;
+        }
+        result.version = nup.GetPackages()[*selected].version;
+        auto exefs = nup.GetExeFSDir(*selected);
+        const FileSys::PatchManager patches{title_id, system.GetFileSystemController(),
+                                            system.GetContentProvider()};
+        exefs = patches.PatchExeFS(std::move(exefs));
+        main = exefs ? exefs->GetFile("main") : nullptr;
+    } else if (file && file->GetName() == "main") {
+        main = file;
+    }
+    Loader::NSOHeader header{};
+    if (main && main->ReadObject(&header) == sizeof(header) &&
+        header.magic == Common::MakeMagic('N', 'S', 'O', '0')) {
+        result.build_id = Common::HexToString(header.build_id);
+        result.build_id.resize(result.build_id.find_last_not_of('0') + 1);
+        // A loose dump carries no package-version field. This supported executable's identity
+        // independently identifies the same OOT update as the pinned recipe.
+        if (!result.version && result.build_id ==
+            "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348") {
+            result.version = 131072;
+        }
+    }
+    return result;
+}
+
+Result BuildFullNativeFiles(Core::System& system, const fs::path& game_path, u64 title_id,
+                            const BuildOptions& options,
+                            const std::function<void(const Progress&)>& progress,
+                            std::stop_token stop) {
+    namespace X = FileSys::Nx2ShaderExtract;
+    Result result;
+    result.full_scan = true;
+    const auto report = [&](std::string_view stage, size_t done = 0, size_t total = 0) {
+        if (progress) {
+            progress({std::string(stage), done, total});
+        }
+    };
+    const auto fail = [&](std::string error) {
+        result.ok = false;
+        result.partial = true;
+        result.error = std::move(error);
+        return result;
+    };
+    try {
+        report(StageNativeChecking);
+        std::string error;
+        const auto root = OpenEffectiveRomFS(system, game_path, title_id, error);
+        if (!root) {
+            return fail(error);
+        }
+        report(StageNativeExtracting);
+        const std::array roots{root};
+        X::Progress scanned;
+        // One archive is inflated at a time; retained programs have a separate hard budget.
+        // Reads are serialized even for encrypted NCA views, which share mutable read caches.
+        auto extraction = std::async(std::launch::async, [&] {
+            return X::Extract(roots, 1, &scanned, stop, true,
+                              // OOT's model shader archive inflates to 320,672,184 bytes.
+                              {.max_blob_bytes = size_t{512} << 20,
+                               .max_retained_bytes = size_t{1} << 30,
+                               .inspect_all_compressed = true});
+        });
+        while (extraction.wait_for(std::chrono::milliseconds{100}) != std::future_status::ready) {
+            report(StageNativeExtracting, scanned.files_done.load(), scanned.files_total.load());
+        }
+        const auto extracted = extraction.get();
+        result.files_scanned = extracted.stats.files;
+        result.bytes_scanned = extracted.stats.file_bytes;
+        result.program_occurrences = extracted.stats.occurrences;
+        result.native_programs = extracted.programs.size();
+        result.native_combinations = extracted.variations.size();
+        result.scan_errors = extracted.errors.size() + extracted.stats.embedded_failed;
+        result.limited_files = extracted.stats.limited_files;
+        for (const auto& program : extracted.programs) {
+            ++result.stage_programs[static_cast<size_t>(program.stage)];
+        }
+        result.scan_finished = !stop.stop_requested();
+        result.partial = result.scan_errors != 0 || result.limited_files != 0 ||
+                         extracted.stats.programs_limited != 0;
+        for (size_t i = 0; i < std::min<size_t>(extracted.errors.size(), 16); ++i) {
+            result.warnings.push_back(extracted.errors[i]);
+        }
+        if (extracted.stats.embedded_failed != 0) {
+            result.warnings.push_back(fmt::format("{} embedded compressed candidates could not "
+                                                  "be decoded", extracted.stats.embedded_failed));
+        }
+        report(StageNativeExtracting, scanned.files_done.load(), scanned.files_total.load());
+        if (stop.stop_requested()) {
+            return fail("Stopped");
+        }
+        if (!options.native_profile) {
+            result.ok = true;
+            result.partial = true;
+            result.warnings.push_back("No verified recipe profile is available; programs were "
+                                      "scanned, but unseen graphics pipelines were not prepared");
+            return result;
+        }
+        const auto& profile = *options.native_profile;
+        const auto recipe_path = options.recipe_path.empty() ? profile.recipe_path
+                                                              : options.recipe_path;
+        std::error_code ec;
+        const auto recipe_size = fs::file_size(recipe_path, ec);
+        if (ec || recipe_size > 64 * 1024 * 1024) {
+            return fail("Cannot read the verified recipe, or it exceeds 64 MiB");
+        }
+        std::vector<u8> recipe(recipe_size);
+        std::ifstream input(recipe_path, std::ios::binary);
+        if (!input.read(reinterpret_cast<char*>(recipe.data()), recipe.size())) {
+            return fail("Cannot read the verified recipe");
+        }
+        const auto identity = ReadNativeIdentity(system, game_path, title_id);
+        if (!identity.version) {
+            return fail("Cannot verify this container's raw game version and executable build");
+        }
+        if (const auto invalid = ValidateNativeRecipeProfile(
+                profile, recipe, title_id, *identity.version, identity.build_id)) {
+            return fail(*invalid);
+        }
+        report(StageNativeAssembling);
+        Nx2Recipe::Report assembled_report;
+        const unsigned threads = static_cast<unsigned>(std::clamp<size_t>(
+            options.threads != 0 ? options.threads : 2, 1, 4));
+        const auto assembled = Nx2Recipe::Assemble(recipe, extracted, WarmCacheVersion,
+                                                  assembled_report, threads, stop);
+        result.recipe_programs = assembled_report.programs;
+        result.recipe_programs_missing = assembled_report.programs_missing;
+        result.recipe_programs_failed = assembled_report.programs_failed;
+        result.native_pipelines = assembled_report.records;
+        result.native_dropped = assembled_report.records_dropped;
+        result.partial |= result.native_dropped != 0 || result.recipe_programs_missing != 0 ||
+                          result.recipe_programs_failed != 0 ||
+                          result.native_programs > result.recipe_programs;
+        result.warnings.push_back("Pipeline states are recorded or predicted; new runtime states "
+                                  "can still require compilation");
+        if (stop.stop_requested()) {
+            return fail("Stopped");
+        }
+        if (assembled.empty() || assembled_report.records == 0) {
+            return fail("No recipe pipelines match the programs in this copy of the game");
+        }
+        report(StageNativeWriting);
+        const auto dir = options.output_dir.empty() ? TitleDir(title_id) : options.output_dir;
+        fs::create_directories(dir);
+        if (!AtomicWrite(dir / "native-preparation.bin", assembled) ||
+            !AtomicWrite(dir / "native.nx2recipe", recipe)) {
+            return fail("Cannot publish the native preparation files");
+        }
+        result.native_ready = true;
+        result.ok = true;
+        report(StageNativeWriting, 1, 1);
+        return result;
+    } catch (const std::exception& e) {
+        return fail(e.what());
+    }
 }
 
 /// SHA-256 over every file's path, size and contents, in path order. Timestamps are not used.
@@ -794,6 +1006,23 @@ Result BuildNativeFiles(Core::System& system, const fs::path& game_path, u64 tit
 }
 
 } // Anonymous namespace
+
+std::optional<std::string> ValidateNativeRecipeProfile(
+    const NativeRecipeProfile& profile, std::span<const u8> recipe, u64 actual_title_id,
+    u32 actual_game_version, std::string_view actual_main_build_id) {
+    if (profile.expected_recipe_sha256.empty() || Sha256(recipe) != profile.expected_recipe_sha256) {
+        return "The recipe SHA-256 does not match the verified profile";
+    }
+    const auto header = Nx2Recipe::ReadHeader(recipe);
+    if (!header || header->title_id != actual_title_id || profile.title_id != actual_title_id ||
+        header->cache_version != WarmCacheVersion || profile.cache_version != WarmCacheVersion ||
+        header->game_version != profile.game_version || actual_game_version != profile.game_version ||
+        actual_main_build_id.empty() || actual_main_build_id != profile.main_build_id) {
+        return "The recipe does not match this game's verified version, executable build and "
+               "pipeline cache format";
+    }
+    return std::nullopt;
+}
 
 Result BuildWarmFiles(Core::System& system, const fs::path& game_path, u64 title_id,
                       const std::function<void(const Progress&)>& progress,
@@ -1278,6 +1507,9 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
                           const BuildOptions& options,
                           const std::function<void(const Progress&)>& progress,
                           std::stop_token stop) {
+    if (options.full_scan) {
+        return BuildFullNativeFiles(system, game_path, title_id, options, progress, stop);
+    }
     // The compute precache comes first; a recipe adds the native graphics and compute pipelines.
     auto result = BuildComputeWarmFiles(system, game_path, title_id, options, progress, stop);
     const auto dir = options.output_dir.empty() ? TitleDir(title_id) : options.output_dir;

@@ -325,6 +325,7 @@ endif()
 
 if (ENABLE_QT)
     add_subdirectory(qt_common)
+    add_subdirectory(shader_prepare)
     add_subdirectory(yuzu)
     if (WIN32 AND ENABLE_UPDATE_CHECKER)
         add_subdirectory(updater)

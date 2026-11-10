@@ -7,10 +7,14 @@
 #include <fstream>
 #include <string>
 #include <unordered_set>
+#include <openssl/evp.h>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "shader_recompiler/exception.h"
+#include "common/zstd_compression.h"
+#include "core/file_sys/nx2_shader_extract.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/shader_environment.h"
 #include "video_core/shader_warm/shader_archives.h"
@@ -218,4 +222,142 @@ TEST_CASE("ShaderPrecache: programs that cannot be lowered are refused", "[video
     const std::array<u8, 16> no_exit{};
     REQUIRE(ShaderWarm::LowerProgram(no_exit, lowered).has_value());
     REQUIRE(lowered.code.empty());
+}
+
+namespace {
+
+std::vector<u8> BareCompute(u32 instruction) {
+    std::vector<u8> bytes(0x64);
+    const u32 magic = 0x98761234, version = 0xc9, control_size = 0x60, code_size = 4;
+    std::memcpy(bytes.data(), &magic, 4);
+    std::memcpy(bytes.data() + 4, &version, 4);
+    std::memcpy(bytes.data() + 0x30, &control_size, 4);
+    std::memcpy(bytes.data() + 0x44, &code_size, 4);
+    bytes[0x56] = 5;
+    std::memcpy(bytes.data() + control_size, &instruction, 4);
+    return bytes;
+}
+
+std::vector<u8> RecipeHeader(u64 title, u32 game_version, u32 cache_version) {
+    std::vector<u8> body(20);
+    const u32 format = 1;
+    std::memcpy(body.data(), &format, 4);
+    std::memcpy(body.data() + 4, &title, 8);
+    std::memcpy(body.data() + 12, &game_version, 4);
+    std::memcpy(body.data() + 16, &cache_version, 4);
+    const auto compressed =
+        Common::Compression::CompressDataZSTDDefault(body.data(), body.size());
+    std::vector<u8> recipe(16);
+    std::memcpy(recipe.data(), "NX2RCP01", 8);
+    const u32 size = static_cast<u32>(body.size());
+    std::memcpy(recipe.data() + 8, &size, 4);
+    recipe.insert(recipe.end(), compressed.begin(), compressed.end());
+    return recipe;
+}
+
+std::string RecipeHash(std::span<const u8> recipe) {
+    std::array<u8, 32> digest{};
+    unsigned size{};
+    REQUIRE(EVP_Digest(recipe.data(), recipe.size(), digest.data(), &size, EVP_sha256(), nullptr));
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result;
+    for (const u8 byte : digest) {
+        result += digits[byte >> 4];
+        result += digits[byte & 15];
+    }
+    return result;
+}
+
+} // Anonymous namespace
+
+TEST_CASE("Full native scanning finds extensionless programs and reports memory limits",
+          "[video_core][shader_scan]") {
+    namespace X = FileSys::Nx2ShaderExtract;
+    const auto bytes = BareCompute(0x12345678);
+    auto root = std::make_shared<FileSys::VectorVfsDirectory>();
+    root->AddFile(std::make_shared<FileSys::VectorVfsFile>(bytes, "not-a-shader-extension"));
+    root->AddFile(std::make_shared<FileSys::VectorVfsFile>(bytes, "another.copy"));
+    const std::array<FileSys::VirtualDir, 1> roots{root};
+    const auto found = X::Extract(roots, 1, nullptr, {}, true);
+    REQUIRE(found.programs.size() == 1);
+    REQUIRE(found.programs.front().stage == X::Stage::Compute);
+    REQUIRE(found.stats.files == 2);
+    REQUIRE(found.stats.occurrences == 2);
+    REQUIRE(found.stats.retained_bytes >= bytes.size());
+    REQUIRE(found.errors.empty());
+    const auto limited = X::Extract(roots, 1, nullptr, {}, true,
+                                    {.max_blob_bytes = 1024, .max_retained_bytes = 1});
+    REQUIRE(limited.programs.empty());
+    REQUIRE(limited.stats.programs_limited == 2);
+    REQUIRE_FALSE(limited.errors.empty());
+    REQUIRE(root->GetFile("another.copy")->ReadAllBytes() == bytes);
+}
+
+TEST_CASE("Full native scanning reports oversized containers and respects cancellation",
+          "[video_core][shader_scan]") {
+    namespace X = FileSys::Nx2ShaderExtract;
+    std::vector<u8> bytes(128);
+    std::memcpy(bytes.data(), "SARC", 4);
+    auto root = std::make_shared<FileSys::VectorVfsDirectory>();
+    root->AddFile(std::make_shared<FileSys::VectorVfsFile>(bytes, "oversized.sarc"));
+    const std::array<FileSys::VirtualDir, 1> roots{root};
+    const auto limited = X::Extract(roots, 1, nullptr, {}, true,
+                                    {.max_blob_bytes = 64, .max_retained_bytes = 1024});
+    REQUIRE(limited.stats.limited_files == 1);
+    REQUIRE_FALSE(limited.errors.empty());
+    std::stop_source cancel;
+    cancel.request_stop();
+    const auto stopped = X::Extract(roots, 1, nullptr, cancel.get_token(), true);
+    REQUIRE(stopped.stats.files == 0);
+    REQUIRE(stopped.programs.empty());
+}
+
+TEST_CASE("Full scanning inspects compressed data without a known container prefix",
+          "[video_core][shader_scan]") {
+    namespace X = FileSys::Nx2ShaderExtract;
+    auto bytes = BareCompute(0x12345678);
+    const auto compressed =
+        Common::Compression::CompressDataZSTDDefault(bytes.data(), bytes.size());
+    auto root = std::make_shared<FileSys::VectorVfsDirectory>();
+    root->AddFile(std::make_shared<FileSys::VectorVfsFile>(compressed, "data.bin"));
+    const std::array<FileSys::VirtualDir, 1> roots{root};
+    REQUIRE(X::Extract(roots, 1, nullptr, {}, true).programs.empty());
+    const auto full = X::Extract(roots, 1, nullptr, {}, true,
+                                 {.max_blob_bytes = 1024, .max_retained_bytes = 4096,
+                                  .inspect_all_compressed = true});
+    REQUIRE(full.programs.size() == 1);
+    REQUIRE(full.errors.empty());
+    REQUIRE(full.stats.peeked_only == 0);
+    const auto limited = X::Extract(roots, 1, nullptr, {}, true,
+                                    {.max_blob_bytes = bytes.size() - 1, .max_retained_bytes = 4096,
+                                     .inspect_all_compressed = true});
+    REQUIRE(limited.programs.empty());
+    REQUIRE_FALSE(limited.errors.empty());
+}
+
+TEST_CASE("Full preparation refuses recipes with mismatched provenance or game identity",
+          "[video_core][shader_scan]") {
+    constexpr u64 title = 0x0400486024DEC000;
+    const auto recipe = RecipeHeader(title, 131072, ShaderWarm::WarmCacheVersion);
+    ShaderWarm::NativeRecipeProfile profile{
+        .title_id = title, .game_version = 131072,
+        .cache_version = ShaderWarm::WarmCacheVersion, .main_build_id = "verified-build",
+        .recipe_path = {}, .expected_recipe_sha256 = RecipeHash(recipe)};
+    REQUIRE_FALSE(ShaderWarm::ValidateNativeRecipeProfile(
+        profile, recipe, title, 131072, "verified-build"));
+    REQUIRE(ShaderWarm::ValidateNativeRecipeProfile(profile, recipe, title, 0, "verified-build"));
+    REQUIRE(ShaderWarm::ValidateNativeRecipeProfile(profile, recipe, title + 1, 131072,
+                                                    "verified-build"));
+    REQUIRE(ShaderWarm::ValidateNativeRecipeProfile(profile, recipe, title, 131072, "other-build"));
+    auto altered = recipe;
+    altered[0] ^= 1;
+    REQUIRE(ShaderWarm::ValidateNativeRecipeProfile(profile, altered, title, 131072,
+                                                    "verified-build"));
+    profile.expected_recipe_sha256 = "wrong hash";
+    REQUIRE(ShaderWarm::ValidateNativeRecipeProfile(profile, recipe, title, 131072,
+                                                    "verified-build"));
+    profile.expected_recipe_sha256 = RecipeHash(recipe);
+    ++profile.cache_version;
+    REQUIRE(ShaderWarm::ValidateNativeRecipeProfile(profile, recipe, title, 131072,
+                                                    "verified-build"));
 }

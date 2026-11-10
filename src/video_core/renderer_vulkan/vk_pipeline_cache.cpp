@@ -67,6 +67,7 @@
 #include "video_core/renderer_vulkan/mesh_fallback_limits.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/noperspective_policy.h"
+#include "video_core/renderer_vulkan/native_key_compatibility.h"
 #include "video_core/renderer_vulkan/pipeline_eviction_policy.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_shader_emission.h"
@@ -765,14 +766,17 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              GuestDescriptorQueue& guest_descriptor_queue_,
                              DescriptorBufferRing& descriptor_buffer_ring_,
                              RenderPassCache& render_pass_cache_, BufferCache& buffer_cache_,
-                             TextureCache& texture_cache_, VideoCore::ShaderNotify& shader_notify_)
+                             TextureCache& texture_cache_, VideoCore::ShaderNotify& shader_notify_,
+                             size_t offline_workers_)
     : VideoCommon::ShaderCache{device_memory_}, device{device_}, scheduler{scheduler_},
       descriptor_pool{descriptor_pool_}, guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, render_pass_cache{render_pass_cache_},
       buffer_cache{buffer_cache_}, texture_cache{texture_cache_}, shader_notify{shader_notify_},
+      offline_workers{offline_workers_ == 0 ? 0 : std::clamp<size_t>(offline_workers_, 1, 6)},
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
-      use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
-                                !device_.DriverCachesPipelines()},
+      use_vulkan_pipeline_cache{offline_workers != 0 ||
+                                (Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
+                                 !device_.DriverCachesPipelines())},
       mesh_warm_enabled{Settings::values.use_mesh_shader_warmup.GetValue()},
       serialization_thread(1, "VkPipelineSerialization", {}, Common::ThreadPlacement::Background) {
     if (Settings::values.use_vulkan_driver_pipeline_cache.GetValue() && !use_vulkan_pipeline_cache) {
@@ -1016,7 +1020,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
     dynamic_features.has_provoking_vertex_tf_preserve =
         device.SupportsTransformFeedbackProvokingVertexPreservation();
 
-    const size_t cpu_threads = GetTotalPipelineWorkers();
+    const size_t cpu_threads = offline_workers != 0 ? offline_workers : GetTotalPipelineWorkers();
     const size_t driver_threads =
         device.HasBrokenParallelShaderCompiling()
             ? 1
@@ -1187,6 +1191,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
             mask = vertex->generic_read_mask;
         }
         graphics_key.state.CanonicalizeNative(mask);
+        CanonicalizeNativeLogicOp(graphics_key.state, dynamic_features);
     } else {
         graphics_key.state.Refresh(*maxwell3d, dynamic_features);
     }
@@ -1371,7 +1376,11 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         shader_cache_v2 = nullptr;
         cache_v2.reset();
         pipeline_binaries.reset();
+        build_journal.reset();
+        pipeline_cache_filename.clear();
+        vulkan_pipeline_cache_filename.clear();
     }
+    native_preparation_lock.reset();
 
     namespace StutterTrace = VideoCommon::StutterTrace;
     const auto load_begin = std::chrono::steady_clock::now();
@@ -1381,6 +1390,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (!Common::FS::CreateDir(shader_dir) || !Common::FS::CreateDir(base_dir)) {
         LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
         return;
+    }
+    if (offline_workers == 0) {
+        native_preparation_lock.emplace(base_dir / "native-preparation.lock");
+        if (!native_preparation_lock->Held()) {
+            LOG_WARNING(Render_Vulkan,
+                        "Shader preparation is using this title's cache; compiling draws without "
+                        "shared cache files for this session");
+            return;
+        }
     }
     namespace CacheV2 = VideoCommon::ShaderCacheV2;
     pipeline_cache_filename = base_dir / CacheV2::FileName;
@@ -1434,6 +1452,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         precached_pipelines = ShaderWarm::ReadPrecachedPipelines(
             ShaderWarm::PrecachedPipelinesPath(title_id),
             {device.GetDriverVersion(), device.GetDeviceID(), CACHE_VERSION});
+    }
+    const auto explicit_driver_cache =
+        VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_pipelines", CACHE_VERSION);
+    std::error_code explicit_cache_error;
+    if (!use_vulkan_pipeline_cache && Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
+        std::filesystem::exists(base_dir / "native-preparation.bin", explicit_cache_error) &&
+        std::filesystem::exists(explicit_driver_cache, explicit_cache_error)) {
+        use_vulkan_pipeline_cache = true;
     }
     if (use_vulkan_pipeline_cache) {
         vulkan_pipeline_cache_filename =
@@ -2712,6 +2738,7 @@ void PipelineCache::CanonicalizeNativeKey(
         }
     }
     key.state.CanonicalizeNative(mask);
+    NormalizeRecordedNativeLogicOp(key.state, dynamic_features);
 }
 
 namespace {
@@ -2892,6 +2919,73 @@ std::string PipelineCache::NativePreparationStamp(const std::filesystem::path& p
     return stamp + PreparedTranslationPolicy();
 }
 
+NativePreparationResult PipelineCache::PrepareGameShadersOnly(
+    const std::filesystem::path& base_dir, std::stop_token stop_loading,
+    const VideoCore::DiskResourceLoadCallback& callback) {
+    native_preparation_result = {};
+    offline_prepared_ids.clear();
+    if (offline_workers == 0 || cache_v2) {
+        native_preparation_result.error = "Shader preparation requires an isolated offline context";
+        return native_preparation_result;
+    }
+    try {
+        std::filesystem::create_directories(base_dir);
+        vulkan_pipeline_cache_filename =
+            VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_pipelines", CACHE_VERSION);
+        vulkan_pipeline_cache =
+            LoadVulkanPipelineCache(vulkan_pipeline_cache_filename, CACHE_VERSION);
+        if (!vulkan_pipeline_cache) {
+            native_preparation_result.error = "Cannot create a persistent Vulkan pipeline cache";
+            return native_preparation_result;
+        }
+        build_journal.emplace(
+            base_dir / "driver-builds",
+            DriverBuildStamp(device.GetDriverID(), device.GetDriverVersion(), device.GetVendorID(),
+                             device.GetDeviceID(), CACHE_VERSION,
+                             VideoCommon::ShaderCacheV2::FormatVersion),
+            offline_workers + 4, "pipeline");
+        const auto native = base_dir / "native-preparation.bin";
+        const auto checkpoint = base_dir / "native-driver-cache.txt";
+        const auto cache_hash = VideoCommon::ShaderWarm::ContentHash(vulkan_pipeline_cache_filename);
+        const auto identity = NativePreparationStamp(native);
+        std::error_code checkpoint_error;
+        if (!cache_hash.empty() && !identity.empty() &&
+            std::filesystem::file_size(checkpoint, checkpoint_error) < (size_t{4} << 20) &&
+            !checkpoint_error) {
+            std::ifstream previous(checkpoint);
+            std::string saved;
+            if (std::getline(previous, saved) && saved == identity + " driver " + cache_hash) {
+                u32 index{};
+                while (previous >> index) {
+                    offline_prepared_ids.insert(index);
+                }
+            }
+        }
+        PreparePrecompiled(base_dir, true, stop_loading, callback);
+        if (SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
+                                         CACHE_VERSION)) {
+            std::string text = identity + " driver " +
+                VideoCommon::ShaderWarm::ContentHash(vulkan_pipeline_cache_filename) + "\n";
+            std::vector<u32> indices(offline_prepared_ids.begin(), offline_prepared_ids.end());
+            std::ranges::sort(indices);
+            for (const u32 index : indices) {
+                text += fmt::format("{}\n", index);
+            }
+            if (!VideoCommon::ShaderWarm::AtomicWrite(
+                    checkpoint, std::span(reinterpret_cast<const u8*>(text.data()), text.size())) &&
+                native_preparation_result.error.empty()) {
+                native_preparation_result.error = "Cannot save the driver-cache preparation checkpoint";
+            }
+        } else if (native_preparation_result.error.empty()) {
+            native_preparation_result.error = "Cannot save the Vulkan driver pipeline cache";
+        }
+    } catch (const std::exception& e) {
+        native_preparation_result.error = e.what();
+    }
+    native_preparation_result.cancelled |= stop_loading.stop_requested();
+    return native_preparation_result;
+}
+
 void PipelineCache::PreparePrecompiled(const std::filesystem::path& base_dir, bool prepare,
                                        std::stop_token stop_loading,
                                        const VideoCore::DiskResourceLoadCallback& callback) {
@@ -2903,10 +2997,12 @@ void PipelineCache::PreparePrecompiled(const std::filesystem::path& base_dir, bo
     }
     std::error_code error;
     if (!std::filesystem::exists(path, error)) {
+        native_preparation_result.error = "No native preparation file is available";
         return;
     }
     const char* enabled = std::getenv("EDEN_NX2_PRECOMPILED");
     if (enabled && enabled[0] == '0') {
+        native_preparation_result.error = "Native preparation is disabled by EDEN_NX2_PRECOMPILED";
         return;
     }
     const std::string stamp = NativePreparationStamp(path);
@@ -2917,10 +3013,12 @@ void PipelineCache::PreparePrecompiled(const std::filesystem::path& base_dir, bo
     Warm::PreparedStore store;
     if (stamp.empty() || !store.Open(infos_path, stamp)) {
         LOG_WARNING(Render_Vulkan, "Cannot open the native shader preparation journal");
+        native_preparation_result.error = "Cannot open the native shader preparation journal";
         return;
     }
     // Without a driver cache of its own the prepared pipelines would only warm this session.
-    if (prepare && !DriverCachesPipelines(device) && !(enabled && enabled[0] == '1')) {
+    if (prepare && !DriverCachesPipelines(device) && !(enabled && enabled[0] == '1') &&
+        !(offline_workers != 0 && use_vulkan_pipeline_cache)) {
         LOG_INFO(Render_Vulkan, "Native shader preparation skipped: the driver keeps no pipeline "
                                 "cache of its own (EDEN_NX2_PRECOMPILED=1 prepares anyway)");
         prepare = false;
@@ -2942,7 +3040,11 @@ void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
                                          const VideoCore::DiskResourceLoadCallback& callback) {
     namespace Warm = VideoCommon::ShaderWarm;
     std::unordered_set<u32> done_before;
-    done_before = precompiled_record_ids;
+    for (const u32 index : precompiled_record_ids) {
+        if (offline_workers == 0 || offline_prepared_ids.contains(index)) {
+            done_before.insert(index);
+        }
+    }
     std::ifstream file(path, std::ios::binary);
     file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
     const auto get = [&file](auto& value) {
@@ -2956,11 +3058,14 @@ void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
         size_t built{};
         size_t failed{};
         size_t incompatible{};
+        size_t already_prepared{};
+        size_t quarantined{};
     } state;
     std::atomic<bool> cancel{};
     const auto batch = shader_jobs->CreateBatch();
     // Each worker holds one pipeline at a time; it is dropped once its translation is kept.
-    const size_t max_in_flight = std::max<size_t>(GetTotalPipelineWorkers() * 2, 4);
+    const size_t max_in_flight = offline_workers != 0
+        ? offline_workers * 2 : std::max<size_t>(GetTotalPipelineWorkers() * 2, 4);
     const auto begin = std::chrono::steady_clock::now();
     u32 count{};
     try {
@@ -3033,14 +3138,23 @@ void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
                 get(graphics);
             }
             bool skip = done_before.contains(index);
+            if (skip) {
+                ++state.already_prepared;
+            }
             if (!skip && kind == 0) {
                 ClearDriverFields(graphics);
+                NormalizeRecordedNativeLogicOp(graphics.state, dynamic_features);
                 const bool other_device = !KeyFitsDevice(graphics);
                 if (other_device) {
                     std::scoped_lock lock{state.mutex};
                     ++state.incompatible;
                     skip = true;
                 }
+            }
+            const u64 build_id = kind == 1 ? compute.Hash() : graphics.Hash();
+            if (!skip && build_journal && build_journal->Skip(build_id)) {
+                ++state.quarantined;
+                skip = true;
             }
             if (skip) {
                 std::scoped_lock lock{state.mutex};
@@ -3060,11 +3174,19 @@ void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
             for (u8 i = 0; i < record->env_count; ++i) {
                 captured_bytes += (*env_index)[record->envs[i]].second;
             }
-            const auto finish = [&state](bool ok) {
+            const auto finish = [this, &state, index](bool ok, bool unsupported = false,
+                                                    bool stopped = false) {
                 std::scoped_lock lock{state.mutex};
                 --state.in_flight;
                 ++state.done;
-                ++(ok ? state.built : state.failed);
+                if (unsupported) {
+                    ++state.incompatible;
+                } else if (!stopped) {
+                    ++(ok ? state.built : state.failed);
+                    if (ok && offline_workers != 0) {
+                        offline_prepared_ids.insert(index);
+                    }
+                }
                 state.cv.notify_all();
             };
             shader_jobs->Submit({
@@ -3072,10 +3194,10 @@ void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
                 .cpu_bytes = TranslationBytes(captured_bytes),
                 .driver_bytes = DriverCompileBytes,
                 .cpu = [this, &path, &store, &cancel, &stop_loading, env_index,
-                        record, index, kind, graphics, compute, finish](
+                        record, index, kind, graphics, compute, build_id, finish](
                            VideoCommon::ShaderJobContext& context) -> VideoCommon::ShaderDriverStage {
                     if (cancel || stop_loading.stop_requested() || context.StopRequested()) {
-                        finish(false);
+                        finish(false, false, true);
                         return {};
                     }
                     Common::UniqueFunction<bool> build;
@@ -3084,14 +3206,25 @@ void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
                                                     *record, graphics, compute, context);
                     } catch (const std::exception& e) {
                         LOG_DEBUG(Render_Vulkan, "Native preparation record {}: {}", index, e.what());
+                        finish(false);
+                        return {};
                     } catch (...) {
                         LOG_DEBUG(Render_Vulkan, "Native preparation record {} failed", index);
-                    }
-                    if (!build) {
                         finish(false);
                         return {};
                     }
-                    return [build = std::move(build), finish]() mutable {
+                    if (!build) {
+                        finish(false, true);
+                        return {};
+                    }
+                    return [this, build = std::move(build), build_id, finish,
+                            &stop_loading]() mutable {
+                        if (stop_loading.stop_requested()) {
+                            finish(false, false, true);
+                            return;
+                        }
+                        const DriverBuildJournal::Scope recorded{
+                            build_journal ? &*build_journal : nullptr, build_id};
                         bool ok = false;
                         try {
                             ok = build();
@@ -3113,10 +3246,22 @@ void PipelineCache::RunNativePreparation(const std::filesystem::path& path,
     } catch (const std::exception& e) {
         cancel = true;
         batch.Wait();
+        native_preparation_result.error = e.what();
         LOG_WARNING(Render_Vulkan, "Native shader preparation stopped: {}", e.what());
     }
     const double seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+    native_preparation_result.total = count;
+    native_preparation_result.built = state.built;
+    native_preparation_result.already_prepared = state.already_prepared;
+    native_preparation_result.failed = state.failed;
+    native_preparation_result.incompatible = state.incompatible;
+    native_preparation_result.quarantined = state.quarantined;
+    native_preparation_result.cancelled = cancel || stop_loading.stop_requested() ||
+                                          Warm::SkipWarmRequested();
+    const size_t reached = state.built + state.already_prepared + state.failed +
+                           state.incompatible + state.quarantined;
+    native_preparation_result.unreached = count > reached ? count - reached : 0;
     LOG_INFO(Render_Vulkan,
              "Native shader preparation{}: {} of {} records done ({} built now, {} prepared "
              "before, {} failed, {} for another device) in {:.1f} s; completed entries are kept",

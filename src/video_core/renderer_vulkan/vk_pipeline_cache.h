@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/fs/file_lock.h"
 #include "common/thread_worker.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/value.h"
@@ -132,6 +133,18 @@ struct ComputePipelineCacheEntry {
                                        const ComputePipelineCacheKey& key) const;
 };
 
+struct NativePreparationResult {
+    size_t total{};
+    size_t built{};
+    size_t already_prepared{};
+    size_t failed{};
+    size_t incompatible{};
+    size_t quarantined{};
+    size_t unreached{};
+    bool cancelled{};
+    std::string error;
+};
+
 class PipelineCache : public VideoCommon::ShaderCache {
 public:
     /// Sets the eviction limit for a session with no disk cache yet; LoadDiskResources sizes it
@@ -141,7 +154,8 @@ public:
                            GuestDescriptorQueue& guest_descriptor_queue,
                            DescriptorBufferRing& descriptor_buffer_ring,
                            RenderPassCache& render_pass_cache, BufferCache& buffer_cache,
-                           TextureCache& texture_cache, VideoCore::ShaderNotify& shader_notify_);
+                           TextureCache& texture_cache, VideoCore::ShaderNotify& shader_notify_,
+                           size_t offline_workers = 0);
     ~PipelineCache();
 
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
@@ -163,6 +177,12 @@ public:
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback);
 
+    /// Native preparation without a guest boot or runtime-cache prebuild. Persists a
+    /// device-specific Vulkan pipeline cache, including on Mesa/RADV.
+    NativePreparationResult PrepareGameShadersOnly(
+        const std::filesystem::path& base_dir, std::stop_token stop_loading,
+        const VideoCore::DiskResourceLoadCallback& callback);
+
     /// What a graphics warm-up entry came to: built, not buildable (a guess the translation
     /// rejects, which another warm-up would reject too), or refused by the driver.
     enum class WarmResult { Built, Unbuildable, DriverFailed };
@@ -181,6 +201,9 @@ public:
                                      std::span<Shader::Environment* const> envs);
 
 private:
+    /// Declared first so it outlives every journal, cache writer and pipeline-cache handle.
+    std::optional<Common::FS::FileLock> native_preparation_lock;
+
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
 
     /// Returns `pipeline` when it is built or its draw must wait for it, nullptr when the draw
@@ -465,6 +488,9 @@ private:
     BufferCache& buffer_cache;
     TextureCache& texture_cache;
     VideoCore::ShaderNotify& shader_notify;
+    size_t offline_workers{};
+    NativePreparationResult native_preparation_result;
+    std::unordered_set<u32> offline_prepared_ids;
     bool use_asynchronous_shaders{};
     bool use_vulkan_pipeline_cache{};
     bool mesh_warm_enabled{};

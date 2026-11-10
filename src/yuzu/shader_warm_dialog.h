@@ -8,6 +8,7 @@
 #include <thread>
 
 #include <QDialog>
+#include <QJsonObject>
 
 #include "common/common_types.h"
 
@@ -24,6 +25,7 @@ class QCloseEvent;
 class QLabel;
 class QProgressBar;
 class QPushButton;
+class QProcess;
 
 /// True when the title has a shader precache file or a precompile recipe.
 bool ShaderWarmFilesExist(u64 title_id);
@@ -40,7 +42,7 @@ public:
     /// With `recipe`, its pipelines are assembled too; without, the title's kept recipe is.
     explicit ShaderWarmDialog(Core::System& system, std::filesystem::path game_path, u64 title_id,
                               const QString& game_name, QWidget* parent = nullptr,
-                              std::filesystem::path recipe = {});
+                              std::filesystem::path recipe = {}, bool full_preparation = false);
     ~ShaderWarmDialog() override;
 
     void Start();
@@ -67,11 +69,20 @@ private:
     void RequestStop();
     void OnProgress(const QString& stage, qulonglong done, qulonglong total);
     void OnFinished(const VideoCommon::ShaderWarm::Result& result, bool stopped);
+    void StartFullPreparation();
+    void ReadWorkerOutput();
+    void FinishWorker(bool normal_exit);
 
     Core::System& system;
     std::filesystem::path game_path;
     std::filesystem::path recipe;
     u64 title_id;
+    bool full_preparation{};
+    QProcess* process{};
+    QByteArray process_output;
+    QByteArray process_errors;
+    QJsonObject worker_result;
+    QString job_directory;
 
     QLabel* stage_label{};
     QProgressBar* progress_bar{};

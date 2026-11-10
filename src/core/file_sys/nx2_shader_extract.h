@@ -55,6 +55,15 @@ struct Stats {
     u64 embedded_frames{};     ///< zstd frames found inside other data and inflated
     u64 embedded_failed{};     ///< such frames that did not inflate (not reported as errors)
     u64 occurrences{};         ///< programs found, before removing duplicates
+    u64 limited_files{};       ///< Files whose contents could not be scanned within limits.
+    u64 programs_limited{};    ///< Programs omitted by the retained-data budget.
+    u64 retained_bytes{};
+};
+
+struct Limits {
+    size_t max_blob_bytes = size_t{1} << 30;
+    size_t max_retained_bytes = size_t{1} << 30;
+    bool inspect_all_compressed = false;
 };
 
 struct Result {
@@ -74,7 +83,7 @@ struct Progress {
 /// file at a time, for storages that are not thread-safe (an XCI's or NSP's NCA layers).
 [[nodiscard]] Result Extract(std::span<const VirtualDir> roots, unsigned threads = 0,
                              Progress* progress = nullptr, std::stop_token stop = {},
-                             bool serial_reads = false);
+                             bool serial_reads = false, Limits limits = {});
 
 /// The fingerprint of one program (see the file comment).
 [[nodiscard]] u64 Fingerprint(std::span<const u8> control, std::span<const u8> code);

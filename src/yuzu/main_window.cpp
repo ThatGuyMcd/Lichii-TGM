@@ -1617,6 +1617,8 @@ void MainWindow::ConnectWidgetEvents() {
             &MainWindow::OnGameListConvertToNup);
     connect(game_list, &GameList::PrepareShaderWarmRequested, this,
             &MainWindow::OnGameListPrepareShaderWarm);
+    connect(game_list, &GameList::PrepareGameShadersRequested, this,
+            &MainWindow::OnGameListPrepareGameShaders);
     connect(game_list, &GameList::PrepareShaderWarmFromRecipeRequested, this,
             &MainWindow::OnGameListPrepareShaderWarmFromRecipe);
     connect(game_list, &GameList::DeleteShaderWarmRequested, this,
@@ -4864,6 +4866,10 @@ void MainWindow::OnGameListPrepareShaderWarm(u64 program_id, const std::string& 
     StartShaderWarm(program_id, game_path, {});
 }
 
+void MainWindow::OnGameListPrepareGameShaders(u64 program_id, const std::string& game_path) {
+    StartShaderWarm(program_id, game_path, {}, true);
+}
+
 /// As OnGameListPrepareShaderWarm, with a precompile recipe the player picks: its pipelines are
 /// assembled from the game files and prepared on the loading screen with the precache.
 void MainWindow::OnGameListPrepareShaderWarmFromRecipe(u64 program_id,
@@ -4878,7 +4884,7 @@ void MainWindow::OnGameListPrepareShaderWarmFromRecipe(u64 program_id,
 }
 
 void MainWindow::StartShaderWarm(u64 program_id, const std::string& game_path,
-                                 const std::filesystem::path& recipe) {
+                                 const std::filesystem::path& recipe, bool full_preparation) {
     if (shader_warm_dialog) {
         if (shader_warm_dialog->IsRunning()) {
             shader_warm_dialog->raise();
@@ -4900,7 +4906,7 @@ void MainWindow::StartShaderWarm(u64 program_id, const std::string& game_path,
 
     const auto path = std::filesystem::path{std::u8string{game_path.begin(), game_path.end()}};
     shader_warm_dialog = new ShaderWarmDialog(*QtCommon::system, path, program_id,
-                                              GameTitleName(game_path), this, recipe);
+                                              GameTitleName(game_path), this, recipe, full_preparation);
     connect(shader_warm_dialog, &QDialog::finished, shader_warm_dialog, &QObject::deleteLater);
     shader_warm_dialog->show();
     shader_warm_dialog->Start();

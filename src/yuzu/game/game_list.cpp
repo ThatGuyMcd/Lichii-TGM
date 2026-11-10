@@ -603,6 +603,9 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* open_transferable_shader_cache =
         context_menu.addAction(tr("Open Transferable Pipeline Cache"));
     const bool has_shader_warm = ShaderWarmFilesExist(program_id);
+    QAction* prepare_game_shaders = context_menu.addAction(tr("Prepare game shaders…"));
+    prepare_game_shaders->setToolTip(tr("Scan the game's files and prepare supported shader pipelines. "
+                                      "Includes a verified preparation profile for Ocarina of Time Remake."));
     QAction* prepare_shaders = context_menu.addAction(
         has_shader_warm ? tr("Rebuild Shader Precache") : tr("Build Shader Precache"));
     QAction* prepare_shaders_recipe =
@@ -713,6 +716,8 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
             [this, program_id]() { emit OpenTransferableShaderCacheRequested(program_id); });
     connect(prepare_shaders, &QAction::triggered, this,
             [this, program_id, path]() { emit PrepareShaderWarmRequested(program_id, path); });
+    connect(prepare_game_shaders, &QAction::triggered, this,
+            [this, program_id, path]() { emit PrepareGameShadersRequested(program_id, path); });
     connect(prepare_shaders_recipe, &QAction::triggered, this, [this, program_id, path]() {
         emit PrepareShaderWarmFromRecipeRequested(program_id, path);
     });

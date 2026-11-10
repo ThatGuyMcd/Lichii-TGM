@@ -3,12 +3,15 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <optional>
 #include <stop_token>
+#include <span>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -154,7 +157,21 @@ struct Progress {
 
 struct Result {
     bool ok{};
+    bool full_scan{};
+    bool scan_finished{};       ///< Every file was visited; not a claim of every possible pipeline.
+    bool native_ready{};        ///< A compatible native preparation file was assembled/verified.
+    bool partial{};             ///< Missing recipes, unsupported files or incomplete coverage.
     std::string error;           ///< Empty when ok
+    std::vector<std::string> warnings;
+    u64 files_scanned{};
+    u64 bytes_scanned{};
+    u64 program_occurrences{};
+    std::array<size_t, 8> stage_programs{}; ///< Nx2ShaderExtract::Stage order.
+    size_t scan_errors{};
+    size_t limited_files{};
+    size_t recipe_programs{};
+    size_t recipe_programs_missing{};
+    size_t recipe_programs_failed{};
     size_t archives{};           ///< Shader archives found in the game files
     size_t compute_programs{};   ///< Entries written to the compute file
     size_t vertex_programs{};    ///< Vertex entries written to the graphics file
@@ -167,6 +184,21 @@ struct Result {
     size_t skipped{};            ///< Programs that failed to extract or convert
 };
 
+/// A pinned, code-free recipe attested for one title/version/executable and cache format.
+struct NativeRecipeProfile {
+    u64 title_id{};
+    u32 game_version{};
+    u32 cache_version{};
+    std::string main_build_id;
+    std::filesystem::path recipe_path;
+    std::string expected_recipe_sha256;
+};
+
+/// Refuses a recipe whose verified provenance or game identity does not match; no files change.
+std::optional<std::string> ValidateNativeRecipeProfile(
+    const NativeRecipeProfile& profile, std::span<const u8> recipe, u64 actual_title_id,
+    u32 actual_game_version, std::string_view actual_main_build_id);
+
 /// Builds warm-up files for the game at `game_path` (any format the loader opens, Switch 2
 /// .nup first), from the user's own copy and keys, with no external tools. Runs on the calling
 /// thread; `progress` is called from it; stops early when `stop` is requested. The game's
@@ -178,6 +210,9 @@ Result BuildWarmFiles(Core::System& system, const std::filesystem::path& game_pa
 
 /// Overrides for BuildWarmFilesWith (tests and tools).
 struct BuildOptions {
+    /// Scan all effective RomFS files, even without a recipe. Keeps the quick path unchanged.
+    bool full_scan = false;
+    std::optional<NativeRecipeProfile> native_profile;
     /// Folder for the three warm-up files; empty: <shader dir>/<title id>.
     std::filesystem::path output_dir;
     /// Pipeline caches used for the draw state guesses. Unset: the title's own pipeline cache

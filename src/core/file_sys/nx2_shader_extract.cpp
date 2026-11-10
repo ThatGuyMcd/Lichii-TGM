@@ -164,18 +164,18 @@ bool IsZstd(Bytes data) {
 }
 
 /// Inflates `frame`, or only its first `limit` bytes. Per thread: the context is reused.
-std::vector<u8> Inflate(const Zstd& zstd, ZSTD_DCtx* context, Bytes frame, size_t limit) {
+std::vector<u8> Inflate(const Zstd& zstd, ZSTD_DCtx* context, Bytes frame, size_t limit,
+                       bool whole = true) {
     ZSTD_DCtx_reset(context, ZSTD_reset_session_and_parameters);
     if (const ZSTD_DDict* dict = zstd.Dictionary(frame)) {
         ZSTD_DCtx_refDDict(context, dict);
     }
     const unsigned long long declared = ZSTD_getFrameContentSize(frame.data(), frame.size());
-    const bool whole = limit >= MaxBlob; // the whole content is wanted, not a peek at its start
     // The declared size only sizes the first buffer, up to 64 MiB (a frame that doesn't declare
     // it starts at 64 KiB); the loop below grows the buffer as content arrives.
     size_t reserve = std::min<size_t>(limit, 1 << 16);
     if (declared != ZSTD_CONTENTSIZE_UNKNOWN && declared != ZSTD_CONTENTSIZE_ERROR) {
-        if (declared > MaxBlob && whole) {
+        if (declared > limit && whole) {
             throw Bad(fmt::format("zstd content of {} bytes is too large", declared));
         }
         reserve = static_cast<size_t>(
@@ -198,21 +198,24 @@ std::vector<u8> Inflate(const Zstd& zstd, ZSTD_DCtx* context, Bytes frame, size_
             throw Bad(fmt::format("zstd: {}", ZSTD_getErrorName(status)));
         }
         produced += o.pos;
-        if (status == 0 || (in.pos == in.size && o.pos == 0)) {
-            ended = true; // end of frame, or no more input
+        if (status == 0) {
+            ended = true;
+            break;
+        }
+        if (in.pos == in.size && o.pos == 0) {
             break;
         }
     }
     if (whole && !ended) {
-        throw Bad("zstd content is too large");
+        throw Bad("zstd content is truncated or exceeds the configured scan limit");
     }
     out.resize(produced);
     return out;
 }
 
-std::vector<u8> Yaz0(Bytes data) {
+std::vector<u8> Yaz0(Bytes data, size_t limit = MaxBlob) {
     const u32 size = LoadBE<u32>(data, 4);
-    if (size > MaxBlob) {
+    if (size > limit) {
         throw Bad("Yaz0 content is too large");
     }
     std::vector<u8> out(size);
@@ -301,9 +304,9 @@ public:
                                      std::string variation)>;
 
     Walker(const Zstd& zstd_, Found found_, std::vector<std::string>& errors_, Stats& stats_,
-           Turns& turns_)
+           Turns& turns_, Limits limits_, std::stop_token stop_)
         : zstd{zstd_}, found{std::move(found_)}, errors{errors_}, stats{stats_}, turns{turns_},
-          context{ZSTD_createDCtx()} {}
+          context{ZSTD_createDCtx()}, limits{limits_}, stop{stop_} {}
 
     ~Walker() {
         ZSTD_freeDCtx(context);
@@ -312,19 +315,26 @@ public:
     void File(const VirtualFile& file, const std::string& path) {
         const size_t size = file->GetSize();
         ++stats.files;
-        if (size > MaxBlob) {
+        if (size > limits.max_blob_bytes) {
             // Large media and data: only a container at the start would be read whole.
             const auto head = Read([&] { return file->ReadBytes(PeekBytes, 0); });
+            if (head.size() != std::min(PeekBytes, size)) {
+                throw Bad("short read while scanning a large file");
+            }
             stats.file_bytes += head.size();
             if (LooksLikeContainer(head) && !IsZstd(head)) {
-                errors.push_back(path + ": container larger than 1 GiB was not read");
+                errors.push_back(path + ": container exceeds the configured scan limit");
+                ++stats.limited_files;
                 return;
             }
             // A pack of separately compressed members (Kirby Air Riders' 16.6 GB asset file):
             // its zstd frames, read a window at a time.
             std::scoped_lock large{turns.large};
-            if (!LargeFrames(file, size, path) && IsZstd(head)) {
-                errors.push_back(path + ": zstd frame larger than 64 MiB was not read");
+            if (!LargeFrames(file, size, path)) {
+                if (IsZstd(head)) {
+                    errors.push_back(path + ": zstd frame larger than 64 MiB was not read");
+                }
+                ++stats.limited_files;
             }
             return;
         }
@@ -333,6 +343,9 @@ public:
             large.lock();
         }
         const std::vector<u8> data = Read([&] { return file->ReadAllBytes(); });
+        if (data.size() != size) {
+            throw Bad("short read while scanning a file");
+        }
         stats.file_bytes += data.size();
         Guard(path, [&] { Top(data, path); });
     }
@@ -348,10 +361,12 @@ private:
             return stats.embedded_frames + stats.embedded_failed != frames_before;
         };
         size_t offset = 0;
-        while (offset < size) {
+        while (offset < size && !stop.stop_requested()) {
             const size_t want = std::min(LargeFile, size - offset);
             const auto window = Read([&] { return file->ReadBytes(want, offset); });
-            if (window.empty()) {
+            if (window.size() != want) {
+                errors.push_back(path + ": short read in a streamed archive");
+                ++stats.limited_files;
                 break;
             }
             stats.file_bytes += window.size();
@@ -399,15 +414,20 @@ private:
                    head.end();
     }
 
-    /// A RomFS file: a compressed one is inflated only if its start shows a container.
+    /// Quick scans require a known prefix; full scans inspect every bounded compressed file.
     void Top(Bytes data, const std::string& label) {
+        if (stop.stop_requested()) {
+            return;
+        }
         if (IsZstd(data)) {
-            const auto head = Inflate(zstd, context, data, PeekBytes);
-            if (!LooksLikeContainer(head) || IsZstd(head)) {
-                ++stats.peeked_only;
-                return;
+            if (!limits.inspect_all_compressed) {
+                const auto head = Inflate(zstd, context, data, PeekBytes, false);
+                if (!LooksLikeContainer(head) || IsZstd(head)) {
+                    ++stats.peeked_only;
+                    return;
+                }
             }
-            const auto inner = Inflate(zstd, context, data, MaxBlob);
+            const auto inner = Inflate(zstd, context, data, limits.max_blob_bytes);
             stats.inflated_bytes += inner.size();
             Walk(inner, label, 1);
             return;
@@ -416,15 +436,15 @@ private:
     }
 
     void Walk(Bytes data, const std::string& label, int depth) {
-        if (depth > MaxDepth || data.size() < 8) {
+        if (stop.stop_requested() || depth > MaxDepth || data.size() < 8) {
             return;
         }
         if (IsZstd(data)) {
-            const auto inner = Inflate(zstd, context, data, MaxBlob);
+            const auto inner = Inflate(zstd, context, data, limits.max_blob_bytes);
             stats.inflated_bytes += inner.size();
             Walk(inner, label, depth + 1);
         } else if (Starts(data, "Yaz0")) {
-            const auto inner = Yaz0(data);
+            const auto inner = Yaz0(data, limits.max_blob_bytes);
             stats.inflated_bytes += inner.size();
             Walk(inner, label, depth + 1);
         } else if (Starts(data, "SARC")) {
@@ -463,7 +483,8 @@ private:
         };
         std::vector<Piece> pieces;
         auto it = data.begin();
-        while ((it = std::search(it, data.end(), ControlMagic.begin(), ControlMagic.end())) !=
+        while (!stop.stop_requested() &&
+               (it = std::search(it, data.end(), ControlMagic.begin(), ControlMagic.end())) !=
                data.end()) {
             const size_t base = static_cast<size_t>(it - data.begin());
             ++it;
@@ -510,7 +531,7 @@ private:
     size_t EmbeddedZstd(Bytes data, const std::string& label, int depth, bool whole,
                         size_t origin = 0) {
         size_t base = 0;
-        while (base + ZstdMagic.size() <= data.size()) {
+        while (!stop.stop_requested() && base + ZstdMagic.size() <= data.size()) {
             const auto* const start = data.data() + base;
             const auto* const hit = static_cast<const u8*>(
                 std::memchr(start, ZstdMagic[0], data.size() - base - (ZstdMagic.size() - 1)));
@@ -533,7 +554,8 @@ private:
             }
             const std::string where = fmt::format("{}#zstd@{:#x}", label, origin + base);
             try {
-                const auto inner = Inflate(zstd, context, data.subspan(base, size), MaxBlob);
+                const auto inner = Inflate(zstd, context, data.subspan(base, size),
+                                           limits.max_blob_bytes);
                 ++stats.embedded_frames;
                 stats.inflated_bytes += inner.size();
                 Guard(where, [&] { Walk(inner, where, depth + 1); });
@@ -923,6 +945,8 @@ private:
     Stats& stats;
     Turns& turns;
     ZSTD_DCtx* context;
+    Limits limits;
+    std::stop_token stop;
 };
 
 struct FileItem {
@@ -940,7 +964,7 @@ void Collect(const VirtualDir& dir, const std::string& path, std::vector<FileIte
 }
 
 /// Whether the game has a dictionary pack.
-bool LoadDictionaries(const std::span<const VirtualDir> roots, Zstd& zstd) {
+bool LoadDictionaries(const std::span<const VirtualDir> roots, Zstd& zstd, size_t limit) {
     bool found = false;
     ZSTD_DCtx* context = ZSTD_createDCtx();
     for (const auto& root : roots) {
@@ -950,9 +974,12 @@ bool LoadDictionaries(const std::span<const VirtualDir> roots, Zstd& zstd) {
             continue;
         }
         found = true;
+        if (file->GetSize() > limit) {
+            continue;
+        }
         try {
             const auto bytes = file->ReadAllBytes();
-            const auto sarc = Inflate(zstd, context, bytes, MaxBlob);
+            const auto sarc = Inflate(zstd, context, bytes, limit);
             for (const auto& member : Sarc(sarc)) {
                 if (member.data.size() >= 4 && Load<u32>(member.data, 0) == 0xEC30A437) {
                     zstd.AddDictionary(member.data);
@@ -1010,9 +1037,9 @@ u64 Fingerprint(std::span<const u8> control, std::span<const u8> code) {
 }
 
 Result Extract(std::span<const VirtualDir> roots, unsigned threads, Progress* progress,
-               std::stop_token stop, bool serial_reads) {
+               std::stop_token stop, bool serial_reads, Limits limits) {
     Zstd zstd;
-    const bool dictionary_pack = LoadDictionaries(roots, zstd);
+    const bool dictionary_pack = LoadDictionaries(roots, zstd, limits.max_blob_bytes);
     std::vector<FileItem> files;
     for (const auto& root : roots) {
         if (root) {
@@ -1046,10 +1073,23 @@ Result Extract(std::span<const VirtualDir> roots, unsigned threads, Progress* pr
             [&](Stage stage, Bytes control, Bytes code, std::string origin, std::string variation) {
                 // Only the control bytes a fingerprint covers matter to the program; keep them all
                 // (the translator reads up to the section's own length).
+                if (stop.stop_requested()) {
+                    return;
+                }
                 const u64 fp = Fingerprint(control, code);
                 std::scoped_lock lock{mutex};
+                const u64 bytes = u64{control.size()} + code.size() + sizeof(Program) + origin.size();
+                if (!seen.contains(fp) &&
+                    (bytes > limits.max_retained_bytes ||
+                     result.stats.retained_bytes > limits.max_retained_bytes - bytes)) {
+                    if (result.stats.programs_limited++ == 0) {
+                        result.errors.push_back("Native shader program memory budget reached");
+                    }
+                    return;
+                }
                 auto [it, inserted] = seen.try_emplace(fp, Seen{0, current});
                 if (inserted) {
+                    result.stats.retained_bytes += bytes;
                     it->second.index = static_cast<u32>(result.programs.size());
                     result.programs.push_back({stage, fp, {control.begin(), control.end()},
                                                {code.begin(), code.end()}, origin});
@@ -1066,7 +1106,7 @@ Result Extract(std::span<const VirtualDir> roots, unsigned threads, Progress* pr
                     members.push_back(it->second.index);
                 }
             },
-            errors[worker], stats[worker], turns);
+            errors[worker], stats[worker], turns, limits, stop);
         while (!stop.stop_requested()) {
             current = next.fetch_add(1);
             if (current >= files.size()) {
@@ -1098,6 +1138,7 @@ Result Extract(std::span<const VirtualDir> roots, unsigned threads, Progress* pr
         result.stats.embedded_frames += stats[i].embedded_frames;
         result.stats.embedded_failed += stats[i].embedded_failed;
         result.stats.occurrences += stats[i].occurrences;
+        result.stats.limited_files += stats[i].limited_files;
     }
     if (dictionary_pack && zstd.Count() == 0) {
         result.errors.push_back("Pack/ZsDic.pack.zs: no zstd dictionaries (files that need one "

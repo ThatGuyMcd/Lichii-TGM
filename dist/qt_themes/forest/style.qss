@@ -1,0 +1,78 @@
+QWidget { color: @TEXT@; font-size: 10pt; }
+QMainWindow, QDialog { background: @WINDOW@; }
+QWidget:disabled { color: @DISABLED@; }
+QLabel { background: transparent; }
+QLabel#ForestHeading { font-size: 19pt; font-weight: 600; }
+QLabel#ForestSubtitle, QLabel#ForestHint { color: @MUTED@; }
+QFrame#ForestHeader { background: transparent; border-bottom: 1px solid @BORDER@; }
+QFrame#ForestLibraryPanel { background: @PANEL@; border: 1px solid @BORDER@; border-radius: 12px; }
+QLabel#ForestGameTitle { font-size: 17pt; font-weight: 600; }
+QLabel#ForestSettingsTitle { font-size: 15pt; font-weight: 600; padding: 5px 0; }
+QMenuBar { background: @WINDOW@; padding: 4px 8px; border-bottom: 1px solid @BORDER@; }
+QMenuBar::item { padding: 5px 10px; border-radius: 5px; background: transparent; }
+QMenuBar::item:selected { background: @PANEL@; }
+QMenu { background: @BASE@; border: 1px solid @BORDER@; padding: 6px; }
+QMenu::item { padding: 7px 28px 7px 14px; border-radius: 5px; }
+QMenu::item:selected { background: @SELECTION@; color: @SELECTEDTEXT@; }
+QMenu::separator { height: 1px; background: @BORDER@; margin: 5px 10px; }
+QToolBar { background: @WINDOW@; border: 0; border-bottom: 1px solid @BORDER@; spacing: 5px; padding: 7px 12px; }
+QToolBar::separator { background: @BORDER@; width: 1px; margin: 5px 6px; }
+QPushButton, QToolButton {
+    background: @PANEL@; border: 1px solid @BORDER@; border-radius: 7px;
+    padding: 5px 10px; min-height: 20px;
+}
+QPushButton:hover, QToolButton:hover { background: @HOVER@; border-color: @ACCENT@; }
+QPushButton:pressed, QToolButton:pressed { background: @SELECTION@; }
+QPushButton:disabled, QToolButton:disabled { color: @DISABLED@; background: @WINDOW@; border-color: @BORDER@; }
+QPushButton:default, QPushButton[forestPrimary="true"], QToolButton[forestPrimary="true"] {
+    background: @ACCENT@; color: @ACCENTTEXT@; border-color: @ACCENT@; font-weight: 600;
+}
+QPushButton:default:hover, QPushButton[forestPrimary="true"]:hover { background: @ACCENTHOVER@; }
+QPushButton[forestPrimary="true"]:disabled { background: @WINDOW@; color: @DISABLED@; border-color: @BORDER@; }
+QPushButton:checked, QToolButton:checked { background: @SELECTION@; color: @SELECTEDTEXT@; border-color: @ACCENT@; }
+QPushButton:focus, QToolButton:focus, QLineEdit:focus, QComboBox:focus,
+QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus { border: 2px solid @ACCENT@; }
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
+    background: @BASE@; border: 1px solid @BORDER@; border-radius: 6px;
+    padding: 4px 7px; min-height: 20px; selection-background-color: @SELECTION@;
+    selection-color: @SELECTEDTEXT@;
+}
+QComboBox { padding-right: 24px; }
+QComboBox::drop-down { width: 22px; border: 0; }
+QComboBox QAbstractItemView { background: @BASE@; border: 1px solid @BORDER@; selection-background-color: @SELECTION@; selection-color: @SELECTEDTEXT@; }
+QAbstractItemView { background: @BASE@; alternate-background-color: @ALTERNATE@; border: 1px solid @BORDER@; border-radius: 8px; outline: 0; selection-background-color: @SELECTION@; selection-color: @SELECTEDTEXT@; }
+QAbstractItemView::item { padding: 5px; }
+QAbstractItemView::item:selected { background: @SELECTION@; color: @SELECTEDTEXT@; }
+QAbstractItemView::item:hover { background: @HOVER@; }
+QListWidget#ForestSettingsNavigation { background: transparent; border: 0; border-right: 1px solid @BORDER@; padding: 4px; }
+QListWidget#ForestSettingsNavigation::item { padding: 5px 8px; border-radius: 7px; margin: 1px 3px; }
+QListWidget#ForestSettingsNavigation::item:selected { background: @ACCENT@; color: @ACCENTTEXT@; }
+QTreeWidget#ForestSettingsNavigation { background: transparent; border: 0; border-right: 1px solid @BORDER@; }
+QHeaderView::section { background: @PANEL@; color: @TEXT@; border: 0; border-bottom: 1px solid @BORDER@; padding: 8px; font-weight: 600; }
+QGroupBox { border: 1px solid @BORDER@; border-radius: 9px; margin-top: 16px; padding: 14px 10px 10px; }
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; padding: 0 5px; color: @ACCENTLABEL@; font-weight: 600; }
+QTabWidget::pane { background: @BASE@; border: 1px solid @BORDER@; border-radius: 8px; padding: 6px; }
+QTabBar::tab { background: @WINDOW@; color: @MUTED@; border: 1px solid transparent; border-radius: 5px; padding: 7px 10px; margin: 2px; }
+QTabBar::tab:selected { background: @PANEL@; color: @TEXT@; border-bottom: 2px solid @ACCENT@; }
+QTabBar::tab:hover { color: @TEXT@; background: @HOVER@; }
+QCheckBox, QRadioButton { spacing: 7px; min-height: 23px; }
+QCheckBox::indicator { width: 16px; height: 16px; }
+QRadioButton::indicator { width: 16px; height: 16px; }
+QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: 0; }
+QScrollBar:vertical { background: @WINDOW@; border: 0; width: 12px; margin: 2px; }
+QScrollBar:horizontal { background: @WINDOW@; border: 0; height: 12px; margin: 2px; }
+QScrollBar::handle { background: @BORDER@; border-radius: 5px; min-height: 24px; min-width: 24px; }
+QScrollBar::handle:hover { background: @ACCENT@; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+QSlider::groove:horizontal { height: 5px; background: @BORDER@; border-radius: 2px; }
+QSlider::handle:horizontal { width: 16px; margin: -6px 0; background: @ACCENT@; border: 1px solid @ACCENT@; border-radius: 8px; }
+QProgressBar { background: @BASE@; color: @TEXT@; border: 1px solid @BORDER@; border-radius: 6px; text-align: center; min-height: 18px; }
+QProgressBar::chunk { background: @ACCENT@; border-radius: 5px; }
+QToolTip { background: @PANEL@; color: @TEXT@; border: 1px solid @AMBER@; padding: 6px; }
+QStatusBar { background: @WINDOW@; color: @MUTED@; border-top: 1px solid @BORDER@; padding: 3px; }
+QStatusBar::item { border: 0; }
+QStatusBar QPushButton { padding: 3px 7px; min-height: 18px; }
+QSplitter::handle { background: @WINDOW@; }
+QDialogButtonBox { background: transparent; }
+QDialogButtonBox QPushButton { min-width: 74px; padding: 6px 14px; }

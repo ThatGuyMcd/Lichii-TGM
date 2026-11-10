@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
                 controls = new QTabWidget(page);
                 for (size_t player = 0; player < control_pages.size(); ++player) {
                     auto* subpage = new QWidget;
-                    auto* fields = new QVBoxLayout(subpage);
+                    auto* subpage_fields = new QVBoxLayout(subpage);
                     const auto text = player < 8 ? QStringLiteral("Player %1").arg(player + 1)
                                       : player == 8 ? QStringLiteral("Advanced")
                                                     : QStringLiteral("Microphone");
@@ -79,10 +79,10 @@ int main(int argc, char** argv) {
                         name->setText(QStringLiteral("Microphone capture sensitivity"));
                         name->setToolTip(QStringLiteral("Noise gate threshold"));
                     }
-                    fields->addWidget(name);
+                    subpage_fields->addWidget(name);
                     controller_values[player] = new QLineEdit(
                         QStringLiteral("controller-pending-%1").arg(player), subpage);
-                    fields->addWidget(controller_values[player]);
+                    subpage_fields->addWidget(controller_values[player]);
                     controls->addTab(subpage, text);
                     control_pages[player] = subpage;
                 }

@@ -16,6 +16,7 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 if(YUZU_TESTS)
     add_subdirectory(../tests/qt_compatibility ${CMAKE_BINARY_DIR}/qt_compatibility_tests)
+    add_subdirectory(../tests/qt_forest ${CMAKE_BINARY_DIR}/qt_forest_tests)
 endif()
 
 add_executable(yuzu

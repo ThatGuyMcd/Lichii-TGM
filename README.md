@@ -1,12 +1,12 @@
 <p align="center"><img src="dist/branding/lichii_icon.png" alt="Lichii-tgm" width="160"></p>
 
-# Lichii-tgm-v1.0.1
+# Lichii-tgm-v1.0.2
 
 Lichii-tgm is ThatGuyMcd's independent Nintendo Switch and Switch 2 emulator fork,
-based on Lichii, Eglantine, Eden, yuzu and Sudachi. Version 1.0.1 updates the reviewed
-Ocarina of Time Remake integration with graphics pointer retention, bounded occlusion
-query mitigation, translations and GPU-loss diagnostics. See the
-[release notes](docs/TGM-v1.0.1.md) for validation and known limitations.
+based on Lichii, Eglantine, Eden, yuzu and Sudachi. Version 1.0.2 introduces Forest
+Lantern dark and light themes, woodland artwork, a playback toolbar and searchable,
+organised settings. Every existing setting and per-game override is retained. See the
+[release notes](docs/TGM-v1.0.2.md) for validation and known limitations.
 
 This is an experimental emulator. Compatibility and performance depend on the game,
 hardware and driver. Automated build and unit-test results are not gameplay validation.

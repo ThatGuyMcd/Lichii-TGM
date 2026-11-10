@@ -33,6 +33,7 @@
 #include "main_window.h"
 #include "network/network.h"
 #include "qt_common/discord/discord.h"
+#include "qt_common/forest_theme.h"
 #include "ui_main.h"
 
 // Other Yuzu stuff //
@@ -103,6 +104,7 @@
 #include <QPainter>
 #include <QRegion>
 #include <QStatusBar>
+#include <QToolBar>
 #include <QtConcurrentRun>
 
 #ifdef __APPLE__
@@ -963,6 +965,27 @@ void MainWindow::InitializeWidgets() {
     game_list = new GameList(QtCommon::vfs, QtCommon::provider.get(), *play_time_manager,
                              *QtCommon::system, this);
     ui->horizontalLayout->addWidget(game_list);
+
+    playback_toolbar = addToolBar(tr("Playback"));
+    playback_toolbar->setObjectName(QStringLiteral("ForestPlaybackToolbar"));
+    playback_toolbar->setMovable(false);
+    playback_toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    playback_toolbar->setIconSize(QSize(20, 20));
+    playback_toolbar->addAction(ui->action_Load_File);
+    playback_toolbar->addSeparator();
+    play_library_action = playback_toolbar->addAction(tr("Play"));
+    connect(play_library_action, &QAction::triggered, game_list, &GameList::ActivateSelection);
+    connect(game_list, &GameList::SelectionChanged, this, [this](bool selected) {
+        play_library_action->setEnabled(selected && !emulation_running);
+    });
+    for (auto* action : {ui->action_Pause, ui->action_Stop, ui->action_Restart}) {
+        playback_toolbar->addAction(action);
+    }
+    playback_toolbar->addSeparator();
+    playback_toolbar->addAction(ui->action_Fullscreen);
+    playback_toolbar->addAction(ui->action_Configure);
+    ui->menu_View->addAction(playback_toolbar->toggleViewAction());
+    UpdatePlaybackToolbar();
 
     game_list_placeholder = new GameListPlaceholder(this);
     ui->horizontalLayout->addWidget(game_list_placeholder);
@@ -1828,6 +1851,7 @@ void MainWindow::ConnectMenuEvents() {
 void MainWindow::UpdateMenuState() {
     const bool is_paused = QtCommon::emu_thread == nullptr || !QtCommon::emu_thread->IsRunning();
     const bool is_firmware_available = CheckFirmwarePresence();
+    play_library_action->setEnabled(!emulation_running && game_list->HasGameSelection());
 
     const std::array running_actions{
         ui->action_Stop,
@@ -1859,8 +1883,10 @@ void MainWindow::UpdateMenuState() {
 
     if (emulation_running && is_paused) {
         ui->action_Pause->setText(tr("&Continue"));
+        ui->action_Pause->setIcon(QtCommon::ForestTheme::Icon(QStringLiteral("play")));
     } else {
         ui->action_Pause->setText(tr("&Pause"));
+        ui->action_Pause->setIcon(QtCommon::ForestTheme::Icon(QStringLiteral("pause")));
     }
 
     multiplayer_state->UpdateNotificationStatus();
@@ -3867,6 +3893,8 @@ void MainWindow::ShowFullscreen() {
         UISettings::values.geometry = saveGeometry();
 
         ui->menubar->hide();
+        fullscreen_saved_toolbar = playback_toolbar->isVisible();
+        playback_toolbar->hide();
         statusBar()->hide();
 
         show_fullscreen(this);
@@ -3891,6 +3919,7 @@ void MainWindow::HideFullscreen() {
 
         statusBar()->setVisible(ui->action_Show_Status_Bar->isChecked());
         ui->menubar->show();
+        playback_toolbar->setVisible(fullscreen_saved_toolbar);
     } else {
         if (UsingExclusiveFullscreen()) {
             render_window->showNormal();
@@ -5414,7 +5443,9 @@ void MainWindow::EnterPhotoHotsample(u32 width, u32 height) {
     if (window == this) {
         photo_saved_menubar = ui->menubar->isVisible();
         photo_saved_statusbar = statusBar()->isVisible();
+        photo_saved_toolbar = playback_toolbar->isVisible();
         ui->menubar->hide();
+        playback_toolbar->hide();
         statusBar()->hide();
     }
     const qreal ratio = window->devicePixelRatioF();
@@ -5450,6 +5481,7 @@ void MainWindow::LeavePhotoHotsample() {
     if (window == this) {
         ui->menubar->setVisible(photo_saved_menubar);
         statusBar()->setVisible(photo_saved_statusbar);
+        playback_toolbar->setVisible(photo_saved_toolbar);
     }
     photo_hotsampled = false;
     render_window->OnFramebufferSizeChanged();
@@ -6201,11 +6233,26 @@ static void AdjustLinkColor() {
 }
 
 void MainWindow::UpdateUITheme() {
-    const QString default_theme = QString::fromUtf8(UISettings::themes[size_t(UISettings::default_theme)].second);
+    const QString default_theme = QStringLiteral("colorful_dark");
     QString current_theme = QString::fromStdString(UISettings::values.theme);
 
     if (current_theme.isEmpty())
-        current_theme = default_theme;
+        current_theme = QString::fromUtf8(UISettings::themes[size_t(UISettings::default_theme)].second);
+
+    if (QtCommon::ForestTheme::IsForestThemeName(current_theme)) {
+        QtCommon::ForestTheme::Apply(current_theme);
+        QIcon::setThemeSearchPaths(QStringList(QStringLiteral(":/icons")));
+        QIcon::setThemeName(UISettings::IsDarkTheme() ? QStringLiteral("colorful_dark")
+                                                    : QStringLiteral("colorful"));
+        setStyleSheet({});
+        UpdatePlaybackToolbar();
+#ifdef _WIN32
+        RemoveTitlebarFilter();
+        ApplyGlobalDarkTitlebar(UISettings::IsDarkTheme());
+#endif
+        return;
+    }
+    QtCommon::ForestTheme::Clear();
 
 #ifdef _WIN32
     QIcon::setThemeName(current_theme);
@@ -6251,6 +6298,22 @@ void MainWindow::UpdateUITheme() {
     RemoveTitlebarFilter();
     ApplyGlobalDarkTitlebar(UISettings::IsDarkTheme());
 #endif
+}
+
+void MainWindow::UpdatePlaybackToolbar() {
+    if (!playback_toolbar) {
+        return;
+    }
+    using QtCommon::ForestTheme::Icon;
+    playback_toolbar->setWindowTitle(tr("Playback"));
+    play_library_action->setText(tr("Play"));
+    play_library_action->setIcon(Icon(QStringLiteral("play")));
+    ui->action_Load_File->setIcon(Icon(QStringLiteral("open")));
+    ui->action_Stop->setIcon(Icon(QStringLiteral("stop")));
+    ui->action_Restart->setIcon(Icon(QStringLiteral("restart")));
+    ui->action_Pause->setIcon(Icon(QStringLiteral("pause")));
+    ui->action_Fullscreen->setIcon(Icon(QStringLiteral("fullscreen")));
+    ui->action_Configure->setIcon(Icon(QStringLiteral("settings")));
 }
 
 void MainWindow::LoadTranslation() {
@@ -6323,6 +6386,9 @@ void MainWindow::SetGamemodeEnabled(bool state) {
 }
 
 void MainWindow::changeEvent(QEvent* event) {
+    if (event->type() == QEvent::LanguageChange) {
+        UpdatePlaybackToolbar();
+    }
 #ifdef __unix__
     // PaletteChange event appears to only reach so far into the GUI, explicitly asking to
     // UpdateUITheme is a decent work around

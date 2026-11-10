@@ -61,6 +61,7 @@ class NupProgressDialog;
 class ShaderWarmDialog;
 class NxTools;
 class QSlider;
+class QToolBar;
 class QHBoxLayout;
 class WaitTreeWidget;
 class PerformanceOverlay;
@@ -270,6 +271,7 @@ private:
                             const bool tas_allowed = false);
 
     void InitializeWidgets();
+    void UpdatePlaybackToolbar();
     void InitializeDebugWidgets();
     void InitializeRecentFileMenuActions();
 
@@ -590,6 +592,10 @@ private:
     Qt::WindowFlags photo_saved_flags;
     bool photo_saved_menubar = true;
     bool photo_saved_statusbar = true;
+    bool photo_saved_toolbar = true;
+    bool fullscreen_saved_toolbar = true;
+    QToolBar* playback_toolbar = nullptr;
+    QAction* play_library_action = nullptr;
 
     // Stores what suffix to add to the FPS counter, e.g. Unlocked.
     QString m_fpsSuffix{};

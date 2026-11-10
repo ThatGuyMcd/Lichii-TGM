@@ -32,6 +32,10 @@ namespace InputCommon {
 class InputSubsystem;
 }
 
+namespace ConfigurationShared {
+class SettingsNavigation;
+}
+
 class ConfigurePerGameAddons;
 class ConfigureAudio;
 class ConfigureCpu;
@@ -72,6 +76,7 @@ private:
     void done(int result) override;
     void changeEvent(QEvent* event) override;
     void RetranslateUI();
+    void UpdateNavigation();
 
     void HandleApplyButtonClicked();
 
@@ -88,6 +93,8 @@ private:
     };
 
     std::unique_ptr<Ui::ConfigurePerGame> ui;
+    ConfigurationShared::SettingsNavigation* navigation{};
+    QWidget* info_page{};
     FileSys::VirtualFile file;
     std::filesystem::path file_path;
     u64 title_id;

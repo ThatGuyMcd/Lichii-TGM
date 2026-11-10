@@ -8,6 +8,26 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets Test)
+add_library(forest_test_widgets STATIC
+    ../../qt_common/forest_theme.cpp
+    ../../qt_common/forest_theme.h
+    ../../../dist/qt_themes/forest/forest.qrc)
+set_target_properties(forest_test_widgets PROPERTIES AUTOMOC ON AUTORCC ON)
+target_compile_features(forest_test_widgets PUBLIC cxx_std_20)
+target_include_directories(forest_test_widgets PUBLIC ../..)
+target_link_libraries(forest_test_widgets PUBLIC Qt6::Widgets)
+target_compile_definitions(forest_test_widgets PUBLIC
+    QT_NO_CAST_FROM_ASCII QT_NO_CAST_TO_ASCII QT_USE_QSTRINGBUILDER)
+add_executable(forest_theme_tests forest_theme.cpp)
+set_target_properties(forest_theme_tests PROPERTIES AUTOMOC ON)
+target_link_libraries(forest_theme_tests PRIVATE forest_test_widgets Qt6::Test)
+
+option(FOREST_BUILD_PREVIEW "Build standalone settings form screenshot tool" OFF)
+if (FOREST_BUILD_PREVIEW)
+    find_package(Qt6 REQUIRED COMPONENTS UiTools)
+    add_executable(forest_ui_preview preview.cpp)
+    target_link_libraries(forest_ui_preview PRIVATE forest_test_widgets Qt6::UiTools)
+endif()
 add_executable(settings_navigation_tests settings_navigation.cpp)
 target_compile_features(settings_navigation_tests PRIVATE cxx_std_20)
 target_link_libraries(settings_navigation_tests PRIVATE Qt6::Widgets Qt6::Test)
@@ -21,7 +41,7 @@ else()
     target_compile_options(settings_navigation_tests PRIVATE -fno-rtti -Wall -Wextra -Werror)
 endif()
 
-if (BUILD_TESTING)
+if (BUILD_TESTING OR YUZU_TESTS)
     add_test(NAME settings_navigation COMMAND settings_navigation_tests)
     set_tests_properties(settings_navigation PROPERTIES
         TIMEOUT 30
@@ -35,4 +55,10 @@ if (BUILD_TESTING)
         set_tests_properties(settings_navigation PROPERTIES
             ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
+    add_test(NAME forest_theme COMMAND forest_theme_tests)
+    get_test_property(settings_navigation ENVIRONMENT forest_test_environment)
+    get_test_property(settings_navigation ENVIRONMENT_MODIFICATION forest_test_modification)
+    set_tests_properties(forest_theme PROPERTIES TIMEOUT 30
+        ENVIRONMENT "${forest_test_environment}"
+        ENVIRONMENT_MODIFICATION "${forest_test_modification}")
 endif()

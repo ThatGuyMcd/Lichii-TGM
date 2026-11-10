@@ -2,8 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 add_library(qt_common STATIC
+    forest_theme.cpp
+    forest_theme.h
+    ${PROJECT_SOURCE_DIR}/dist/qt_themes/forest/forest.qrc
     qt_common.h
     qt_common.cpp
 

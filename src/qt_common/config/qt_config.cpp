@@ -278,6 +278,12 @@ void QtConfig::ReadUIValues() {
         std::string("theme"),
         std::string(UISettings::themes[static_cast<size_t>(UISettings::default_theme)].second));
 
+    if (!ReadBooleanSetting("forest_theme_migrated", std::make_optional(false))) {
+        const auto& theme = UISettings::values.theme;
+        const bool light = theme == "default" || theme == "colorful";
+        UISettings::values.theme = light ? "forest_lantern_light" : "forest_lantern_dark";
+    }
+
     ReadUIGamelistValues();
     ReadUILayoutValues();
     ReadPathValues();
@@ -496,6 +502,8 @@ void QtConfig::SaveShortcutValues() {
 
 void QtConfig::SaveUIValues() {
     BeginGroup(Settings::TranslateCategory(Settings::Category::Ui));
+
+    WriteBooleanSetting("forest_theme_migrated", true, std::make_optional(false));
 
     WriteCategory(Settings::Category::Ui);
     WriteCategory(Settings::Category::UiGeneral);

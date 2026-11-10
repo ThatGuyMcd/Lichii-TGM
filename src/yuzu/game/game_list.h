@@ -20,6 +20,7 @@
 #include "core/core.h"
 #include "frontend_common/play_time_manager.h"
 #include "qt_common/config/uisettings.h"
+#include "qt_common/forest_theme.h"
 #include "qt_common/game_list/model.h"
 #include "qt_common/util/game.h"
 
@@ -74,6 +75,8 @@ public:
     void SetFilterFocus();
     void SetFilterVisible(bool visibility);
     bool IsEmpty() const;
+    bool HasGameSelection() const;
+    void ActivateSelection();
 
     void PopulateAsync(QVector<UISettings::GameDir>& game_dirs);
     void SetScanEnabled(bool enabled);
@@ -98,6 +101,7 @@ public slots:
     void OnPopulate();
 
 signals:
+    void SelectionChanged(bool selected);
     void ReportCompatibilityRequested(u64 program_id);
     void BootGame(const QString& game_path, StartGameType type);
     void GameChosen(const QString& game_path, const u64 title_id = 0);
@@ -140,6 +144,7 @@ private slots:
 
 private:
     void SetupViews();
+    void UpdateForestSelection();
     void SetupScrollAnimation();
     bool eventFilter(QObject* obj, QEvent* event) override;
     void changeEvent(QEvent*) override;
@@ -163,6 +168,8 @@ private:
     GameListSearchField* search_field = nullptr;
     MainWindow* main_window = nullptr;
     QVBoxLayout* layout = nullptr;
+
+    QtCommon::ForestTheme::LibraryPanel* forest_panel = nullptr;
 
     GameTree* tree_view = nullptr;
     GameGrid* grid_view = nullptr;

@@ -1,0 +1,8 @@
+<RCC>
+  <qresource prefix="/forest">
+    <file alias="style.qss">style.qss</file>
+    <file alias="header-bough.png">assets/header-bough.png</file>
+    <file alias="footer-fox.png">assets/footer-fox.png</file>
+    <file alias="forest-glade.png">assets/forest-glade.png</file>
+  </qresource>
+</RCC>

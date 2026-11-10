@@ -2,7 +2,7 @@
 add_library(shader_preparation_gpu STATIC gpu_preparation.cpp gpu_preparation.h)
 if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED OR CMAKE_LINK_GROUP_USING_RESCAN_SUPPORTED)
     target_link_libraries(shader_preparation_gpu PUBLIC
-        "$<LINK_GROUP:RESCAN,core,video_core,frontend_common>")
+        "$<LINK_GROUP:RESCAN,core,video_core,audio_core,hid_core,frontend_common>")
 else()
     target_link_libraries(shader_preparation_gpu PUBLIC core video_core frontend_common)
 endif()

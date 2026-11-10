@@ -172,7 +172,10 @@ void Apply(const QString& name) {
     font.setPointSize(10);
     qApp->setFont(font);
     QFile stylesheet(QStringLiteral(":/forest/style.qss"));
-    stylesheet.open(QFile::ReadOnly);
+    if (!stylesheet.open(QFile::ReadOnly)) {
+        qWarning("Unable to read the bundled Forest Lantern stylesheet");
+        return;
+    }
     QString css = QString::fromUtf8(stylesheet.readAll());
     for (const auto& entry : colors) {
         css.replace(QStringLiteral("@%1@").arg(entry.first), entry.second);
@@ -328,7 +331,8 @@ void LibraryPanel::SetGame(const QString& title, const QString& path, const QPix
     const bool selected = !path.isEmpty();
     title_label->setText(selected ? title : tr("Your next adventure"));
     path_label->setText(selected ? path : tr("Select a game in your library to get started."));
-    icon_label->setPixmap(icon.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    icon_label->setPixmap(icon.isNull() ? QPixmap{} : icon.scaled(64, 64, Qt::KeepAspectRatio,
+                                                               Qt::SmoothTransformation));
     icon_label->setVisible(!icon.isNull());
     play_button->setEnabled(selected);
     properties_button->setEnabled(selected);

@@ -1,7 +1,7 @@
 # Upstream synchronization — 10 November 2026
 
-Integrates all eighteen commits after `d2eaae4f3abca636b030b726f107bace06f61079`
-through Lichii `nx2` at `80197189dd704c49cb3e5b9ae171fb24d7fbe183`.
+Integrates all twenty-two commits after `d2eaae4f3abca636b030b726f107bace06f61079`
+through Lichii `nx2` at `7dddff2d0e4b6f2802c12226c9d954771fe72113`.
 The fork's prior local source is `07390bea197045eb156655d9a105d8d901b381be`;
 the integration retains its Forest Lantern themes, handheld controls, selected-game
 covers, full-screen settings and prior OOT integrations. Product revision remains
@@ -29,6 +29,10 @@ covers, full-screen settings and prior OOT integrations. Product revision remain
 | `9703d5e29d` | #1108 | Portable IPSwitch escape character; already present in the fork. |
 | `7d727554ae` | #1126 | Make MSVC diagnostic severity follow ENABLE_WERROR; already present in the fork. |
 | `80197189dd` | #959 | Retry over-budget Vulkan buffer allocations; already present in the fork. |
+| `f5edb3578d` | #784 | Block-linear 16-byte swizzling and regressions; retain the fork's existing implementation and parallel decoder. |
+| `fd1dbeccab` | #850 | Size sysmix queues for the host callback; retain the fork's tested helper and add callback-size diagnostics. |
+| `017c82c291` | #853 | Copy cached 3D surfaces one depth slice at a time for 2D-engine blits. |
+| `7dddff2d0e` | #796 | Generated-frame FPS display; already present in the fork's status bar and overlay. |
 
 ## Merge decisions
 
@@ -58,6 +62,11 @@ obsolete header introduced by automatic merging are removed. The new per-region
 upload check is shared with regression tests: one 66-region span must split into
 64/1/1 batches, keeping an overlapping final write in a later batch; dependent
 source buffers also flush earlier writes first.
+
+The final upstream batch retains the fork's parallel swizzle path and its guarded
+sysmix queue sizing and generated-frame counters. It adds the cached-volume
+slice-copy path and callback-size diagnostics. Handheld toolbar and status-bar
+controls remain in place.
 
 Protected dependency/submodule and recompiled-source directories are unchanged.
 No emulator is started or stopped for verification. The NVIDIA/iCUE blue screen

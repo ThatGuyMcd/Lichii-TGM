@@ -224,6 +224,8 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
     if (type == StreamType::Sysmix &&
         num_frames > largest_request_frames.load(std::memory_order_relaxed)) {
         largest_request_frames.store(num_frames, std::memory_order_relaxed);
+        LOG_INFO(Audio, "sysmix {}: host asks for {} frames per callback, queue limit {} blocks",
+                 name, num_frames, SysmixQueueLimit());
     }
 
     while (frames_written < num_frames) {

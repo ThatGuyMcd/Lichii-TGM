@@ -65,6 +65,7 @@
 #include "shader_recompiler/info_serialize.h"
 #include "common/zstd_compression.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/renderer_vulkan/graphics_warm_policy.h"
 #include "video_core/renderer_vulkan/mesh_fallback_limits.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/noperspective_policy.h"
@@ -75,6 +76,7 @@
 #include "video_core/renderer_vulkan/pipeline_shader_emission.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/precache_journal.h"
+#include "video_core/renderer_vulkan/precache_thread_policy.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_cooperative_hmma_test.h"
@@ -2083,7 +2085,6 @@ namespace {
 size_t PrecacheThreads() {
     const size_t all = std::clamp<size_t>(std::thread::hardware_concurrency(), 1, 64);
     const u32 setting = Settings::values.shader_warm_threads.GetValue();
-    const size_t chosen = setting == 0 ? all : std::clamp<size_t>(setting, 1, 64);
     static const size_t forced = [] {
         constexpr size_t Default = 0;
         const char* const value = std::getenv("EDEN_NX2_WARM_THREADS");
@@ -2102,28 +2103,24 @@ size_t PrecacheThreads() {
         return static_cast<size_t>(parsed);
     }();
     if (forced != 0 || setting != 0) {
-        return forced != 0 ? forced : chosen;
+        return SelectPrecacheThreads(all, setting, forced, 0, 0);
     }
     // Every CPU thread, unless the system is short of commit memory: each warm-up thread holds a
     // driver compile, and on a 16 GB machine all 12 threads plus the guest memory hit the commit
     // limit (#741). Windows reports the commit charge; elsewhere the count stays as is.
-    constexpr u64 BytesPerThread = 2ULL << 30;
-    constexpr u64 Headroom = 2ULL << 30;
     const auto usage = Common::GetProcessMemoryUsage();
-    if (usage.system_commit_limit == 0 || usage.system_commit >= usage.system_commit_limit) {
-        return chosen;
-    }
-    const u64 free_commit = usage.system_commit_limit - usage.system_commit;
-    const size_t fit = static_cast<size_t>(
-        std::max<u64>(free_commit > Headroom ? (free_commit - Headroom) / BytesPerThread : 0, 1));
-    if (fit < chosen) {
+    const size_t fit =
+        SelectPrecacheThreads(all, setting, forced, usage.system_commit, usage.system_commit_limit);
+    if (fit < all) {
+        const u64 free_commit = usage.system_commit < usage.system_commit_limit
+                                   ? usage.system_commit_limit - usage.system_commit
+                                   : 0;
         LOG_INFO(Render_Vulkan,
                  "Shader precache: {} MiB of commit memory free, {} threads instead of {} "
                  "(shader_warm_threads or EDEN_NX2_WARM_THREADS set a fixed count)",
-                 free_commit >> 20, fit, chosen);
-        return fit;
+                 free_commit >> 20, fit, all);
     }
-    return chosen;
+    return fit;
 }
 
 bool ComputeNoInline();
@@ -5378,6 +5375,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         return nullptr;
     }
     auto& programs{stages.programs};
+    if (libraries_only && key.unique_hashes[1] != 0 && !CanWarmGraphicsProgram(programs[1])) {
+        return nullptr;
+    }
     const bool use_libraries = stages.use_libraries;
     if (libraries_only && !use_libraries) {
         return nullptr;

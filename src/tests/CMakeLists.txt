@@ -112,6 +112,9 @@ add_executable(tests
     video_core/mesh_warm_builder.cpp
     video_core/query_copy.cpp
     video_core/pipeline_optimization.cpp
+    video_core/graphics_pipeline_library_policy.cpp
+    video_core/graphics_warm_policy.cpp
+    video_core/precache_threads.cpp
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_storage_alignment.cpp
     video_core/spirv_fragment_shuffle.cpp

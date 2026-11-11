@@ -6,10 +6,13 @@ settings, aspect profiles and explicit shader preparation option.
 
 ## Updates
 
-- Reviews the 36 Lichii commits through `5b09546918418589e26a304accabff21cc89db3b`.
+- Reviews 38 Lichii commits through `d5bb40ad4ca16b66e9c0961f823aff5f2a8c5c08`.
   Protected dependency sources are retained, so their CPU optimizations and the
   external FidelityFX shader change are not applied. The fork also retains its
   existing overlay, data paths and release packaging.
+- Adds focused warm-up shader validation, pipeline-library capability checks and
+  automatic precompile memory-pressure safeguards from the older shader PR series.
+  The latest two main UI/LAN commits remain reviewed exclusions.
 - Links nxformat 1.0.3 into the executable and adds the reviewed external NX
   update/DLC, patched RomFS dump, metadata editing and whole-gamecard fixes.
   The late upstream theme redesign is reviewed; Forest Lantern stays in use.

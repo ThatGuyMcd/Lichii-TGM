@@ -205,8 +205,10 @@ add_library(video_core STATIC
     renderer_vulkan/pipeline_build_trace.h
     renderer_vulkan/precache_journal.h
     renderer_vulkan/pipeline_eviction_policy.h
+    renderer_vulkan/graphics_warm_policy.h
     renderer_vulkan/pipeline_helper.h
     renderer_vulkan/pipeline_optimization.h
+    renderer_vulkan/precache_thread_policy.h
     renderer_vulkan/pipeline_shader_emission.h
     renderer_vulkan/pipeline_statistics.cpp
     renderer_vulkan/pipeline_statistics.h
@@ -308,6 +310,7 @@ add_library(video_core STATIC
     vulkan_common/vulkan_debug_callback.h
     vulkan_common/vulkan_device.cpp
     vulkan_common/vulkan_device.h
+    vulkan_common/graphics_pipeline_library_policy.h
     vulkan_common/vulkan_instance.cpp
     vulkan_common/vulkan_instance.h
     vulkan_common/vulkan_library.cpp

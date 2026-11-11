@@ -54,9 +54,14 @@ bool SameProfileRoot(const fs::path& left, const fs::path& right) {
 }
 } // namespace
 
+bool IsLegacyProfileSource(const fs::path& source, const fs::path& destination_root) {
+    return !SameProfileRoot(source, destination_root) && fs::is_directory(source);
+}
+
 bool NeedsLegacyProfileImport(const fs::path& destination_root,
                               std::span<const fs::path> legacy_sources,
-                              const fs::path& state_directory, bool portable) {
+                              const fs::path& state_directory, bool portable,
+                              const fs::path& current_config_directory) {
     if (portable) {
         return false;
     }
@@ -67,8 +72,18 @@ bool NeedsLegacyProfileImport(const fs::path& destination_root,
     if (state != Migration::State::Unresolved) {
         return false;
     }
+    // TGM continues using the Eden profile in place. An existing global configuration belongs to
+    // this profile even when other emulators are installed. Directory creation alone is not
+    // evidence of a configured profile, and an unfinished transaction above always wins.
+    const auto config_directory = current_config_directory.empty()
+                                      ? destination_root / "config"
+                                      : current_config_directory;
+    if (fs::is_regular_file(config_directory / "qt-config.ini") ||
+        fs::is_regular_file(config_directory / "sdl2-config.ini")) {
+        return false;
+    }
     for (const auto& source : legacy_sources) {
-        if (!SameProfileRoot(source, destination_root) && fs::is_directory(source)) {
+        if (IsLegacyProfileSource(source, destination_root)) {
             return true;
         }
     }
@@ -86,7 +101,8 @@ bool NeedsLegacyProfileImport() {
         return GetLegacyPath(source);
     });
     return NeedsLegacyProfileImport(GetEdenPath(EdenPath::EdenDir), paths,
-                                    ProfileImportStateDirectory(), IsPortableMode());
+                                    ProfileImportStateDirectory(), IsPortableMode(),
+                                    GetEdenPath(EdenPath::ConfigDir));
 #endif
 }
 

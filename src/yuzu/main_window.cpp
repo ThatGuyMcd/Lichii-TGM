@@ -3116,6 +3116,14 @@ void MainWindow::OnGameListDumpRomFS(u64 program_id, const std::string& game_pat
 // A precompile recipe (video_core/nx2_recipe.h) and the game's own shader programs give this
 // build's precompiled pipeline file, prepared at the game's next boot.
 void MainWindow::OnGameListPrepareShadersFromRecipe(u64 program_id, const std::string& game_path) {
+#ifdef LICHII_NX_TOOLS
+    if (nx_tools && nx_tools->IsRunning()) {
+        QMessageBox::information(this, tr("NX Archive"),
+                                 tr("Wait for the NX archive operation to finish before "
+                                    "preparing shaders."));
+        return;
+    }
+#endif
     const QString title = tr("Prepare Precompiled Shaders");
     const QString recipe_path = QFileDialog::getOpenFileName(
         this, tr("Select Precompile Recipe"), {},
@@ -4681,7 +4689,8 @@ void MainWindow::OnGameListEditNxMetadata(const std::string& game_path) {
         }
         if (shader_warm_dialog && shader_warm_dialog->IsRunning()) {
             QMessageBox::information(this, tr("Shader Preparation in Progress"),
-                                     tr("Wait for shader preparation to finish or cancel it before editing NX archives."));
+                                     tr("Wait for shader preparation to finish or cancel it "
+                                        "before editing NX archives."));
             return false;
         }
         if (emulation_running || QtCommon::system->IsPoweredOn()) {
@@ -4710,7 +4719,8 @@ void MainWindow::OnGameListNxTool(const std::string& game_path,
                                   void (NxTools::*tool)(const std::string&)) {
     if (shader_warm_dialog && shader_warm_dialog->IsRunning()) {
         QMessageBox::information(this, tr("Shader Preparation in Progress"),
-                                 tr("Wait for shader preparation to finish or cancel it before changing NX archives."));
+                                 tr("Wait for shader preparation to finish or cancel it "
+                                    "before changing NX archives."));
         return;
     }
     // An archive edited in place must not be read by a running game.
@@ -4900,6 +4910,14 @@ void MainWindow::OnGameListPrepareShaderWarmFromRecipe(u64 program_id,
 
 void MainWindow::StartShaderWarm(u64 program_id, const std::string& game_path,
                                  const std::filesystem::path& recipe, bool full_preparation) {
+#ifdef LICHII_NX_TOOLS
+    if (nx_tools && nx_tools->IsRunning()) {
+        QMessageBox::information(this, tr("NX Archive"),
+                                 tr("Wait for the NX archive operation to finish before "
+                                    "preparing shaders."));
+        return;
+    }
+#endif
     if (shader_warm_dialog) {
         if (shader_warm_dialog->IsRunning()) {
             shader_warm_dialog->raise();

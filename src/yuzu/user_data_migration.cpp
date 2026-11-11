@@ -47,12 +47,15 @@ UserDataMigrator::UserDataMigrator(QMainWindow* main_window) {
             }
             Migration::Recover(state_dir);
         }
-        ShowMigrationPrompt(main_window);
+        // Recovery may have restored an already configured TGM profile. Only a genuinely fresh
+        // destination still needs the optional source-selection prompt afterward.
+        if (FrontendCommon::NeedsLegacyProfileImport()) {
+            ShowMigrationPrompt(main_window);
+        }
     }
 }
 
 void UserDataMigrator::ShowMigrationPrompt(QMainWindow* main_window) {
-    namespace fs = std::filesystem;
     using namespace QtCommon::StringLookup;
 
     MigrationDialog migration_prompt;
@@ -88,7 +91,9 @@ void UserDataMigrator::ShowMigrationPrompt(QMainWindow* main_window) {
     std::vector<Emulator> found{};
 
     for (const Emulator& emu : legacy_emus)
-        if (fs::is_directory(Common::FS::GetLegacyPath(emu.e_user_dir)))
+        if (FrontendCommon::IsLegacyProfileSource(
+                Common::FS::GetLegacyPath(emu.e_user_dir),
+                Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir)))
             found.emplace_back(emu);
 
     if (found.empty()) {

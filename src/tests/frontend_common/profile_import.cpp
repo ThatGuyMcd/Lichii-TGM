@@ -8,6 +8,7 @@
 #include <random>
 #include <string>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #ifndef SI_NO_CONVERSION
 #define SI_NO_CONVERSION 1
 #endif
@@ -58,7 +59,53 @@ TEST_CASE("An alias of the active profile cannot trigger self migration", "[migr
         SKIP("Directory symlink creation is unavailable: " << error.message());
     }
     const std::array sources{alias};
+    CHECK_FALSE(IsLegacyProfileSource(alias, current));
     CHECK_FALSE(NeedsLegacyProfileImport(current, sources, fixture.root / "state"));
+}
+
+TEST_CASE("Existing TGM global configurations keep other installed profiles optional",
+          "[migration]") {
+    const auto filename = GENERATE("qt-config.ini", "sdl2-config.ini");
+    const bool separate_config_root = GENERATE(false, true);
+    Fixture fixture;
+    const auto current = fixture.root / "data" / "eden";
+    const auto legacy = fixture.root / "data" / "yuzu";
+    const auto state = fixture.root / "data" / "eden.migration";
+    const auto config = separate_config_root ? fixture.root / "xdg-config" / "eden"
+                                             : current / "config";
+    REQUIRE(fs::create_directories(current));
+    REQUIRE(fs::create_directories(legacy));
+    REQUIRE(fs::create_directories(config));
+    const std::array sources{current, legacy};
+    REQUIRE(IsLegacyProfileSource(legacy, current));
+    REQUIRE_FALSE(IsLegacyProfileSource(current, current));
+    REQUIRE(NeedsLegacyProfileImport(current, sources, state, false, config));
+    REQUIRE(std::ofstream(config / filename).write("[Renderer]\n", 11).good());
+
+    CHECK_FALSE(NeedsLegacyProfileImport(current, sources, state, false, config));
+    CHECK(IsLegacyProfileSource(legacy, current)); // An explicit import still has this source.
+    CHECK_FALSE(fs::exists(state));
+    CHECK(fs::file_size(config / filename) == 11);
+
+    // Existing configuration must never hide a partial publication that needs recovery.
+    REQUIRE(fs::create_directories(state));
+    REQUIRE(std::ofstream(state / "pending").write("1\n", 2).good());
+    CHECK(NeedsLegacyProfileImport(current, sources, state, false, config));
+}
+
+TEST_CASE("Empty profile directories and per-game settings do not suppress first-run discovery",
+          "[migration]") {
+    Fixture fixture;
+    const auto current = fixture.root / "eden";
+    const auto legacy = fixture.root / "citron";
+    const auto config = current / "config";
+    REQUIRE(fs::create_directories(config / "custom"));
+    REQUIRE(fs::create_directory(config / "qt-config.ini"));
+    REQUIRE(fs::create_directory(config / "sdl2-config.ini"));
+    REQUIRE(std::ofstream(config / "custom" / "game.ini").write("[Renderer]\n", 11).good());
+    REQUIRE(fs::create_directory(legacy));
+    const std::array sources{current, legacy};
+    CHECK(NeedsLegacyProfileImport(current, sources, fixture.root / "state"));
 }
 
 TEST_CASE("Other profiles and unfinished journals still require an explicit import decision",
@@ -177,6 +224,12 @@ TEST_CASE("CLI-first configuration is blocked and portable user stays untouched"
     CHECK(NeedsLegacyProfileImport());
     CHECK_THROWS(CheckLegacyProfileBeforeConfig());
     CHECK(fs::is_empty(fixture.root / "config/eden"));
+    REQUIRE(std::ofstream(fixture.root / "config/eden/qt-config.ini")
+                .write("[Renderer]\n", 11).good());
+    CHECK_FALSE(NeedsLegacyProfileImport());
+    CHECK_NOTHROW(CheckLegacyProfileBeforeConfig());
+    REQUIRE(fs::remove(fixture.root / "config/eden/qt-config.ini"));
+    CHECK(NeedsLegacyProfileImport());
     Migration::MarkFresh(ProfileImportStateDirectory());
     CHECK_FALSE(NeedsLegacyProfileImport());
     CHECK_NOTHROW(CheckLegacyProfileBeforeConfig());

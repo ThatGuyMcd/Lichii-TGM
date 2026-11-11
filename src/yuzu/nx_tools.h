@@ -31,6 +31,9 @@ public:
     static bool CanConvert(const std::string& game_path);
     /// True when the path is an NX archive.
     static bool IsNxArchive(const std::string& game_path);
+    bool IsRunning() const {
+        return static_cast<bool>(running);
+    }
 
     void ConvertToNx(const std::string& game_path);
     void AddToNx(const std::string& archive_path);

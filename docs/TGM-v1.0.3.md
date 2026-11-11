@@ -31,6 +31,9 @@ settings, aspect profiles and explicit shader preparation option.
 Existing Eden, portable and XDG locations stay in use. This update does not move
 saves, keys, firmware, profiles or caches into a new application folder. The safer
 staged import machinery is retained for explicit imports.
+Existing configured profiles continue without a new import prompt, including
+separate XDG config directories. Unfinished imports still require recovery;
+the current profile and its aliases cannot be selected as import sources.
 
 HDR Off/On/Auto replaces the old On/Off control, with its saved choice migrated and
 the old key preserved for compatibility. Existing 200/300-nit defaults are retained;

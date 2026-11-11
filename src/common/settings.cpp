@@ -14,11 +14,11 @@
 #include <atomic>
 #include <compare>
 #include <cstddef>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <string_view>
 #include <type_traits>
-#include <deque>
 #include <fmt/core.h>
 
 #include "common/settings_enums.h"
@@ -52,6 +52,9 @@ SWITCHABLE(OotAntiAliasing, false);
 SWITCHABLE(OcarinaDlssMode, false);
 SWITCHABLE(DlssPreset, false);
 SWITCHABLE(NvidiaDlssQuality, false);
+SWITCHABLE(NvidiaDlssPreset, false);
+SWITCHABLE(HdrMode, false);
+SWITCHABLE(HdrSwapchain, false);
 SWITCHABLE(NeuralRendering, false);
 SWITCHABLE(AspectRatio, true);
 SWITCHABLE(AstcDecodeMode, true);
@@ -94,7 +97,8 @@ Values values;
 
 namespace {
 // One byte per option; the three percentages default to 100 while quality/style default to zero.
-std::atomic<u64> nvidia_dlss_runtime_options{(u64{100} << 16) | (u64{100} << 24) | (u64{100} << 32)};
+std::atomic<u64> nvidia_dlss_runtime_options{(u64{100} << 16) | (u64{100} << 24) |
+    (u64{100} << 32) | (static_cast<u64>(NvidiaDlssPreset::NvidiaDefault) << 40)};
 } // namespace
 
 /// Publish quality, style and neural percentages together after frontend settings are applied.
@@ -104,8 +108,11 @@ void RefreshNvidiaDlssRuntimeSettings() {
     const auto strength = static_cast<u64>(values.neural_rendering_strength.GetValue());
     const auto tone = static_cast<u64>(values.neural_rendering_tone.GetValue());
     const auto structure = static_cast<u64>(values.neural_rendering_structure.GetValue());
+    const auto preset = static_cast<u64>(values.nvidia_dlss_preset.GetValue());
+    const auto legacy_preset = static_cast<u64>(values.dlss_preset.GetValue());
     nvidia_dlss_runtime_options.store(
-        quality | (neural << 8) | (strength << 16) | (tone << 24) | (structure << 32),
+        quality | (neural << 8) | (strength << 16) | (tone << 24) | (structure << 32) |
+            (preset << 40) | (legacy_preset << 48),
         std::memory_order_relaxed);
 }
 
@@ -116,7 +123,9 @@ NvidiaDlssRuntimeSettings GetNvidiaDlssRuntimeSettings() {
             static_cast<NeuralRendering>((options >> 8) & 0xff),
             static_cast<u32>((options >> 16) & 0xff),
             static_cast<u32>((options >> 24) & 0xff),
-            static_cast<u32>((options >> 32) & 0xff)};
+            static_cast<u32>((options >> 32) & 0xff),
+            static_cast<NvidiaDlssPreset>((options >> 40) & 0xff),
+            static_cast<DlssPreset>((options >> 48) & 0xff)};
 }
 
 std::string GetTimeZoneString(TimeZone time_zone) {
@@ -265,6 +274,10 @@ static bool current_program_is_switch2 = false;
 
 void SetCurrentProgramIsSwitch2(bool is_switch2) {
     current_program_is_switch2 = is_switch2;
+}
+
+bool ReactiveFlushing() {
+    return values.use_reactive_flushing.GetValue() || values.force_reactive_flushing;
 }
 
 bool CurrentProgramIsSwitch2() {

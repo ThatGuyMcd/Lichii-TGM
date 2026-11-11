@@ -52,6 +52,7 @@ add_library(core STATIC
     debugger/nx2_debug_tools.h
     device_memory.cpp
     device_memory.h
+    zero_page_trim.h
     device_memory_manager.h
     device_memory_manager.inc
     file_sys/bis_factory.cpp

@@ -6,9 +6,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include "common/fs/path_util.h"
+#include "common/fs/profile_migration.h"
 #include "common/recommended_settings.h"
 #include "common/settings.h"
 #include "frontend_common/config.h"
+#include "video_core/nvidia_dlss_policy.h"
 
 namespace {
 
@@ -54,9 +56,15 @@ class ConfigDirectory {
 public:
     ConfigDirectory()
         : original{Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir)},
+          original_root{Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir)},
           path{std::filesystem::temp_directory_path() /
                fmt::format("lichii-config-{}", std::random_device{}())} {
         REQUIRE(std::filesystem::create_directory(path));
+        REQUIRE(std::filesystem::create_directory(path / "profile"));
+        Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir, path / "profile");
+        // These exercise configuration, not profile discovery. An explicit fresh choice in an
+        // isolated profile prevents reading real migration journals or other emulator folders.
+        Common::FS::ProfileMigration::MarkFresh(path / "profile.migration");
         Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir, path);
         for (const auto& [key, setting] : Settings::values.linkage.by_key) {
             setting->SetGlobal(false);
@@ -67,8 +75,14 @@ public:
     }
 
     ~ConfigDirectory() {
-        Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir, original);
         std::error_code error;
+        Common::FS::SetAppDirectory("");
+        if (std::filesystem::is_directory(original_root, error)) {
+            Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir, original_root);
+        }
+        if (std::filesystem::is_directory(original, error)) {
+            Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir, original);
+        }
         std::filesystem::remove_all(path, error);
     }
 
@@ -80,6 +94,7 @@ public:
     }
 
     const std::filesystem::path original;
+    const std::filesystem::path original_root;
     const std::filesystem::path path;
 };
 
@@ -419,31 +434,31 @@ TEST_CASE("A denied config status lookup is not seeded", "[config]") {
 }
 #endif
 
-TEST_CASE("The recommended settings offer and its backup persist in the config", "[config]") {
+TEST_CASE("The recommended settings backup persists in the config", "[config]") {
     ConfigDirectory directory;
     SECTION("New install") {}
     SECTION("Config from an older build") {
         directory.Write("qt-config.ini",
                         "[Renderer]\nasync_presentation=false\nasync_presentation\\default=false\n");
     }
+    SECTION("Config from a build that offered the recommended settings at startup") {
+        directory.Write("qt-config.ini", "[Miscellaneous]\nrecommended_settings_prompt_shown=true\n"
+                                         "recommended_settings_prompt_shown\\default=false\n");
+    }
     std::string backup;
     std::size_t changed = 0;
     {
         FileConfig config{std::string{"qt-config"}};
-        CHECK_FALSE(Settings::values.recommended_settings_prompt_shown.GetValue());
         CHECK(Settings::values.recommended_settings_backup.GetValue().empty());
         Settings::values.speed_limit.SetValue(150);
-        Settings::values.recommended_settings_prompt_shown = true;
         changed = Settings::ApplyRecommendedSettings(Settings::values).size();
         CHECK(changed > 0);
         backup = Settings::values.recommended_settings_backup.GetValue();
         config.SaveValues();
     }
-    Settings::values.recommended_settings_prompt_shown = false;
     Settings::values.recommended_settings_backup = std::string{};
     {
         FileConfig config{std::string{"qt-config"}};
-        CHECK(Settings::values.recommended_settings_prompt_shown.GetValue());
         CHECK(Settings::values.recommended_settings_backup.GetValue() == backup);
         CHECK(Settings::ApplyRecommendedSettings(Settings::values).empty());
         CHECK(Settings::RestorePreviousSettings(Settings::values).size() == changed);
@@ -452,7 +467,6 @@ TEST_CASE("The recommended settings offer and its backup persist in the config",
     }
     Settings::values.speed_limit.SetValue(100);
     FileConfig config{std::string{"qt-config"}};
-    CHECK(Settings::values.recommended_settings_prompt_shown.GetValue());
     CHECK(Settings::values.recommended_settings_backup.GetValue().empty());
     CHECK(Settings::values.speed_limit.GetValue() == 150);
 }
@@ -463,4 +477,119 @@ TEST_CASE("A config path beneath a non-directory is not seeded", "[config]") {
     FileConfig config{
         std::make_optional(Common::FS::PathToUTF8String(directory.path / "file" / "config.ini"))};
     CheckLegacyProfile();
+}
+
+TEST_CASE("DLSS old profiles preserve game model policy and native quality values",
+          "[config][dlss_mode]") {
+    ConfigDirectory directory;
+    directory.Write("qt-config.ini", "[Renderer]\nnvidia_dlss=true\nnvidia_dlss\\default=false\n");
+    FileConfig config{std::string{"qt-config"}};
+    CHECK(Settings::values.nvidia_dlss.GetValue());
+    CHECK(Settings::values.nvidia_dlss_preset.GetValue() == Settings::NvidiaDlssPreset::NvidiaDefault);
+    CHECK(Settings::GetNvidiaDlssRuntimeSettings().preset == Settings::NvidiaDlssPreset::NvidiaDefault);
+    CHECK(Settings::GetNvidiaDlssRuntimeSettings().quality ==
+          Settings::NvidiaDlssQuality::Automatic);
+    directory.Write("qt-config.ini",
+                    "[Renderer]\nnvidia_dlss_quality=1\nnvidia_dlss_quality\\default=false\n"
+                    "nvidia_dlss_preset=0\nnvidia_dlss_preset\\default=false\n");
+    FileConfig native_config{std::string{"qt-config"}};
+    CHECK(Settings::GetNvidiaDlssRuntimeSettings().quality == Settings::NvidiaDlssQuality::Native);
+    CHECK(Settings::GetNvidiaDlssRuntimeSettings().preset == Settings::NvidiaDlssPreset::M);
+}
+
+TEST_CASE("DLSS config round-trips choices and publishes per-game overrides",
+          "[config][dlss_mode]") {
+    ConfigDirectory directory;
+    FileConfig config{std::string{"qt-config"}};
+    for (const auto& [name, value] :
+         Settings::EnumMetadata<Settings::NvidiaDlssPreset>::Canonicalizations()) {
+        Settings::values.nvidia_dlss_preset.SetValue(value);
+        config.SaveValues();
+        Settings::values.nvidia_dlss_preset.LoadString("");
+        FileConfig loaded{std::string{"qt-config"}};
+        CHECK(Settings::values.nvidia_dlss_preset.GetValue() == value);
+        CHECK(Settings::GetNvidiaDlssRuntimeSettings().preset == value);
+    }
+    for (const auto& [name, value] :
+         Settings::EnumMetadata<Settings::NvidiaDlssQuality>::Canonicalizations()) {
+        Settings::values.nvidia_dlss_quality.SetValue(value);
+        config.SaveValues();
+        Settings::values.nvidia_dlss_quality.LoadString("");
+        FileConfig loaded{std::string{"qt-config"}};
+        CHECK(Settings::values.nvidia_dlss_quality.GetValue() == value);
+        CHECK(Settings::GetNvidiaDlssRuntimeSettings().quality == value);
+    }
+    Settings::values.nvidia_dlss_preset = Settings::NvidiaDlssPreset::K;
+    config.SaveValues();
+    directory.Write("custom/game.ini",
+                    "[Renderer]\nnvidia_dlss_preset=0\nnvidia_dlss_preset\\default=false\n"
+                    "nvidia_dlss_preset\\use_global=false\n");
+    FileConfig game{std::string{"game"}, Config::ConfigType::PerGameConfig};
+    CHECK_FALSE(Settings::values.nvidia_dlss_preset.UsingGlobal());
+    CHECK(Settings::GetNvidiaDlssRuntimeSettings().preset == Settings::NvidiaDlssPreset::M);
+    Settings::values.nvidia_dlss_preset.SetGlobal(true);
+    Settings::RefreshNvidiaDlssRuntimeSettings();
+    CHECK(Settings::GetNvidiaDlssRuntimeSettings().preset == Settings::NvidiaDlssPreset::K);
+}
+
+TEST_CASE("Legacy HDR On and explicit output Off preserve their saved choices", "[config][hdr]") {
+    ConfigDirectory directory;
+    directory.Write("qt-config.ini", "[Renderer]\nhdr=true\nhdr\\default=false\n");
+    FileConfig legacy{std::string{"qt-config"}};
+    CHECK(Settings::values.hdr_mode.GetValue() == Settings::HdrMode::On);
+    CHECK(Settings::values.hdr_reference_white.GetValue() == 200);
+    CHECK(Settings::values.hdr_peak_luminance.GetValue() == 300);
+    legacy.SaveValues();
+    Settings::values.hdr_mode = Settings::HdrMode::Off;
+    legacy.SaveValues();
+    FileConfig disabled{std::string{"qt-config"}};
+    CHECK(Settings::values.hdr_mode.GetValue() == Settings::HdrMode::Off);
+    CHECK_FALSE(Settings::values.hdr.GetValue());
+
+    directory.Write("qt-config.ini", "[Renderer]\nhdr=true\nhdr\\default=false\n"
+                    "hdr_mode=0\nhdr_mode\\default=false\n");
+    FileConfig explicit_off{std::string{"qt-config"}};
+    CHECK(Settings::values.hdr_mode.GetValue() == Settings::HdrMode::Off);
+}
+
+TEST_CASE("Legacy per-game HDR overrides migrate without replacing the global mode",
+          "[config][hdr]") {
+    ConfigDirectory directory;
+    FileConfig global{std::string{"qt-config"}};
+    CHECK(Settings::values.hdr_mode.GetValue() == Settings::HdrMode::Off);
+    directory.Write("custom/game.ini", "[Renderer]\nhdr=true\nhdr\\default=false\n"
+                    "hdr\\use_global=false\n");
+    FileConfig game{std::string{"game"}, Config::ConfigType::PerGameConfig};
+    CHECK_FALSE(Settings::values.hdr_mode.UsingGlobal());
+    CHECK(Settings::values.hdr_mode.GetValue() == Settings::HdrMode::On);
+    CHECK(Settings::values.hdr_mode.GetValue(true) == Settings::HdrMode::Off);
+    game.SaveValues();
+    Settings::values.hdr_mode.SetGlobal(true);
+    CHECK(Settings::values.hdr_mode.GetValue() == Settings::HdrMode::Off);
+}
+
+TEST_CASE("DLSS model choices preserve existing explicit preset priority", "[config][dlss_mode]") {
+    ConfigDirectory directory;
+    Settings::values.nvidia_dlss_preset = Settings::NvidiaDlssPreset::M;
+    Settings::values.dlss_preset = Settings::DlssPreset::K;
+    Settings::values.nvidia_dlss_quality = Settings::NvidiaDlssQuality::Balanced;
+    Settings::values.neural_rendering = Settings::NeuralRendering::Natural;
+    Settings::values.neural_rendering_strength = 37;
+    Settings::values.neural_rendering_tone = 51;
+    Settings::values.neural_rendering_structure = 63;
+    Settings::RefreshNvidiaDlssRuntimeSettings();
+    const auto options = Settings::GetNvidiaDlssRuntimeSettings();
+    CHECK(options.quality == Settings::NvidiaDlssQuality::Balanced);
+    CHECK(options.preset == Settings::NvidiaDlssPreset::M);
+    CHECK(options.legacy_preset == Settings::DlssPreset::K);
+    CHECK(options.neural_rendering == Settings::NeuralRendering::Natural);
+    CHECK(options.strength == 37);
+    CHECK(options.tone == 51);
+    CHECK(options.structure == 63);
+    CHECK(VideoCommon::NvidiaDlssPreset(options.legacy_preset, -1, std::nullopt, options.preset) == 11);
+    CHECK(VideoCommon::NvidiaDlssPreset(Settings::DlssPreset::Auto, -1, std::nullopt,
+                                       options.preset) == 13);
+    CHECK(VideoCommon::NvidiaDlssPreset(options.legacy_preset, -1, "L", options.preset) == 12);
+    CHECK(VideoCommon::NvidiaDlssPreset(Settings::DlssPreset::Auto, 10, std::nullopt,
+                                       Settings::NvidiaDlssPreset::NvidiaDefault) == 10);
 }

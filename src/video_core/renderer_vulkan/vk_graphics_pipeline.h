@@ -112,14 +112,41 @@ struct GraphicsPipelineLibraryParams {
     bool libraries_only{};
 };
 
+/// What an evicted graphics pipeline needs to be built again without translating its shaders
+struct KeptGraphicsStages {
+    static constexpr size_t NUM_STAGES = Tegra::Engines::Maxwell3D::Regs::MaxShaderStage;
+
+    std::array<std::vector<u8>, NUM_STAGES> spirv; ///< zstd, empty for absent stages
+    std::array<std::unique_ptr<Shader::Info>, NUM_STAGES> infos;
+    std::optional<MeshEmulationSetup> mesh_emulation;
+    VideoCommon::EvictedPointerSlots::Slots mapped_pointers;
+
+    GraphicsPipelineLibraryParams libraries;
+    size_t source_words{};
+    bool precompiled{};
+
+    /// Memory it holds, roughly
+    [[nodiscard]] u64 Bytes() const noexcept;
+
+    [[nodiscard]] bool HasStages() const noexcept {
+        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+            if (!spirv[stage].empty() && infos[stage]) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
 class GraphicsPipeline {
     static constexpr size_t NUM_STAGES = Tegra::Engines::Maxwell3D::Regs::MaxShaderStage;
 
 public:
     /// Emits the stages' SPIR-V on a worker; with libraries it also returns each stage's SPIR-V
     /// hash (zero for absent stages).
+    using StageCode = std::array<std::vector<u32>, NUM_STAGES>;
     using EmitStagesFunc = std::function<std::array<vk::ShaderModule, NUM_STAGES>(
-        std::array<u128, NUM_STAGES>& spirv_hashes)>;
+        std::array<u128, NUM_STAGES>& spirv_hashes, StageCode& code)>;
 
     /// Graphics pipeline libraries (EDEN_NX2_GPL): non-null `library_cache` builds the pipeline
     /// from per-stage libraries; the stages were emitted with one descriptor set per stage.
@@ -140,7 +167,7 @@ public:
         const std::array<const Shader::Info*, NUM_STAGES>& infos,
         EmitStagesFunc emit_stages = {},
         std::optional<MeshEmulationSetup> mesh_emulation = std::nullopt,
-        LibraryParams library_params = {});
+        LibraryParams library_params = {}, StageCode stage_code = {});
 
     static std::chrono::nanoseconds TakeHoldTime() noexcept;
 
@@ -334,6 +361,10 @@ public:
         mapped_pointers = std::move(slots);
     }
 
+    /// Moves out the SPIR-V kept after the build, with the stage infos: for a built pipeline being
+    /// evicted
+    [[nodiscard]] KeptGraphicsStages TakeKeptStages();
+
     /// Forgets the transitions, which may point to pipelines the cache evicted.
     void ClearTransitions() noexcept {
         transition_keys.clear();
@@ -521,7 +552,9 @@ private:
     bool used{};
     size_t source_words{};
 
+    std::array<std::vector<u32>, NUM_STAGES> spirv; ///< Until the build makes its modules
     std::array<vk::ShaderModule, NUM_STAGES> spv_modules;
+    std::array<std::vector<u8>, NUM_STAGES> kept_spirv; ///< zstd, after the build
 
     std::array<Shader::Info, NUM_STAGES> stage_infos;
     std::array<bool, NUM_STAGES> stage_present{};

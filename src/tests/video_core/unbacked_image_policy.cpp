@@ -33,6 +33,22 @@ TEST_CASE("The limit is a quarter of the device-local memory", "[video_core]") {
     REQUIRE(ShouldLeaveImageUnbacked(texels, Vram / 4 + 1, Vram));
 }
 
+TEST_CASE("Unbacked images keep the device-dependent classification used when allocating them",
+          "[video_core][unbacked_fallback]") {
+    constexpr u64 texels = 16384ULL * 16384 * 2;
+    // On an 8 GiB device this can be backed. If an allocation temporarily fails, the texture
+    // cache must retry backing it on its first write rather than treating it as permanently
+    // sparse merely because its requirement exceeds a fixed 1 GiB threshold.
+    REQUIRE_FALSE(ShouldLeaveImageUnbacked(texels, GiB + GiB / 2, 8 * GiB));
+    // The reverse matters on a small device: an image below 1 GiB can still be too large to
+    // back, and must not trigger a replacement attempt on every write.
+    REQUIRE(ShouldLeaveImageUnbacked(texels, 3 * GiB / 4, 2 * GiB));
+    // Compressed light volumes stay backable even though their texel count is large.
+    constexpr u64 volume_texels = 1408ULL * 256 * 1008;
+    constexpr u64 bc6h_bytes = (1408ULL / 4) * (256 / 4) * 1008 * 16;
+    REQUIRE_FALSE(ShouldLeaveImageUnbacked(volume_texels, bc6h_bytes, 2 * GiB));
+}
+
 TEST_CASE("An unknown memory requirement is treated as unbackable", "[video_core]") {
     REQUIRE(ShouldLeaveImageUnbacked((u64{1} << 28) + 1, 0, Vram));
 }

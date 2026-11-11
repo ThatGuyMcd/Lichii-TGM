@@ -14,6 +14,7 @@
 #include "common/settings_common.h"
 #include "common/settings_enums.h"
 #include "config.h"
+#include "frontend_common/profile_import.h"
 
 #ifdef _WIN32
 #include "common/string_util.h"
@@ -29,6 +30,7 @@ Config::Config(const ConfigType config_type)
     : type(config_type), global{config_type == ConfigType::GlobalConfig} {}
 
 void Config::Initialize(const std::string& config_name) {
+    FrontendCommon::CheckLegacyProfileBeforeConfig();
     const std::filesystem::path fs_config_loc = FS::GetEdenPath(FS::EdenPath::ConfigDir);
     const auto config_file = fmt::format("{}.ini", config_name);
 
@@ -54,6 +56,7 @@ void Config::Initialize(const std::string& config_name) {
 }
 
 void Config::Initialize(const std::optional<std::string> config_path) {
+    FrontendCommon::CheckLegacyProfileBeforeConfig();
     const std::filesystem::path default_sdl_config_path =
         FS::GetEdenPath(FS::EdenPath::ConfigDir) / "sdl2-config.ini";
     config_loc = config_path.value_or(FS::PathToUTF8String(default_sdl_config_path));
@@ -397,6 +400,22 @@ void Config::ReadRendererValues() {
     ReadCategory(Settings::Category::RendererExtensions);
     ReadCategory(Settings::Category::RendererDebug);
 
+    // The Off/On/Auto control supersedes the old checkbox without losing its saved value.
+    if (!Exists(GetSection(), "hdr_mode") && Exists(GetSection(), "hdr") &&
+        (global || !Settings::values.hdr.UsingGlobal())) {
+        auto& mode = Settings::values.hdr_mode;
+        const bool was_global = mode.UsingGlobal();
+        const bool enabled = global ? Settings::values.hdr.ToStringGlobal() == "true"
+                                    : Settings::values.hdr.GetValue();
+        mode.SetGlobal(global);
+        mode.SetValue(enabled ? Settings::HdrMode::On : Settings::HdrMode::Off);
+        if (global) {
+            mode.SetGlobal(was_global);
+        }
+    }
+
+    Settings::RefreshNvidiaDlssRuntimeSettings();
+
     EndGroup();
 }
 
@@ -695,6 +714,15 @@ void Config::SaveCpuValues() {
 
 void Config::SaveRendererValues() {
     BeginGroup(Settings::TranslateCategory(Settings::Category::Renderer));
+
+    auto& legacy_hdr = Settings::values.hdr;
+    const auto& mode = Settings::values.hdr_mode;
+    const bool legacy_global = legacy_hdr.UsingGlobal();
+    legacy_hdr.SetGlobal(global || mode.UsingGlobal());
+    legacy_hdr.SetValue(mode.GetValue(global) != Settings::HdrMode::Off);
+    if (global) {
+        legacy_hdr.SetGlobal(legacy_global);
+    }
 
     WriteCategory(Settings::Category::Renderer);
     WriteCategory(Settings::Category::RendererAdvanced);

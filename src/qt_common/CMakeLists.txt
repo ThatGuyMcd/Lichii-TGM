@@ -56,6 +56,27 @@ endif()
 
 create_target_directory_groups(qt_common)
 
+if (YUZU_TESTS)
+    add_executable(mod_rename_tests
+        ../tests/qt_common/mod.cpp
+        util/mod.cpp)
+    target_link_libraries(mod_rename_tests PRIVATE
+        frontend_common common Qt6::Widgets QuaZip::QuaZip Catch2::Catch2WithMain)
+    add_test(NAME mod_rename_tests COMMAND mod_rename_tests)
+    set_tests_properties(mod_rename_tests PROPERTIES
+        TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins;QT_QPA_PLATFORM_PLUGIN_PATH=$<TARGET_FILE_DIR:Qt6::Core>/../plugins/platforms;QT_FORCE_STDERR_LOGGING=1")
+    if (WIN32)
+        set_property(TEST mod_rename_tests APPEND PROPERTY
+            ENVIRONMENT "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
+        set_tests_properties(mod_rename_tests PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    elseif (UNIX)
+        set_tests_properties(mod_rename_tests PROPERTIES
+            ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
+endif()
+
 if (USE_DISCORD_PRESENCE)
     target_sources(qt_common PRIVATE
         discord/discord_impl.cpp

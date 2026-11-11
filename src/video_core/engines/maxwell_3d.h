@@ -3486,7 +3486,8 @@ private:
     // with their words. The differences must stay 0. Read per engine, as the switch above.
     const bool dma_read_verify = std::getenv("EDEN_NX2_DMA_READ_VERIFY") != nullptr;
     // EDEN_NX2_SKIP_SAME and EDEN_NX2_PERF_VERIFY, read per engine like the switch above. Every
-    // method checks them, so they are members rather than statics with a guard on the hot path.
+    // method checks them, so they are members rather than function statics (MSVC reads a
+    // thread-local to check a static's initialization on every call).
     const bool skip_same_value_writes = [] {
         const char* value = std::getenv("EDEN_NX2_SKIP_SAME");
         return value == nullptr || value[0] != '0';

@@ -7,11 +7,14 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <queue>
@@ -28,6 +31,7 @@
 #include "video_core/gpu_split.h"
 #include "video_core/nx2_read_trace.h"
 #include "video_core/renderer_vulkan/fragment_barrier_state.h"
+#include "video_core/renderer_vulkan/pending_submission.h"
 #include "video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -103,7 +107,17 @@ public:
     /// safe to touch worker resources.
     void WaitWorker();
 
-    void MarkFrameEnd(u64 frame);
+    enum class FrameMark : u8 { None, Start, End, Both };
+    /// GPU thread, once per present: the frame-end mark this present gets. EDEN_DKB_FRAME_TRACE
+    /// marks every present; otherwise only the two presents after RequestGpuBusySample.
+    [[nodiscard]] FrameMark NextFrameMark();
+    void MarkFrameEnd(u64 frame, FrameMark mark);
+    /// Any thread: asks for one host GPU timestamp sample of the frame after the next present.
+    void RequestGpuBusySample() {
+        gpu_busy_marks.store(2, std::memory_order_relaxed);
+    }
+    /// Host GPU busy time of the last sampled frame, nullopt when none was taken in 3 s.
+    [[nodiscard]] std::optional<double> GpuBusyMs() const;
     void TraceGraphicsPipeline(const std::array<u64, 6>& hashes);
     void TraceComputePipeline(u64 hash);
     /// Worker thread, inside a recorded command: timestamps one draw or dispatch of a sampled
@@ -264,6 +278,14 @@ public:
             location, RecordSite::Own, 0);
     }
 
+    /// Whether anything was recorded since the last Flush or Finish, or waits to be: batched
+    /// uploads and a deferred clear reach the command buffer only at the next record or submit.
+    [[nodiscard]] bool RecordedSinceSubmit() const noexcept {
+        return pending_submission.HasWork(deferred_clear.framebuffer != nullptr);
+    }
+    /// Counts a flush skipped because nothing was recorded (GPU profile).
+    static void CountSkippedFlush();
+
     /// Whether the recording thread submitted `tick` within 20 ms.
     [[nodiscard]] bool WaitForSubmission(u64 tick) const {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
@@ -378,6 +400,7 @@ public:
 private:
     std::chrono::steady_clock::time_point last_flush{};
     bool flush_pending{};
+    PendingSubmission pending_submission;
 
     class Command {
     public:
@@ -481,13 +504,14 @@ private:
         if (VideoCommon::GpuSplit::check_owner) [[unlikely]] {
             VideoCommon::GpuSplit::CheckOwner("Scheduler::Record");
         }
-        if (uploads_pending) {
+        if (pending_submission.UploadsPending()) {
             // Uploads recorded before this command go before it.
             FlushUploads();
         }
         if (Common::DkbFrameTrace::Enabled()) [[unlikely]] {
             RecordSiteMarker(location);
         }
+        pending_submission.Record();
         if (!chunk->Record(command)) {
             DispatchWork();
             (void)chunk->Record(command);
@@ -619,6 +643,17 @@ private:
     bool trace_gpu_sampling{};
     bool trace_gpu_pending{};
     bool trace_gpu_failed{};
+    FrameMark trace_frame_mark{};
+    /// The pending sample covers exactly one frame, so its busy time can be shown.
+    bool trace_gpu_publish{};
+
+    std::atomic<u32> gpu_busy_marks{};
+    struct GpuBusySample {
+        double ms;
+        std::chrono::steady_clock::time_point taken;
+    };
+    mutable std::mutex gpu_busy_mutex;
+    std::optional<GpuBusySample> gpu_busy;
 
     /// TEST: EDEN_NX2_READ_TRACE
     std::unique_ptr<ReadTraceState> read_trace;
@@ -628,15 +663,13 @@ private:
     std::unique_ptr<GpuCost> gpu_cost;
     bool record_sites{};
 
-    /// RecordUpload's copies not recorded yet; uploads_pending while it holds any.
+    /// RecordUpload's copies not recorded yet, tracked by pending_submission.
     std::unique_ptr<UploadBatch> upload_batch;
     std::source_location upload_batch_site{};
-    bool uploads_pending{};
     /// Records the pending uploads as one command.
     void FlushUploads();
     /// RecordReorderedUpload's copies, recorded when the submission is.
     std::unique_ptr<ReorderedUploadBatch> reordered_uploads;
-    bool reordered_uploads_pending{};
     /// Records the reordered uploads into the upload command buffer as one command.
     void FlushReorderedUploads();
     /// The line that ended the last render pass: the site of the next pass's begin.

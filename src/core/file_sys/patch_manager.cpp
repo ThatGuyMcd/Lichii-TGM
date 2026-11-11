@@ -113,7 +113,6 @@ constexpr std::array RENDER_PERFORMANCE_RECORDS{
 constexpr std::array RENDER_ULTRA_RECORDS{
     BuiltinPatchRecord{0x806420, RENDER_SCALE_ULTRA, RENDER_SCALE_ONE},
 };
-
 constexpr std::array<u8, 4> DYNAMIC_FPS_ORIGINAL{0x28, 0x18, 0x20, 0x1E};
 constexpr std::array<u8, 4> DYNAMIC_FPS_CALL{0x4F, 0x7D, 0xD5, 0x94};
 // Dark's routine up to the step computation; the two built-ins differ only in the tail.
@@ -1960,7 +1959,10 @@ PatchManager::Metadata PatchManager::ParseControlNCA(const NCA& nca) const {
         return {};
     }
 
-    const auto romfs = PatchRomFS(&nca, base_romfs, ContentRecordType::Control);
+    return ParseControlRomFS(PatchRomFS(&nca, base_romfs, ContentRecordType::Control));
+}
+
+PatchManager::Metadata PatchManager::ParseControlRomFS(const VirtualFile& romfs) {
     if (romfs == nullptr) {
         return {};
     }

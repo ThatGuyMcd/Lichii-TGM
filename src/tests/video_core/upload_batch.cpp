@@ -8,6 +8,61 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "video_core/renderer_vulkan/upload_batch.h"
+#include "video_core/renderer_vulkan/pending_submission.h"
+
+TEST_CASE("An upload-only submission stays pending through batching and command recording",
+          "[video_core][upload_batch][submission_policy]") {
+    Vulkan::PendingSubmission pending;
+    pending.Record();
+    pending.Submitted();
+    REQUIRE_FALSE(pending.HasWork());
+
+    const auto source = reinterpret_cast<VkBuffer>(uintptr_t{1});
+    const auto destination = reinterpret_cast<VkBuffer>(uintptr_t{2});
+    const std::array<VkBufferCopy, 1> copies{{{4, 8, 4}}};
+    SECTION("Reordered copies alone require a submission") {
+        Vulkan::ReorderedUploadBatch batch;
+        batch.Add(source, destination, copies, 17);
+        pending.QueueReorderedUploads();
+        // No command has been recorded since the previous submission. These copies are still
+        // work: skipping this submission would leave them queued and its fence unfinished.
+        REQUIRE(pending.HasWork());
+        REQUIRE_FALSE(pending.UploadsPending());
+        std::vector<VkBufferCopy> drained;
+        std::vector<Vulkan::UploadBatch::Group> groups;
+        u64 prior_tick{};
+        batch.Take(drained, groups, prior_tick);
+        pending.DrainReorderedUploads();
+        pending.Record(); // RecordAs materializes the upload command before SubmitExecution.
+        REQUIRE(batch.Empty());
+        REQUIRE(drained.size() == 1);
+        CHECK(drained.front().srcOffset == 4);
+        CHECK(drained.front().dstOffset == 8);
+        CHECK(drained.front().size == 4);
+        REQUIRE(groups.size() == 1);
+        CHECK(groups.front().src == source);
+        CHECK(groups.front().dst == destination);
+        CHECK(prior_tick == 17);
+    }
+    SECTION("In-order copies stay pending after being drained into a command") {
+        Vulkan::UploadBatch batch;
+        batch.Append(source, destination, copies, [] { FAIL("One copy cannot overflow a batch"); },
+                     [&] { pending.QueueUploads(); });
+        REQUIRE(pending.HasWork());
+        REQUIRE(pending.UploadsPending());
+        REQUIRE(batch.copies.size() == 1);
+        batch.copies.clear();
+        batch.groups.clear();
+        pending.DrainUploads();
+        pending.Record();
+    }
+    REQUIRE(pending.HasWork());
+    REQUIRE_FALSE(pending.UploadsPending());
+    REQUIRE_FALSE(pending.ReorderedUploadsPending());
+    pending.Submitted();
+    REQUIRE_FALSE(pending.HasWork());
+    CHECK(pending.HasWork(true)); // A deferred clear is work before its command is realized too.
+}
 
 TEST_CASE("One upload span is bounded and overlapping writes stay ordered",
           "[video_core][upload_batch]") {

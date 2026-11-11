@@ -12,10 +12,12 @@
 #include <memory>
 
 #include "common/common_types.h"
+#include "common/settings_enums.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 struct NVSDK_NGX_Handle;
 struct NVSDK_NGX_Parameter;
+namespace VideoCore { struct DlssStatus; }
 namespace VideoCore::NeuralRendering { class Backend; }
 
 namespace Vulkan {
@@ -77,6 +79,7 @@ public:
     /// Records one evaluation into the output image (RGBA16F at the upscale size, GENERAL
     /// layout). Returns false when DLSS can't run, so the caller can fall back to FSR 3.1.
     bool Upscale(const Inputs& inputs);
+    [[nodiscard]] static VideoCore::DlssStatus Status();
 
     [[nodiscard]] bool Failed() const noexcept {
         return failed.load();
@@ -112,6 +115,7 @@ private:
 #ifdef EGLANTINE_STREAMLINE
     void* set_options{}; ///< slDLSSSetOptions
     void* get_state{};   ///< slDLSSGetState
+    void* get_optimal_settings{}; ///< slDLSSGetOptimalSettings
     u32 applied_preset_value{~0u}; ///< sl::DLSSPreset last given to DLSS
 #endif
 #ifdef EGLANTINE_NGX
@@ -128,6 +132,7 @@ private:
     bool ngx_auto_exposure{};
     u32 ngx_preset{~0u};
 #endif
+    Settings::NvidiaDlssQuality quality_mode{Settings::NvidiaDlssQuality::Automatic};
     VkExtent2D render_extent{};
     VkExtent2D upscale_extent{};
     u32 frame_index{};

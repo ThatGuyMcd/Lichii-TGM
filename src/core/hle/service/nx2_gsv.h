@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "common/alignment.h"
+#include "common/display_hdr.h"
 #include "common/div_ceil.h"
 #include "common/dkb_frame_trace.h"
 #include "common/game_presets.h"
@@ -37,6 +38,7 @@
 #include "core/device_memory.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
+#include "core/frontend/emu_window.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "core/perf_stats.h"
 #include "video_core/gpu.h"
@@ -48,8 +50,10 @@
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/k_system_resource.h"
 #include "core/hle/kernel/k_memory_manager.h"
+#include "core/hle/kernel/k_system_control.h"
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_resource_limit.h"
+#include "core/hle/kernel/k_scoped_resource_reservation.h"
 #include "core/hle/kernel/k_server_session.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/k_hardware_timer.h"
@@ -688,25 +692,37 @@ private:
                 Tegra::Nx2AddSparseSpan(start, size);
                 LOG_INFO(Service, "nx2:gpu 214 sparse region [{:#x}, {:#x}] backed as the GPU writes it",
                          start, last);
-            } else if (LazyGpuOnlyRegions()) {
-                // The rest is written by the host GPU, not through guest memory (title 1's and
-                // title 4's render targets, 285-300 MB regions): like a sparse region it gets a
-                // device range of its own and memory per block only when something writes guest
-                // memory there (downloads, copies). The texture cache sees ordinary memory.
-                m_sparse_regions[start] = {
-                    .gpu_only = true,
-                    .size = size,
-                    .blocks = std::vector<u8>(Common::DivCeil(size, SparseBlockSize)),
-                };
-                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().CreateSparse(start, size);
-                Tegra::Nx2AddSparseSpan(start, size);
-                LOG_INFO(Service, "nx2:gpu 214 GPU-only region [{:#x}, {:#x}] backed as it is written",
-                         start, last);
-            } else if (const auto address = BackGpuOnlyRegion(start, size)) {
-                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().MapAt(start, *address, size);
-                LOG_INFO(Service, "nx2:gpu 214 GPU-only region [{:#x}, {:#x}] backed at {:#x} "
-                                  "({} MiB of GPU-only memory in use, peak {} MiB)",
-                         start, last, *address, m_gpu_only_bytes >> 20, m_gpu_only_peak >> 20);
+            } else {
+                // A region that cannot be backed whole is still usable block by block.
+                const bool back_whole = !LazyGpuOnlyRegions() || KeepsConstantsInGpuOnlyRegions();
+                const auto address = back_whole ? BackGpuOnlyRegion(start, size) : std::nullopt;
+                if (address) {
+                    Nvidia::Devices::Nx2GpuMemoryRegistry::Get().MapAt(start, *address, size);
+                    LOG_INFO(Service, "nx2:gpu 214 GPU-only region [{:#x}, {:#x}] backed at {:#x} "
+                                      "({} MiB of GPU-only memory in use, peak {} MiB)",
+                             start, last, *address, m_gpu_only_bytes >> 20, m_gpu_only_peak >> 20);
+                } else {
+                    if (back_whole && KeepsConstantsInGpuOnlyRegions()) {
+                        // This title writes constants into some of its GPU-only regions from the
+                        // CPU; if this is one of them, those writes read back as zero.
+                        LOG_WARNING(Service, "nx2:gpu 214 GPU-only region [{:#x}, {:#x}] could not be "
+                                             "backed whole; CPU writes before a GPU write read zero",
+                                    start, last);
+                    }
+                    // The rest is written by the host GPU, not through guest memory (title 1's and
+                    // title 4's render targets, 285-300 MB regions): like a sparse region it gets a
+                    // device range of its own and memory per block only when something writes guest
+                    // memory there (downloads, copies). The texture cache sees ordinary memory.
+                    m_sparse_regions[start] = {
+                        .gpu_only = true,
+                        .size = size,
+                        .blocks = std::vector<u8>(Common::DivCeil(size, SparseBlockSize)),
+                    };
+                    Nvidia::Devices::Nx2GpuMemoryRegistry::Get().CreateSparse(start, size);
+                    Tegra::Nx2AddSparseSpan(start, size);
+                    LOG_INFO(Service, "nx2:gpu 214 GPU-only region [{:#x}, {:#x}] backed as it is written",
+                             start, last);
+                }
             }
         } else {
             LOG_WARNING(Service, "nx2:gpu 214 unexpected region [{:#x}, {:#x}]", start, last);
@@ -859,6 +875,7 @@ private:
                 return true; // still mapped: keep its pages
             }
             region.pages->Close(system.Kernel());
+            ReleaseReservation(region.reserved);
             m_gpu_only_bytes -= region.size;
             return true;
         });
@@ -868,6 +885,7 @@ private:
         u64 address;
         u64 size;
         std::unique_ptr<Kernel::KPageGroup> pages;
+        u64 reserved; ///< Application memory reserved for pages taken from its pool
     };
 
     // Allocates kernel memory and maps it in the alias code region. Touches no region state, so
@@ -887,14 +905,31 @@ private:
         // pool, title 4's six regions left it 1.8 GB less than the kernel reports to it. Not
         // cleared: the GPU writes these before reading them, and touching 300 MB would commit it
         // on the host.
-        if (R_FAILED(kernel_core.MemoryManager().AllocateAndOpen(
+        // A title that fills the system pool (The Duskbloods network test's six regions) falls
+        // back to the application pool, only when that pool was grown for the title.
+        const bool application_fallback = Kernel::KSystemControl::Init::GetApplicationPoolGrowth() != 0;
+        const auto allocate = [&](Kernel::KMemoryManager::Pool pool) {
+            return kernel_core.MemoryManager().AllocateAndOpen(
                 pg.get(), size / YUZU_PAGESIZE,
-                Kernel::KMemoryManager::EncodeOption(Kernel::KMemoryManager::Pool::SystemNonSecure,
-                                                     Kernel::KMemoryManager::Direction::FromBack)))) {
-            if (log_failure) {
-                LOG_ERROR(Service, "nx2:gpu 214 could not allocate {:#x} bytes", size);
+                Kernel::KMemoryManager::EncodeOption(pool,
+                                                     Kernel::KMemoryManager::Direction::FromBack));
+        };
+        // Pages from the application pool count against the application's memory limit, so the
+        // totals the game reads leave them out and its own allocations cannot overrun the pool.
+        u64 reserved = 0;
+        if (R_FAILED(allocate(Kernel::KMemoryManager::Pool::SystemNonSecure))) {
+            Kernel::KScopedResourceReservation reservation(
+                kernel_core, process, Kernel::LimitableResource::PhysicalMemoryMax,
+                static_cast<s64>(size));
+            if (!application_fallback || !reservation.Succeeded() ||
+                R_FAILED(allocate(Kernel::KMemoryManager::Pool::Application))) {
+                if (log_failure) {
+                    LOG_ERROR(Service, "nx2:gpu 214 could not allocate {:#x} bytes", size);
+                }
+                return std::nullopt;
             }
-            return std::nullopt;
+            reservation.Commit();
+            reserved = size;
         }
         if (clear) {
             // Cheap for memory that's still zero (most of it): only reused pages get cleared.
@@ -919,13 +954,24 @@ private:
                                                     Kernel::KMemoryPermission::UserReadWrite))) {
                 m_alias_hint.store((offset + Common::AlignUp(size, Alignment)) / Alignment,
                                    std::memory_order_relaxed);
-                return MappedBacking{GetInteger(address), size, std::move(pg)};
+                return MappedBacking{GetInteger(address), size, std::move(pg), reserved};
             }
         }
         LOG_ERROR(Service, "nx2:gpu 214 no room for {:#x} bytes in the alias code region "
                            "[{:#x}, +{:#x})", size, region_start, region_size);
         pg->Close(kernel_core);
+        ReleaseReservation(reserved);
         return std::nullopt;
+    }
+
+    // Gives back application memory reserved for a GPU-only backing from the application pool.
+    void ReleaseReservation(u64 reserved) {
+        auto* const process = system.ApplicationProcess();
+        if (reserved != 0 && process != nullptr && process->GetResourceLimit() != nullptr) {
+            process->GetResourceLimit()->Release(system.Kernel(),
+                                                 Kernel::LimitableResource::PhysicalMemoryMax,
+                                                 static_cast<s64>(reserved));
+        }
     }
 
     // Records a mapped backing for the region at gpu_address. Needs m_region_mutex.
@@ -946,7 +992,8 @@ private:
             m_released_regions.push_back({std::move(it->second), done});
             m_gpu_only_regions.erase(it);
         }
-        m_gpu_only_regions[gpu_address] = {backing.address, backing.size, std::move(backing.pages)};
+        m_gpu_only_regions[gpu_address] = {backing.address, backing.size, std::move(backing.pages),
+                                           backing.reserved};
         m_gpu_only_bytes += backing.size;
         m_gpu_only_peak = (std::max)(m_gpu_only_peak, m_gpu_only_bytes);
     }
@@ -1087,6 +1134,7 @@ private:
                                                            Kernel::KMemoryState::IoMemory);
                 }
                 backing->pages->Close(system.Kernel());
+                ReleaseReservation(backing->reserved);
             }
         }
         if (waits_for_other) {
@@ -1114,6 +1162,13 @@ private:
     }
 
     // EDEN_NX2_GPU_ONLY_LAZY=0 backs GPU-only regions whole, as before.
+    // The Duskbloods network test binds constant buffers there and the CPU writes them, so unbacked
+    // blocks read as zero and nothing draws.
+    bool KeepsConstantsInGpuOnlyRegions() const {
+        const auto* const process = system.ApplicationProcess();
+        return process != nullptr && process->GetProgramId() == 0x0400D1D02399A000ULL;
+    }
+
     static bool LazyGpuOnlyRegions() {
         static const bool lazy = [] {
             const char* value = std::getenv("EDEN_NX2_GPU_ONLY_LAZY");
@@ -1448,6 +1503,7 @@ private:
         u64 cpu_address;
         u64 size;
         std::unique_ptr<Kernel::KPageGroup> pages;
+        u64 reserved; ///< Application memory reserved for pages taken from its pool
     };
     struct ReleasedRegion {
         GpuOnlyRegion region;
@@ -1784,18 +1840,6 @@ public:
             {232, &INx2Vi2Session::StubReplyZeroed, "Unknown232"},
             {251, &INx2Vi2Session::StubReplyZeroed, "Unknown251"},
             {252, &INx2Vi2Session::StubReplyZeroed, "Unknown252"},
-            {261, &INx2Vi2Session::StubReplyZeroed, "Unknown261"},
-            {262, &INx2Vi2Session::StubReplyZeroed, "Unknown262"},
-            {263, &INx2Vi2Session::StubReplyZeroed, "Unknown263"},
-            {264, &INx2Vi2Session::StubReplyZeroed, "Unknown264"},
-            {265, &INx2Vi2Session::StubReplyZeroed, "Unknown265"},
-            {266, &INx2Vi2Session::StubReplyZeroed, "Unknown266"},
-            {267, &INx2Vi2Session::StubReplyZeroed, "Unknown267"},
-            {268, &INx2Vi2Session::StubReplyZeroed, "Unknown268"},
-            {269, &INx2Vi2Session::StubReplyZeroed, "Unknown269"},
-            {270, &INx2Vi2Session::StubReplyZeroed, "Unknown270"},
-            {271, &INx2Vi2Session::StubReplyZeroed, "Unknown271"},
-            {272, &INx2Vi2Session::StubReplyZeroed, "Unknown272"},
             {301, &INx2Vi2Session::StubReplyZeroed, "Unknown301"},
             {302, &INx2Vi2Session::StubReplyZeroed, "Unknown302"},
             {351, &INx2Vi2Session::StubReplyZeroed, "Unknown351"},
@@ -2175,7 +2219,7 @@ private:
         }();
         const bool mkw_dynamic =
             process != nullptr && process->GetProgramId() == Settings::MarioKartWorldProgramId &&
-            process->IsMkwDynamicFpsPatchApplied() && Settings::values.mkw_dynamic_fps.GetValue();
+            process->IsMkwDynamicFpsPatchApplied();
         u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
         if (mkw_dynamic) {
             swap_interval = 1;
@@ -2310,14 +2354,14 @@ private:
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
     // into from the image's top-left corner (0 when it gives none).
     void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size) {
+        NotifyHdrChange();
         u64 address{};
         u32 parent{};
         u64 parent_offset{};
         std::optional<Nx2NativeObjects::VideoTrace> video_trace;
         Nx2ImageLayout layout{};
         Nx2NativeImageFormat image_format{};
-        Tegra::ColorSpace color_space{Tegra::ColorSpace::RGB709};
-        u16 linear_unit_luminance{};
+        u32 image_word7{};
         {
             std::scoped_lock lk{m_objects->mutex};
             const auto image = m_objects->images.find(image_id);
@@ -2333,8 +2377,7 @@ private:
             parent_offset = memory->second.parent_offset + image->second.offset;
             layout = Nx2CalculateImageLayout(image->second.preference.data());
             image_format = static_cast<Nx2NativeImageFormat>(image->second.preference[6]);
-            color_space = image->second.color_space;
-            linear_unit_luminance = image->second.linear_unit_luminance;
+            image_word7 = image->second.preference[7];
             if (Nx2VideoTraceEnabled()) {
                 video_trace = m_objects->last_video_write;
             }
@@ -2429,8 +2472,10 @@ private:
             .crop_rect = {0, 0, static_cast<int>(crop_width), static_cast<int>(crop_height)},
             .blending = Tegra::BlendMode::Opaque,
             .native_tiling = true,
-            .color_space = color_space,
-            .linear_unit_luminance = linear_unit_luminance,
+            .color_space = Nx2NativeImageColorSpace(image_format, m_told_hdr.load()),
+            .linear_unit_luminance = image_format == Nx2NativeImageFormat::Rgba16Float
+                                         ? static_cast<u16>((image_word7 >> 8) & 0xFFFF)
+                                         : u16{},
         }};
         std::vector<Nvidia::NvFence> fences;
         if (fence_id < 192) {
@@ -2538,29 +2583,82 @@ private:
         TipcReplyWords(ctx, {60, 0});
     }
 
-    // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 reference white in nits.
-    // Explicit values are capped at peak; zero selects the Switch 2 calibration default.
-    void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
-        if (Settings::values.hdr_reference_white.GetValue() > 0) {
-            TipcReplyWords(ctx, {std::min(Settings::values.hdr_reference_white.GetValue(),
-                                        Settings::values.hdr_peak_luminance.GetValue())});
-        } else {
-            // Switch 2 calibration starts at ceil(peak / 1.5), clamped to 50..300 nits.
-            TipcReplyWords(ctx, {std::clamp<u32>(
-                                    (Settings::values.hdr_peak_luminance.GetValue() * 2U + 2U) / 3U,
-                                    50U, 300U)});
+    // The HDR output the guest is told about: the HDR settings combined with the state of the
+    // monitor showing the game (on Windows: Windows HDR on, the EDID peak, the SDR content
+    // brightness), and HDR only while the host swapchain really presents HDR, so an SDR desktop
+    // or surface gets an SDR frame and an HDR one the game's own HDR.
+    Common::HdrOutput ResolveHostHdrOutput(std::optional<Common::DisplayHdrInfo>& display) {
+        auto& monitor = Common::DisplayHdrMonitor::Instance();
+        monitor.Watch(system.GPU().Renderer().GetRenderWindow().GetWindowInfo().render_surface);
+        display = monitor.Current();
+        const bool vulkan =
+            Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan;
+        return Common::ResolveGuestHdrOutput(
+            display, vulkan ? Settings::values.hdr_mode.GetValue() : Settings::HdrMode::Off,
+            Settings::values.hdr_peak_luminance.GetValue(),
+            Settings::values.hdr_reference_white.GetValue(), monitor.PresentingHdr());
+    }
+
+    static u64 HdrOutputKey(const Common::HdrOutput& output) {
+        return (u64{output.enabled} << 32) | (u64{output.peak_luminance} << 16) |
+               output.reference_white;
+    }
+
+    // What the game is told; m_logged_hdr_output keeps the last answer.
+    Common::HdrOutput HostHdrOutput() {
+        std::optional<Common::DisplayHdrInfo> display;
+        const auto output = ResolveHostHdrOutput(display);
+        const u64 logged = HdrOutputKey(output);
+        if (logged != m_logged_hdr_output) {
+            m_logged_hdr_output = logged;
+            LOG_INFO(Service,
+                     "nx2:vi2 HDR status: {} peak {} nits, reference white {} nits (display: {}, "
+                     "swapchain: {})",
+                     output.enabled ? "HDR" : "SDR", output.peak_luminance, output.reference_white,
+                     display ? fmt::format("hdr={} max {} nits, SDR white {} nits",
+                                           display->hdr_enabled, display->max_luminance,
+                                           display->sdr_white_level)
+                             : std::string{"no host query"},
+                     Common::DisplayHdrMonitor::Instance().PresentingHdr() ? "HDR" : "SDR");
         }
+        return output;
+    }
+
+    // Fires the slots bound to the HDR status and paper white events once the monitor's state
+    // changed what the game was last told (Windows HDR toggled, the window moved to another
+    // monitor, a new HDR calibration or SDR content brightness), so it queries again and switches
+    // between SDR and HDR images. Runs at every present; costs an atomic load while nothing
+    // changes.
+    void NotifyHdrChange() {
+        const u64 generation = Common::DisplayHdrMonitor::Instance().Generation();
+        if (generation == m_hdr_generation) {
+            return;
+        }
+        m_hdr_generation = generation;
+        std::optional<Common::DisplayHdrInfo> display;
+        if (m_hdr_change_slots == 0 || m_logged_hdr_output == ~u64{} ||
+            HdrOutputKey(ResolveHostHdrOutput(display)) == m_logged_hdr_output) {
+            return;
+        }
+        LOG_INFO(Service, "nx2:vi2 display HDR state changed, signalling the game");
+        for (u32 index = 0; index < m_native_events.size(); ++index) {
+            if ((m_hdr_change_slots >> index) & 1 && m_native_events[index]) {
+                m_native_events[index]->Signal(system.Kernel());
+            }
+        }
+    }
+
+    // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 reference white in nits.
+    void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {HostHdrOutput().reference_white});
     }
 
     // Wire reply: u64 output format (1 = SDR, 2 = HDR), u16 peak luminance in nits.
     // MKW's SDK converts these to public formats 0/1 before DefaultDisplay tests for HDR.
-    // HDR is explicitly opt-in; luminance defaults are not host-display calibration.
-    // Reports the Vulkan HDR setting, not host support for individual HDR encodings.
     void QueryDisplayHdrStatus(HLERequestContext& ctx) {
-        const bool hdr_enabled = Settings::values.hdr.GetValue() &&
-                                 Settings::values.renderer_backend.GetValue() ==
-                                     Settings::RendererBackend::Vulkan;
-        TipcReplyWords(ctx, {hdr_enabled ? 2U : 1U, 0, Settings::values.hdr_peak_luminance.GetValue()});
+        const auto output = HostHdrOutput();
+        m_told_hdr = output.enabled;
+        TipcReplyWords(ctx, {output.enabled ? 2U : 1U, 0, output.peak_luminance});
     }
 
     // 212(u64 layer): u64 bits of the layer's buffer slots that are ready. The client polls it once
@@ -2663,20 +2761,28 @@ private:
         LOG_INFO(Service, "nx2:vi2 261 native event {} -> vsync", index);
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, true);
+            m_hdr_change_slots &= ~(1U << index);
         }
         TipcReplyWords(ctx, {});
     }
 
     // 263/265/267/269/271(u64 display name, u32 index): fire the slot when the display's refresh
     // rate, HDR status, HDR paper white, buffer max resolution or mode capability changes, so the
-    // game re-queries it. None of them change here: fire once so the game reads the current
-    // state, then leave the slot quiet. Kirby Air Riders re-queried its HDR status on every
-    // present while this slot fired with vsync.
+    // game re-queries it. Fire once so the game reads the current state, then leave the slot
+    // quiet; HDR status and paper white fire again when the host monitor changes
+    // (NotifyHdrChange). Kirby Air Riders re-queried its HDR status on every present while this
+    // slot fired with vsync.
     void BindChange(HLERequestContext& ctx) {
         const u32 index = ctx.CommandBuffer()[4];
         LOG_INFO(Service, "nx2:vi2 {} native event {} -> change notification", ctx.GetCommand(), index);
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, false);
+            const u32 command = ctx.GetCommand();
+            if (command == 265 || command == 267) {
+                m_hdr_change_slots |= 1U << index;
+            } else {
+                m_hdr_change_slots &= ~(1U << index);
+            }
             m_native_events[index]->Signal(system.Kernel());
         }
         TipcReplyWords(ctx, {});
@@ -2688,6 +2794,7 @@ private:
         LOG_INFO(Service, "nx2:vi2 {} native event {} unbound", ctx.GetCommand(), index);
         if (index < m_native_events.size() && m_native_events[index]) {
             SetVsyncSlot(index, false);
+            m_hdr_change_slots &= ~(1U << index);
         }
         TipcReplyWords(ctx, {});
     }
@@ -2786,6 +2893,10 @@ private:
     std::shared_ptr<Core::Timing::EventType> m_vsync_timer;
     u64 m_presents{};
     u64 m_shown_layout{}; // image and crop size last logged
+    u64 m_logged_hdr_output{~u64{}}; // HDR status last logged
+    u64 m_hdr_generation{};           // DisplayHdrMonitor generation NotifyHdrChange last saw
+    u32 m_hdr_change_slots{};         // native event slots bound to HDR status / paper white
+    std::atomic<bool> m_told_hdr{};   // the last HDR status answer was HDR
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
 };
 
@@ -3718,7 +3829,6 @@ public:
             {403, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission403"},
             {424, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown424"},
             {425, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown425"},
-            {427, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown427"},
             {434, &INx2GraphicsSystemSession::AttachGpuAddressSpace, "AttachGpuAddressSpace"},
             {436, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown436"},
             {461, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown461"},

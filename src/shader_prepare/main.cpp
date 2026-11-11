@@ -78,6 +78,7 @@ int main(int argc, char** argv) try {
     }
     Settings::values.disabled_addons[title] = job.value("disabled_addons", std::vector<std::string>{});
     Settings::values.external_content_dirs = job.value("external_content_dirs", std::vector<std::string>{});
+    Settings::RefreshNvidiaDlssRuntimeSettings();
     Settings::SetCurrentProgramID(title);
     Settings::SetCurrentProgramIsSwitch2(true);
     if (title == VideoCommon::OotDlss::ProgramId && VideoCommon::OotDlss::Requested() &&

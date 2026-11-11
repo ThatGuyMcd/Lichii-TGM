@@ -142,23 +142,35 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            "other race conditions."));
 
     // Renderer
-    INSERT(Settings, hdr, tr("HDR"),
-           tr("Enables HDR output. Requires Vulkan and an HDR-enabled display.\n"
-              "Supports native HDR10 and scRGB output; SDR content is not converted to HDR.\n"
-              "HDR uses bilinear presentation without post-processing or frame generation.\n"
-              "Takes effect when a game starts."));
+    INSERT(Settings, hdr, tr("HDR"), tr("The saved HDR On/Off choice is now part of HDR output."));
+    INSERT(Settings, hdr_mode, tr("HDR output:"),
+           tr("HDR output for games with an HDR mode. Requires Vulkan.\n"
+              "Off (default): always SDR.\n"
+              "Auto: HDR while Windows HDR (\"Use HDR\") is on for the monitor that shows the "
+              "game, SDR otherwise and on hosts that cannot tell.\n"
+              "On: HDR whenever the display driver offers an HDR format.\n"
+              "The game is told the display is HDR only while Lichii really presents HDR. SDR "
+              "games and menus are shown at the reference white.\n"
+              "While HDR is active, anti-aliasing, post-processing, FSR/SGSR upscaling and frame "
+              "generation are off and the window is scaled bilinearly.\n"
+              "Screenshots are tone mapped to SDR."));
+    INSERT(Settings, hdr_swapchain, tr("HDR format:"),
+           tr("HDR10: 10-bit PQ, what HDR displays take.\n"
+              "scRGB: 16-bit float. Try it if HDR shows banding, which some NVIDIA drivers do "
+              "with 10-bit in fullscreen."));
     INSERT(Settings, hdr_reference_white, tr("HDR Reference White"),
-           tr("Reference white in nits reported to the game. Default: 200 nits, matching the "
-              "observed Switch 2 HDR applet's starting value without matching saved display "
-              "calibration. Set to 0 to follow Switch 2 calibration: HDR Peak Luminance divided "
-              "by 1.5, rounded up and clamped to 50-300 nits.\n"
-              "Set a nonzero value to override calibration.\n"
-              "Does not rescale the final image. Takes effect when a game starts."));
+           tr("Reference white in nits reported to the game, the brightness of its HUD and "
+              "menus. Default: 200 nits. 0 uses Windows' SDR content brightness for the monitor, so the game "
+              "matches the desktop; elsewhere the Switch 2 calibration, HDR Peak Luminance "
+              "divided by 1.5, rounded up and clamped to 50-300 nits.\n"
+              "SDR games and menus are shown at this brightness while HDR is active, and HDR "
+              "screenshots map it to SDR white."));
     INSERT(Settings, hdr_peak_luminance, tr("HDR Peak Luminance"),
-           tr("Peak luminance in nits reported to the game. Default: 300 nits, matching the "
-              "observed Switch 2 HDR applet's starting value without matching saved display "
-              "calibration.\n"
-              "Does not rescale the final image. Takes effect when a game starts."));
+           tr("Peak luminance in nits reported to the game, which tone maps to it. Default: 300 nits. 0 uses "
+              "the monitor's peak from its EDID as Windows reports it; elsewhere 300 nits, the "
+              "Switch 2 HDR calibration's starting value.\n"
+              "Also the HDR10 metadata peak, and what an HDR image rolls off to on an SDR "
+              "screen."));
     INSERT(Settings, renderer_backend, tr("API:"),
            tr("Changes the output graphics API.\nVulkan is recommended."));
     INSERT(Settings, vulkan_device, tr("Device:"),
@@ -220,7 +232,14 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "Native (DLAA) applies anti-aliasing at the game's render resolution. "
               "For Ocarina's legacy 1440p path, this keeps input and output at 1440p instead of "
               "upscaling to 4K. The explicit Ocarina anti-aliasing modes keep their selected 4K output.\nRequires NVIDIA DLSS to be enabled. Apply changes while playing; "
-              "switching resolution may briefly pause rendering."));
+              "switching resolution may briefly pause rendering.\n"
+              "Quality, Balanced, Performance and Ultra Performance select a supported DLSS mode "
+              "for the current render/output sizes. Unsupported sizes use Automatic and log the fallback."));
+    INSERT(Settings, nvidia_dlss_preset, tr("NVIDIA DLSS model preset:"),
+           tr("Game / NVIDIA default keeps the existing game model choice. M, E, F, J, K and L "
+              "select an explicit supported model. Ocarina's explicit preset takes priority.\n"
+              "L/M require DLSS 310.5 or newer and cost more on RTX 20/30 GPUs. NVIDIA app "
+              "overrides may supersede the selection. Apply changes while playing."));
     INSERT(Settings, neural_rendering, tr("DLSS neural rendering:"),
            tr("Re-renders the scene after NVIDIA DLSS using the Standard, Natural or Cinematic "
               "style.\n"
@@ -244,7 +263,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "neural history."));
     INSERT(Settings, anti_aliasing, tr("Anti-Aliasing Method:"),
            tr("The anti-aliasing method to use.\nSMAA offers the best quality.\nFXAA "
-              "can produce a more stable picture in lower resolutions."));
+              "can produce a more stable picture in lower resolutions.\nOff while HDR output "
+              "is active."));
     INSERT(Settings, oot_anti_aliasing, tr("Ocarina of Time anti-aliasing:"),
            tr("The Legend of Zelda: Ocarina of Time only.\nGame: the game's own anti-aliasing "
               "network, which sharpens heavily.\nNo sharpening: the image as the game renders it, "
@@ -313,7 +333,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, bg_green, QString(), QString());
     INSERT(Settings, bg_blue, QString(), QString());
 
-    INSERT(Settings, frame_gen, tr("Enable Frame Generation"), QString());
+    INSERT(Settings, frame_gen, tr("Enable Frame Generation"),
+           tr("Paused while HDR output is active."));
     INSERT(Settings, frame_gen_type, tr("Frame Generation Type"), QString());
     INSERT(Settings, frame_gen_multiplier, tr("Frame Generation Multiplier"), QString());
     INSERT(Settings, frame_gen_target_rate, tr("Target Frame Rate"), QString());
@@ -412,6 +433,12 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "its input. Auto emulates them only where the GPU has cooperative matrices (and "
               "always for Donkey Kong Bananza), which makes them far faster on Macs and on GPUs "
               "without that extension. Takes effect on the next game boot."));
+    INSERT(Settings, build_all_cached_shaders, tr("Build all cached shaders before game start"),
+           tr("Builds every shader saved by earlier play sessions on the loading screen and keeps "
+              "them built, so places you visited long ago don't stutter. Without it, only the "
+              "shaders of recent sessions are built there and the rest in the background or when "
+              "the game first needs them.\nLoading takes longer and uses more memory, about 0.3 "
+              "MB per shader, up to a quarter of the RAM. Takes effect when a game starts."));
     INSERT(Settings, native_async_draws, tr("Switch 2 draws with unbuilt pipelines:"),
            tr("Only applies when asynchronous shader building is on. Decides what a Switch 2 draw "
               "does when its graphics pipeline is still building.\n"
@@ -593,6 +620,21 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(SpirvOptimizeMode, OnLoad, tr("On Load")),
                               PAIR(SpirvOptimizeMode, Always, tr("Always")),
                           }});
+    translations->insert({Settings::EnumMetadata<Settings::NvidiaDlssQuality>::Index(),
+                          {PAIR(NvidiaDlssQuality, Automatic, tr("Automatic (game resolution)")),
+                           PAIR(NvidiaDlssQuality, Native, tr("Native (DLAA)")),
+                           PAIR(NvidiaDlssQuality, Quality, tr("Quality")),
+                           PAIR(NvidiaDlssQuality, Balanced, tr("Balanced")),
+                           PAIR(NvidiaDlssQuality, Performance, tr("Performance")),
+                           PAIR(NvidiaDlssQuality, UltraPerformance, tr("Ultra Performance"))}});
+    translations->insert(
+        {Settings::EnumMetadata<Settings::NvidiaDlssPreset>::Index(),
+         {PAIR(NvidiaDlssPreset, M, tr("M (DLSS 4.5)")),
+          PAIR(NvidiaDlssPreset, NvidiaDefault, tr("Game / NVIDIA default")),
+          PAIR(NvidiaDlssPreset, E, tr("E (legacy CNN)")),
+          PAIR(NvidiaDlssPreset, F, tr("F (legacy CNN)")),
+          PAIR(NvidiaDlssPreset, J, tr("J (DLSS 4)")), PAIR(NvidiaDlssPreset, K, tr("K (DLSS 4)")),
+          PAIR(NvidiaDlssPreset, L, tr("L (DLSS 4.5)"))}});
     translations->insert({Settings::EnumMetadata<Settings::AstcDecodeMode>::Index(),
                           {
                               PAIR(AstcDecodeMode, Cpu, tr("CPU")),
@@ -755,17 +797,23 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(OcarinaDlssMode, Performance, tr("Performance")),
                               PAIR(OcarinaDlssMode, UltraPerformance, tr("Ultra Performance")),
                           }});
-    translations->insert({Settings::EnumMetadata<Settings::NvidiaDlssQuality>::Index(),
-                          {
-                              PAIR(NvidiaDlssQuality, Automatic, tr("Automatic (upscaling)")),
-                              PAIR(NvidiaDlssQuality, Native, tr("Native (DLAA)")),
-                          }});
     translations->insert({Settings::EnumMetadata<Settings::NeuralRendering>::Index(),
                           {
                               PAIR(NeuralRendering, Off, tr("Off")),
                               PAIR(NeuralRendering, Standard, tr("Standard")),
                               PAIR(NeuralRendering, Natural, tr("Natural")),
                               PAIR(NeuralRendering, Cinematic, tr("Cinematic")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::HdrMode>::Index(),
+                          {
+                              PAIR(HdrMode, Off, tr("Off")),
+                              PAIR(HdrMode, Auto, tr("Auto")),
+                              PAIR(HdrMode, On, tr("On")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::HdrSwapchain>::Index(),
+                          {
+                              PAIR(HdrSwapchain, Hdr10, tr("HDR10 (10-bit)")),
+                              PAIR(HdrSwapchain, Scrgb, tr("scRGB (16-bit float)")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::AspectRatio>::Index(),
                           {

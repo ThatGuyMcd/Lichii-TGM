@@ -44,6 +44,7 @@
 #include "video_core/render_trace.h"
 #include "video_core/texture_cache/conversion.h"
 #include "video_core/texture_cache/host_memory_limit.h"
+#include "video_core/texture_cache/eviction_age.h"
 #include "video_core/texture_cache/host_mip_limits.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/initial_contents.h"
@@ -241,7 +242,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         high_priority_mode = out_of_memory || used_memory() >= expected_memory;
         aggressive_mode = allow_aggressive && (out_of_memory || used_memory() >= critical_memory);
         ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
-        ticks_to_destroy = (std::max)(ticks_to_destroy, min_age);
+        ticks_to_destroy = TextureGcEffectiveMinAge(ticks_to_destroy, min_age, aggressive_mode);
         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
     };
     const auto Cleanup = [&](ImageId image_id) {
@@ -1947,7 +1948,8 @@ bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& ds
                                       const Tegra::Engines::Fermi2D::Surface& motion_vectors,
                                       const Tegra::Texture::TICEntry* depth,
                                       std::array<f32, 2> jitter, std::array<f32, 2> motion_scale,
-                                      bool use_history) {
+                                      bool use_history,
+                                      std::optional<std::array<u32, 2>> render_region) {
     if constexpr (FRAMEBUFFER_BLITS) {
         return false;
     } else {
@@ -2024,11 +2026,14 @@ bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& ds
         if (src_size.width != src.width || src_size.height != src.height) {
             return false;
         }
+        // The game may render only part of its colour target.
+        const std::array<u32, 2> guest_size =
+            render_region.value_or(std::array{src_size.width, src_size.height});
         const std::array<u32, 2> render_size =
             rescaled(src_id)
-                ? std::array{Settings::values.resolution_info.ScaleUp(src_size.width),
-                             Settings::values.resolution_info.ScaleUp(src_size.height)}
-                : std::array{src_size.width, src_size.height};
+                ? std::array{Settings::values.resolution_info.ScaleUp(guest_size[0]),
+                             Settings::values.resolution_info.ScaleUp(guest_size[1])}
+                : guest_size;
         // The jitter is in the input's guest pixels.
         if (rescaled(src_id)) {
             const f32 factor = Settings::values.resolution_info.up_factor;

@@ -147,7 +147,7 @@ void ConfigurePerGameAddons::SetTitleId(u64 id) {
 void ConfigurePerGameAddons::InstallMods(const QStringList& mods) {
     QStringList failed;
     for (const auto& mod : mods) {
-        if (FrontendCommon::InstallMod(mod.toStdString(), title_id, true) ==
+        if (FrontendCommon::InstallModFromUTF8(mod.toStdString(), title_id, true) ==
             FrontendCommon::Failed) {
             failed << QFileInfo(mod).baseName();
         }

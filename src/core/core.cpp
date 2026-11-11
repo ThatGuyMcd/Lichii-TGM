@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <optional>
 #include <array>
 #include <cstdlib>
 #include <atomic>
@@ -44,6 +45,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_resource_limit.h"
 #include "core/hle/kernel/k_scheduler.h"
+#include "core/hle/kernel/k_system_control.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/physical_core.h"
 #include "core/hle/service/acc/profile_manager.h"
@@ -285,13 +287,13 @@ struct System::Impl {
         // thread for the whole loading screen when settings were applied during it. If they
         // are not up yet there is nothing to refresh: they read the current settings when
         // they start.
-        auto& service_manager = system.ServiceManager();
+        auto& manager = system.ServiceManager();
         auto settings_service =
-            service_manager.GetService<Service::Set::ISystemSettingsServer>("set:sys");
+            manager.GetService<Service::Set::ISystemSettingsServer>("set:sys");
         auto static_service_a =
-            service_manager.GetService<Service::Glue::Time::StaticService>("time:a");
+            manager.GetService<Service::Glue::Time::StaticService>("time:a");
         auto static_service_s =
-            service_manager.GetService<Service::PSC::Time::StaticService>("time:s");
+            manager.GetService<Service::PSC::Time::StaticService>("time:s");
         if (!settings_service || !static_service_a || !static_service_s) {
             LOG_INFO(Core, "Time services not started yet, they will use the current settings");
             return;
@@ -443,6 +445,9 @@ struct System::Impl {
                                   params.program_id, params.program_index)
             : ProgramPlatform{};
         const bool switch2_program = platform.is_switch2;
+        if (new_application) {
+            Kernel::KSystemControl::SetApplicationProgramId(platform.program_id);
+        }
         Settings::SetCurrentProgramIsSwitch2(switch2_program);
         Settings::SetAstcRecompressionOverride(std::nullopt);
         Settings::SetGameHandheldOverride(false);
@@ -666,6 +671,7 @@ struct System::Impl {
         OotUltrawide::BeginApplication(0, false);
 
         LOG_DEBUG(Core, "Shutdown OK");
+        Kernel::KSystemControl::SetApplicationProgramId(0);
     }
 
     bool IsShuttingDown() const {

@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <string_view>
@@ -17,7 +19,10 @@
 #include "core/core_timing.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
+#include "core/file_sys/decrypted_nca.h"
 #include "core/file_sys/registered_cache.h"
+#include "core/file_sys/romfs_factory.h"
+#include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/file_sys/vfs/vfs_vector.h"
@@ -33,6 +38,45 @@ namespace {
 constexpr u64 ApplicationId = 0x0100123456780000;
 constexpr std::size_t BigSize = (std::size_t{17} << 20) + 12345;
 constexpr std::size_t RandomSize = 160 * 1024 + 77;
+
+template <typename T>
+void PutGamecardWord(std::vector<u8>& bytes, std::size_t offset, T value) {
+    std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+
+std::vector<u8> SyntheticFirmwareGamecard() {
+    std::vector<u8> bytes(0x300);
+    std::memcpy(bytes.data() + 0x100, "HEAD", 4);
+    PutGamecardWord(bytes, 0x130, u64{0x200});
+    std::memcpy(bytes.data() + 0x200, "HFS0", 4);
+    PutGamecardWord(bytes, 0x204, u32{1});
+    PutGamecardWord(bytes, 0x208, u32{7});
+    PutGamecardWord(bytes, 0x210, u64{0});
+    PutGamecardWord(bytes, 0x218, u64{16});
+    std::memcpy(bytes.data() + 0x250, "update", 7);
+    std::fill_n(bytes.data() + 0x257, 16, u8{0xa5});
+    return bytes;
+}
+
+class BoundaryGamecard final : public FileSys::VectorVfsFile {
+public:
+    BoundaryGamecard(std::vector<u8> bytes, std::size_t size)
+        : VectorVfsFile{std::move(bytes)}, reported_size{size} {}
+
+    std::size_t GetSize() const override {
+        return reported_size;
+    }
+
+    std::size_t Read(u8* bytes, std::size_t length, std::size_t offset) const override {
+        ++reads;
+        return VectorVfsFile::Read(bytes, length, offset);
+    }
+
+    mutable std::size_t reads{};
+
+private:
+    std::size_t reported_size;
+};
 
 FileSys::VirtualFile OpenFixture(std::string_view name) {
     static const auto filesystem = std::make_shared<FileSys::RealVfsFilesystem>();
@@ -107,6 +151,65 @@ TEST_CASE("NX: archives are identified by either header slot", "[core][nx]") {
     CHECK(Loader::GuessFromFilename("Game.NX") == Loader::FileType::NX);
     const auto zeros = std::make_shared<FileSys::VectorVfsFile>(std::vector<u8>(8192), "x.nx");
     CHECK(Loader::AppLoader_NX::IdentifyType(zeros) == Loader::FileType::Error);
+}
+
+TEST_CASE("Decrypted gamecard views preserve the complete firmware partition", "[core][nx]") {
+    const auto original = SyntheticFirmwareGamecard();
+    const auto image = std::make_shared<FileSys::VectorVfsFile>(original, "synthetic.xci");
+    std::string error;
+    const auto plain = FileSys::OpenDecryptedGamecard(image, error);
+    REQUIRE(plain != nullptr);
+    REQUIRE(plain->GetSize() == original.size());
+    auto expected = original;
+    std::memcpy(expected.data() + 0x100, "DXCI", 4);
+    CHECK(plain->ReadAllBytes() == expected);
+    CHECK(image->ReadAllBytes() == original);
+}
+
+TEST_CASE("Decrypted gamecard views reject malformed HFS0 ranges and names", "[core][nx]") {
+    auto bytes = SyntheticFirmwareGamecard();
+    SECTION("partition outside the image") {
+        PutGamecardWord(bytes, 0x130, u64{0x300});
+    }
+    SECTION("entry count exceeds the bounded table") {
+        PutGamecardWord(bytes, 0x204, u32{0x10001});
+    }
+    SECTION("string table exceeds the partition") {
+        PutGamecardWord(bytes, 0x208, u32{0x100000});
+    }
+    SECTION("file offset wraps the available span") {
+        PutGamecardWord(bytes, 0x210, (std::numeric_limits<u64>::max)());
+    }
+    SECTION("file size wraps the available span") {
+        PutGamecardWord(bytes, 0x218, (std::numeric_limits<u64>::max)());
+    }
+    SECTION("filename starts beyond the string table") {
+        PutGamecardWord(bytes, 0x220, u32{7});
+    }
+    SECTION("filename has no terminator within its table") {
+        bytes[0x256] = 'x';
+    }
+    std::string error;
+    CHECK(FileSys::OpenDecryptedGamecard(
+              std::make_shared<FileSys::VectorVfsFile>(std::move(bytes)), error) == nullptr);
+    CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Decrypted gamecard offsets are checked before signed arithmetic or reads", "[core][nx]") {
+    if constexpr (sizeof(std::size_t) < sizeof(u64)) {
+        SKIP("Signed 64-bit image boundaries require a 64-bit virtual-file size");
+    }
+    auto bytes = SyntheticFirmwareGamecard();
+    const auto size = static_cast<std::size_t>((std::numeric_limits<s64>::max)());
+    PutGamecardWord(bytes, 0x130, static_cast<u64>(size - 4));
+    auto image = std::make_shared<BoundaryGamecard>(bytes, size);
+    std::string error;
+    CHECK(FileSys::OpenDecryptedGamecard(image, error) == nullptr);
+    CHECK(image->reads == 1); // The declared HFS0 cannot even hold its header.
+
+    image = std::make_shared<BoundaryGamecard>(bytes, (std::numeric_limits<std::size_t>::max)());
+    CHECK(FileSys::OpenDecryptedGamecard(image, error) == nullptr);
+    CHECK(image->reads == 1);
 }
 
 TEST_CASE("NX: catalog-only queries", "[core][nx]") {
@@ -302,4 +405,90 @@ TEST_CASE("NX: an extracted add-on is listed as add-on content after Load", "[co
     const auto romfs = FileSys::ExtractRomFS(nca->GetRomFS());
     REQUIRE(romfs != nullptr);
     CHECK(ReadText(romfs->GetFile("dlc.bin")) == "dlc");
+}
+
+TEST_CASE("NX: a native base supports external updates and version disabling",
+          "[core][nx][external]") {
+    for (const auto archive : {"native_external_base.nx", "native_embedded_update.nx"}) {
+        DYNAMIC_SECTION(archive) {
+            ScopedSystemTestContext environment;
+            Core::System system;
+            system.SetContentProvider(std::make_unique<FileSys::ContentProviderUnion>());
+            FileSys::ManualContentProvider provider;
+            system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::FrontendManual,
+                                           &provider);
+            Loader::AppLoader_NX loader{system, OpenFixture(archive)};
+            u64 program_id{};
+            REQUIRE(loader.ReadProgramId(program_id) == Loader::ResultStatus::Success);
+            REQUIRE(program_id == ApplicationId);
+            loader.RegisterContent(provider);
+            const auto base = provider.GetEntry(ApplicationId, FileSys::ContentRecordType::Program);
+            REQUIRE(base != nullptr);
+            REQUIRE(base->GetStatus() == Loader::ResultStatus::Success);
+            FileSys::RomFSFactory factory{loader, system.GetContentProvider(),
+                                          system.GetFileSystemController()};
+            const auto data = [&] {
+                const auto romfs = factory.OpenCurrentProcess(ApplicationId);
+                REQUIRE(romfs != nullptr);
+                const auto tree = FileSys::ExtractRomFS(romfs);
+                REQUIRE(tree != nullptr);
+                const auto file = tree->GetFile("data.bin");
+                REQUIRE(file != nullptr);
+                return file->ReadAllBytes();
+            };
+            CHECK(data() ==
+                  std::vector<u8>(
+                      4096, std::string_view(archive) == "native_external_base.nx" ? 0x11 : 0x22));
+            REQUIRE(provider.AddEntriesFromContainer(OpenFixture("external_update.nsp")));
+            const FileSys::PatchManager patches{ApplicationId, system.GetFileSystemController(),
+                                                system.GetContentProvider()};
+            const auto build_byte = [&] {
+                const auto exefs = patches.PatchExeFS(base->GetExeFS());
+                REQUIRE(exefs != nullptr);
+                const auto main = exefs->GetFile("main");
+                REQUIRE(main != nullptr);
+                return main->ReadByte(64);
+            };
+            CHECK(data() == std::vector<u8>(4096, 0x33));
+            CHECK(build_byte() == 0x33);
+            const auto previous = Settings::values.disabled_addons[ApplicationId];
+            SCOPE_EXIT {
+                Settings::values.disabled_addons[ApplicationId] = previous;
+            };
+            Settings::values.disabled_addons[ApplicationId] = {"Update@2"};
+            CHECK(data() ==
+                  std::vector<u8>(
+                      4096, std::string_view(archive) == "native_external_base.nx" ? 0x11 : 0x22));
+            CHECK(build_byte() ==
+                  (std::string_view(archive) == "native_external_base.nx" ? 0x11 : 0x22));
+        }
+    }
+}
+
+TEST_CASE("NX: registering an archive preserves an external NSP add-on", "[core][nx][external]") {
+    for (const auto archive : {"lichii_synthetic.nx", "native_external_base.nx"}) {
+        DYNAMIC_SECTION(archive) {
+            ScopedSystemTestContext environment;
+            Core::System system;
+            system.SetContentProvider(std::make_unique<FileSys::ContentProviderUnion>());
+            FileSys::ManualContentProvider provider;
+            system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::FrontendManual,
+                                           &provider);
+            REQUIRE(provider.AddEntriesFromContainer(OpenFixture("external_dlc.nsp")));
+            Loader::AppLoader_NX loader{system, OpenFixture(archive)};
+            loader.RegisterContent(provider);
+            const auto entries = provider.ListEntriesFilter(
+                FileSys::TitleType::AOC, FileSys::ContentRecordType::Data, std::nullopt);
+            REQUIRE(entries.size() == (std::string_view(archive) == "lichii_synthetic.nx" ? 2 : 1));
+            const auto dlc =
+                provider.GetEntry(ApplicationId + 0x1002, FileSys::ContentRecordType::Data);
+            REQUIRE(dlc != nullptr);
+            REQUIRE(dlc->GetStatus() == Loader::ResultStatus::Success);
+            const auto tree = FileSys::ExtractRomFS(dlc->GetRomFS());
+            REQUIRE(tree != nullptr);
+            const auto file = tree->GetFile("dlc.bin");
+            REQUIRE(file != nullptr);
+            CHECK(file->ReadAllBytes() == std::vector<u8>(8192, 0x44));
+        }
+    }
 }

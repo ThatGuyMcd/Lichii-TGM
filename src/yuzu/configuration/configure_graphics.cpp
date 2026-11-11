@@ -246,6 +246,9 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 #endif
 
     for (const auto setting : Settings::values.linkage.by_category[Settings::Category::Renderer]) {
+        if (setting->Id() == Settings::values.hdr.Id()) {
+            continue; // Its saved On/Off choice is represented by the HDR mode control.
+        }
 #ifndef HAS_RESHADE
         if (setting->Id() == Settings::values.post_shader_enabled.Id()) {
             continue;
@@ -255,6 +258,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
         // Only builds with a platform NVIDIA runtime can use it.
         if (setting->Id() == Settings::values.nvidia_dlss.Id() ||
             setting->Id() == Settings::values.nvidia_dlss_quality.Id() ||
+            setting->Id() == Settings::values.nvidia_dlss_preset.Id() ||
             setting->Id() == Settings::values.ocarina_dlss_mode.Id() ||
             setting->Id() == Settings::values.dlss_sharpening.Id() ||
             setting->Id() == Settings::values.dlss_preset.Id()) {
@@ -306,7 +310,16 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 
-        if (setting->Id() == Settings::values.hdr.Id() ||
+#ifdef EGLANTINE_NVIDIA_DLSS
+        if (nvidia_dlss_checkbox && (setting->Id() == Settings::values.nvidia_dlss_quality.Id() ||
+                                     setting->Id() == Settings::values.nvidia_dlss_preset.Id())) {
+            widget->setVisible(nvidia_dlss_checkbox->isChecked());
+            connect(nvidia_dlss_checkbox, &QCheckBox::toggled, widget, &QWidget::setVisible);
+        }
+#endif
+
+        if (setting->Id() == Settings::values.hdr_mode.Id() ||
+            setting->Id() == Settings::values.hdr_swapchain.Id() ||
             setting->Id() == Settings::values.hdr_reference_white.Id() ||
             setting->Id() == Settings::values.hdr_peak_luminance.Id()) {
             hdr_widgets.push_back(widget);
@@ -584,6 +597,8 @@ void ConfigureGraphics::ApplyConfiguration() {
     }
 
     UpdateVsyncSetting();
+
+    Settings::RefreshNvidiaDlssRuntimeSettings();
 
     Settings::values.vulkan_device.SetGlobal(true);
     auto const index = Settings::EnumMetadata<Settings::RendererBackend>::Index();

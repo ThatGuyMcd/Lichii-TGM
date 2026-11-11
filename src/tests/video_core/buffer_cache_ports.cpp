@@ -654,9 +654,16 @@ TEST_CASE("Storage binding cache preserves native and table size policies", "[bu
     f.Descriptor(base, 256);
     REQUIRE(f.Bind().size == 4096);
     REQUIRE(f.Bind(false, true).size == 8 << 20);
-    REQUIRE(f.Bind(false, true, false, true).size == 80 << 20);
+    REQUIRE(f.Bind(false, true, false, true).size == 8 << 20);
     REQUIRE(f.Bind(true, true, false, true).size == 8 << 20);
     REQUIRE(f.Bind(false, false, true).size == 80 << 20);
+    f.Descriptor(base, 40 << 20);
+    REQUIRE(f.Bind(false, true, false, true).size == 40 << 20);
+    REQUIRE(f.Bind(true, true, false, true).size == 8 << 20);
+    REQUIRE(f.Bind(false, true).size == 8 << 20);
+    f.Descriptor(base, 100 << 20);
+    REQUIRE(f.Bind(false, true, false, true).size == 8 << 20);
+    f.Descriptor(base, 256);
     REQUIRE(f.Bind(true, false, true).size == 256);
     f.Descriptor(base, (1ULL << 32) | 256);
     REQUIRE(f.Bind().size == 8 << 20);
@@ -2388,4 +2395,32 @@ TEST_CASE("Mesh task count slots follow the copies of their command list page",
         CHECK(mirror(*slot) == std::array<u32, 3>{offset, 1, 1});
     }
     CHECK_FALSE(f.cache->Nx2MeshCountSlot(0x20050));
+}
+
+TEST_CASE("Claimed CPU writes keep their bytes when an earlier one downloads their page",
+          "[buffer_ports]") {
+    Fixture f;
+    // The download branch of WriteMemory: only the scheduler's owner downloads, and Switch 2
+    // titles upload inline instead.
+    const bool ampere = Tegra::g_nx2_ampere.exchange(false);
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    std::ranges::fill(Access::Get(*f.cache, id).bytes, 0x12);
+    Access::Dirty(*f.cache, 0x20000, 0x1000);
+    std::memset(f.bytes + 0x10100, 0xaa, 0x10);
+    std::memset(f.bytes + 0x10800, 0xbb, 0x10);
+    const std::array<std::pair<DAddr, u64>, 2> ranges{{{0x20100, 0x10}, {0x20800, 0x10}}};
+    // A thread of its own, so marking it the GPU thread doesn't carry over to other tests.
+    std::thread{[&] {
+        VideoCommon::GpuSplit::MarkGpuThread();
+        f.cache->ClaimCpuWrites(ranges);
+        for (const auto& [address, size] : ranges) {
+            f.cache->WriteMemory(address, size);
+        }
+    }}.join();
+    Tegra::g_nx2_ampere.store(ampere);
+    REQUIRE(f.bytes[0x10000] == 0x12);
+    REQUIRE(f.bytes[0x10100] == 0xaa);
+    REQUIRE(f.bytes[0x10800] == 0xbb);
+    REQUIRE(f.bytes[0x1080f] == 0xbb);
+    REQUIRE(f.bytes[0x10810] == 0x12);
 }

@@ -690,7 +690,7 @@ TEST_CASE("Ocarina aspect profiles patch cameras, UI and movie bounds together",
     }
 }
 
-TEST_CASE("Photo Mode and every aspect profile coexist in the real executable padding",
+TEST_CASE("Texture Pool x2, Photo Mode and every aspect profile coexist in executable padding",
           "[patch_manager]") {
     namespace Photo = Core::OcarinaPhotoMode;
     PatchManagerTestContext context;
@@ -698,6 +698,7 @@ TEST_CASE("Photo Mode and every aspect profile coexist in the real executable pa
     auto nso = MakeUltrawideMain();
     nso.resize(sizeof(Loader::NSOHeader) + Photo::StateOffset + Photo::StateSize);
     PutWord(nso, sizeof(Loader::NSOHeader) + Photo::SiteOffset, Photo::Word(Photo::SiteOriginal));
+    PutWord(nso, sizeof(Loader::NSOHeader) + 0xC2A36C, 0xA90127E8);
     for (const auto& profile : Core::OotUltrawide::AspectProfiles) {
         INFO(profile.addon);
         UltrawideSettings settings{profile.aspect, Settings::ConsoleMode::Docked};
@@ -708,6 +709,8 @@ TEST_CASE("Photo Mode and every aspect profile coexist in the real executable pa
         REQUIRE(std::equal(Photo::Cave.begin(), Photo::Cave.end(),
                            patched.begin() + sizeof(Loader::NSOHeader) + Photo::CaveOffset));
         REQUIRE(WordAt(patched, UltrawideHookCaveOffset) == 0x2D558400);
+        REQUIRE(WordAt(patched, sizeof(Loader::NSOHeader) + 0xC2A36C) == 0x94C06FD5);
+        REQUIRE(WordAt(patched, sizeof(Loader::NSOHeader) + 0x3C462C0) == 0xD37FF908);
     }
 }
 

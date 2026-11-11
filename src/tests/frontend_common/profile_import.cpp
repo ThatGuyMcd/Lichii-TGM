@@ -80,7 +80,7 @@ TEST_CASE("Existing TGM global configurations keep other installed profiles opti
     REQUIRE(IsLegacyProfileSource(legacy, current));
     REQUIRE_FALSE(IsLegacyProfileSource(current, current));
     REQUIRE(NeedsLegacyProfileImport(current, sources, state, false, config));
-    REQUIRE(std::ofstream(config / filename).write("[Renderer]\n", 11).good());
+    REQUIRE(std::ofstream(config / filename, std::ios::binary).write("[Renderer]\n", 11).good());
 
     CHECK_FALSE(NeedsLegacyProfileImport(current, sources, state, false, config));
     CHECK(IsLegacyProfileSource(legacy, current)); // An explicit import still has this source.
@@ -102,7 +102,8 @@ TEST_CASE("Empty profile directories and per-game settings do not suppress first
     REQUIRE(fs::create_directories(config / "custom"));
     REQUIRE(fs::create_directory(config / "qt-config.ini"));
     REQUIRE(fs::create_directory(config / "sdl2-config.ini"));
-    REQUIRE(std::ofstream(config / "custom" / "game.ini").write("[Renderer]\n", 11).good());
+    REQUIRE(std::ofstream(config / "custom" / "game.ini", std::ios::binary)
+                .write("[Renderer]\n", 11).good());
     REQUIRE(fs::create_directory(legacy));
     const std::array sources{current, legacy};
     CHECK(NeedsLegacyProfileImport(current, sources, fixture.root / "state"));

@@ -263,6 +263,10 @@ struct FixedPipelineState {
 
     void Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFeatures& features);
 
+    [[nodiscard]] static u64 DynamicAttributeTypes(const Maxwell& regs) noexcept;
+    [[nodiscard]] static bool CanReuseDynamicVertexInput(const Maxwell& regs, bool dynamic_input,
+                                                        u64 previous_types) noexcept;
+
     /// Native (Switch 2) pipelines: clears state that cannot change the pipeline, so draws that
     /// differ only there share one and precompiled keys match them: attribute types of inputs the
     /// vertex program does not read (vertex input is dynamic), blend equations and factors of

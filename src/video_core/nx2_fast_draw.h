@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdlib>
@@ -63,6 +64,9 @@ inline constexpr std::array<const char*, static_cast<size_t>(Reason::Count)> rea
 };
 
 inline std::atomic<bool> g_enabled{true};
+
+/// Set before GPU threads start: strides/enables and vertex formats are dynamic state.
+inline bool g_vertex_streams_dynamic{};
 
 /// Any thread: whether fast draws run (always, unless a test turned them off). The rasterizer
 /// latches it per draw (on the thread that draws) and starts with a full resolve when it turns on.
@@ -132,6 +136,8 @@ struct Delta {
     std::array<DAddr, MaxWrites> device_begin{};
     std::array<DAddr, MaxWrites> device_end{};
     u32 num_device_writes{};
+    /// A widened write range is conservative; restream uniforms instead of keeping old binds.
+    bool no_uniform_keeps{};
 
     [[nodiscard]] bool Empty() const {
         return num_writes == 0 && (binds[0] | binds[1] | binds[2] | binds[3] | binds[4]) == 0;
@@ -156,20 +162,39 @@ struct Delta {
 
 inline Delta g_delta;
 
-/// Appends [begin, end) to a delta's range list, or extends its last range when that ends at
-/// begin. False when the list is full.
+/// Adds a write, merging touching ranges. A full list widens the range that grows least:
+/// every written byte remains covered, and true tells the caller not to keep uniforms.
 inline bool AppendRange(std::array<u64, Delta::MaxWrites>& begins,
                         std::array<u64, Delta::MaxWrites>& ends, u32& count, u64 begin, u64 end) {
     if (count != 0 && ends[count - 1] == begin) {
         ends[count - 1] = end;
-        return true;
-    }
-    if (count == Delta::MaxWrites) {
         return false;
     }
-    begins[count] = begin;
-    ends[count] = end;
-    ++count;
+    for (u32 i = 0; i < count; ++i) {
+        if (begin <= ends[i] && begins[i] <= end) {
+            begins[i] = (std::min)(begins[i], begin);
+            ends[i] = (std::max)(ends[i], end);
+            return false;
+        }
+    }
+    if (count < Delta::MaxWrites) {
+        begins[count] = begin;
+        ends[count] = end;
+        ++count;
+        return false;
+    }
+    u32 best = 0;
+    u64 best_growth = ~u64{0};
+    for (u32 i = 0; i < count; ++i) {
+        const u64 growth = ((std::max)(ends[i], end) - (std::min)(begins[i], begin)) -
+                           (ends[i] - begins[i]);
+        if (growth < best_growth) {
+            best = i;
+            best_growth = growth;
+        }
+    }
+    begins[best] = (std::min)(begins[best], begin);
+    ends[best] = (std::max)(ends[best], end);
     return true;
 }
 
@@ -185,9 +210,8 @@ inline void NoteConstantData(GPUVAddr begin, GPUVAddr end) {
         return;
     }
     Delta& delta = g_delta;
-    if (!AppendRange(delta.write_begin, delta.write_end, delta.num_writes, begin, end)) {
-        Break(Reason::DeltaOverflow);
-    }
+    delta.no_uniform_keeps |=
+        AppendRange(delta.write_begin, delta.write_end, delta.num_writes, begin, end);
 }
 
 /// The device addresses [begin, end) that inline constant buffer data landed on.
@@ -196,9 +220,8 @@ inline void NoteDeviceData(DAddr begin, DAddr end) {
         return;
     }
     Delta& delta = g_delta;
-    if (!AppendRange(delta.device_begin, delta.device_end, delta.num_device_writes, begin, end)) {
-        Break(Reason::DeltaOverflow);
-    }
+    delta.no_uniform_keeps |=
+        AppendRange(delta.device_begin, delta.device_end, delta.num_device_writes, begin, end);
 }
 
 } // namespace VideoCommon::Nx2FastDraw

@@ -3321,6 +3321,7 @@ public:
     static bool IsFastDrawNeutralMethod(u32 method);
     /// Registers only a report or a macro memory read takes as operands.
     static bool IsFastDrawReportOperand(u32 method);
+    static bool IsFastDrawVertexFormat(u32 method);
     void NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end);
 
     /// Handles a write to the CB_DATA[i] register.

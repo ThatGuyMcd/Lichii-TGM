@@ -368,8 +368,14 @@ bool Maxwell3D::IsFastDrawParameter(u32 method) {
     default:
         return DrawManager::IsInstanceLoopMethod(method) || IsFastDrawDeltaMethod(method) ||
                IsFastDrawVertexBuffer(method) || IsFastDrawNeutralMethod(method) ||
-               IsFastDrawReportOperand(method);
+               IsFastDrawReportOperand(method) || IsFastDrawVertexFormat(method);
     }
+}
+
+bool Maxwell3D::IsFastDrawVertexFormat(u32 method) {
+    constexpr u32 formats = MAXWELL3D_REG_INDEX(vertex_attrib_format);
+    return VideoCommon::Nx2FastDraw::g_vertex_streams_dynamic && method >= formats &&
+           method < formats + Regs::NumVertexAttributes;
 }
 
 bool Maxwell3D::IsFastDrawNeutralMethod(u32 method) {
@@ -412,7 +418,9 @@ bool Maxwell3D::IsFastDrawVertexBuffer(u32 method) {
     constexpr u32 stream_words = sizeof(Regs::VertexStream) / sizeof(u32);
     if (method >= streams && method < streams + Regs::NumVertexArrays * stream_words) {
         const u32 word = (method - streams) % stream_words;
-        return word == 1 || word == 2; // address_high, address_low
+        // The stride/enable word is light only when both vertex input and strides are dynamic.
+        return word == 1 || word == 2 ||
+               (word == 0 && VideoCommon::Nx2FastDraw::g_vertex_streams_dynamic);
     }
     constexpr u32 sizes = 0x600 / sizeof(u32); // SET_VERTEX_STREAM_SIZE_A/B (NativeVertexStreamSize)
     constexpr u32 limits = MAXWELL3D_REG_INDEX(vertex_stream_limits);

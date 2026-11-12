@@ -58,6 +58,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_perf.h"
+#include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/nx2_stutter_trace.h"
 #include "video_core/pipeline_cache_files.h"
@@ -1008,6 +1009,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         Settings::values.vertex_input_dynamic_state.GetValue();
     dynamic_features.has_static_vertex_repack =
         StaticVertexRepackEnabled(device.GetMinVertexInputBindingStrideAlignment());
+    VideoCommon::Nx2FastDraw::g_vertex_streams_dynamic =
+        dynamic_features.has_extended_dynamic_state && dynamic_features.has_dynamic_vertex_input;
 
     dynamic_features.has_provoking_vertex = device.IsExtProvokingVertexSupported();
     dynamic_features.has_provoking_vertex_first_mode =

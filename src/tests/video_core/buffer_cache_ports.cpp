@@ -2295,6 +2295,34 @@ TEST_CASE("Uniform keep binds unwritten uniform buffers of delta draws without r
     REQUIRE(f.runtime.allocations.size() == allocations);
 }
 
+TEST_CASE("Widened delta ranges restream uniforms and the next exact draw can keep them",
+          "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    using Delta = VideoCommon::Nx2FastDraw::Delta;
+    const Delta unchanged{};
+    std::memset(f.UboBytes(), 1, KeepFixture::UboSize);
+    f.Draw(nullptr);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    REQUIRE(f.runtime.allocations.size() == 1);
+
+    Delta widened{};
+    for (u32 i = 0; i <= Delta::MaxWrites; ++i) {
+        widened.no_uniform_keeps |= VideoCommon::Nx2FastDraw::AppendRange(
+            widened.write_begin, widened.write_end, widened.num_writes,
+            0x300000 + i * 0x20, 0x300004 + i * 0x20);
+    }
+    REQUIRE(widened.no_uniform_keeps);
+    // Even a previous stream outside those conservative ranges is restreamed, not kept.
+    f.UboBytes()[0x20] = 7;
+    f.Draw(&widened); // Draw also checks the actual bound bytes against guest memory.
+    CHECK(f.Counts().kept == 1);
+    CHECK(f.runtime.allocations.size() == 2);
+    f.Draw(&unchanged);
+    CHECK(f.Counts().kept == 2);
+    CHECK(f.runtime.allocations.size() == 2);
+}
+
 TEST_CASE("Uniform keep ends at CPU writes the caches are told about", "[buffer_ports]") {
     KeepFixture f{nullptr};
     const VideoCommon::Nx2FastDraw::Delta unchanged{};

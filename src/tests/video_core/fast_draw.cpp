@@ -12,6 +12,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 
 namespace {
 
@@ -76,11 +77,13 @@ private:
 struct FastDrawFixture {
     FastDrawFixture() : memory{system, device_memory, 32, 1ULL << 31}, maxwell3d{memory} {
         SetSwitch(true);
+        FastDraw::g_vertex_streams_dynamic = false;
         FastDraw::g_delta = {};
         maxwell3d.BindRasterizer(&rasterizer);
     }
     ~FastDrawFixture() {
         FastDraw::SetEnabledForTest(previous);
+        FastDraw::g_vertex_streams_dynamic = previous_vertex_streams_dynamic;
         FastDraw::g_delta = {};
     }
 
@@ -111,6 +114,7 @@ struct FastDrawFixture {
     }
 
     const bool previous = FastDraw::Enabled();
+    const bool previous_vertex_streams_dynamic = FastDraw::g_vertex_streams_dynamic;
     ScopedSystemTestContext context;
     Core::System system;
     Core::DeviceMemory physical;
@@ -157,6 +161,108 @@ TEST_CASE("Fast draw breaks reuse on anything that changes what a draw binds", "
     CHECK(breaks([&] { f.Write(MAXWELL3D_REG_INDEX(clear_surface), 0x3c); }));
     CHECK(breaks([&] { f.Write(MAXWELL3D_REG_INDEX(tiled_cache_barrier), 0); }));
     CHECK(breaks([&] { FastDraw::Break(FastDraw::Reason::Fence); }));
+}
+
+TEST_CASE("Fast draw keeps static vertex state conservative", "[fast_draw]") {
+    FastDrawFixture f;
+    f.DrawArrays(0, 3);
+    constexpr u32 stream = MAXWELL3D_REG_INDEX(vertex_streams);
+    f.Write(stream, f.Reg(stream) ^ 1); // stride/enable word
+    f.DrawArrays(0, 3);
+    CHECK_FALSE(f.Reusable());
+    constexpr u32 format = MAXWELL3D_REG_INDEX(vertex_attrib_format);
+    f.Write(format, f.Reg(format) ^ 1);
+    f.DrawArrays(0, 3);
+    CHECK_FALSE(f.Reusable());
+}
+
+TEST_CASE("Dynamic vertex formats preserve draw reuse only within shader input type classes",
+          "[fast_draw]") {
+    FastDrawFixture f;
+    FastDraw::g_vertex_streams_dynamic = true;
+    using Attribute = Maxwell3D::Regs::VertexAttribute;
+    using State = Vulkan::FixedPipelineState;
+    constexpr u32 format = MAXWELL3D_REG_INDEX(vertex_attrib_format);
+    Attribute attribute{};
+    attribute.constant = 0;
+    attribute.type = Attribute::Type::Float;
+    attribute.size = Attribute::Size::Size_R32;
+    f.Write(format, attribute.hex);
+    f.DrawArrays(0, 3);
+    const u64 types = State::DynamicAttributeTypes(f.maxwell3d.regs);
+
+    constexpr u32 stream = MAXWELL3D_REG_INDEX(vertex_streams);
+    f.Write(stream, f.Reg(stream) ^ 1);
+    attribute.type = Attribute::Type::UNorm;
+    attribute.size = Attribute::Size::Size_R8_G8_B8_A8;
+    attribute.offset = 16;
+    f.Write(format, attribute.hex);
+    f.DrawArrays(0, 3);
+    CHECK(f.Reusable());
+    CHECK(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, types));
+    CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, false, types));
+
+    // The engine keeps this write light; the rasterizer must reject its changed shader input.
+    attribute.type = Attribute::Type::UInt;
+    f.Write(format, attribute.hex);
+    f.DrawArrays(0, 3);
+    CHECK(f.Reusable());
+    CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, types));
+    attribute.type = Attribute::Type::SInt;
+    f.Write(format, attribute.hex);
+    CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, types));
+    attribute.constant = 1;
+    f.Write(format, attribute.hex);
+    CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, types));
+}
+
+TEST_CASE("Dynamic vertex validation uses the raw draw snapshot before native key masking",
+          "[fast_draw]") {
+    FastDrawFixture f;
+    using Attribute = Maxwell3D::Regs::VertexAttribute;
+    using State = Vulkan::FixedPipelineState;
+    auto& attribute = f.maxwell3d.regs.vertex_attrib_format[17];
+    attribute.constant = 0;
+    attribute.type = Attribute::Type::Float;
+    const u64 raw_types = State::DynamicAttributeTypes(f.maxwell3d.regs);
+    State canonical{};
+    canonical.dynamic_vertex_input = 1;
+    canonical.attribute_types = raw_types;
+    canonical.CanonicalizeNative(1); // Native header does not list attribute 17.
+    REQUIRE(canonical.attribute_types != raw_types);
+    CHECK(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, raw_types));
+    attribute.offset = attribute.offset.Value() + 4;
+    CHECK(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, raw_types));
+    attribute.type = Attribute::Type::UInt;
+    CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, raw_types));
+}
+
+TEST_CASE("Fast draw overflow retains every GPU and device write conservatively",
+          "[fast_draw]") {
+    FastDrawFixture f;
+    const u64 serial = FastDraw::Serial();
+    for (u32 i = 0; i < 4 * FastDraw::Delta::MaxWrites; ++i) {
+        FastDraw::NoteConstantData(0x60000 + i * 0x20, 0x60004 + i * 0x20);
+        FastDraw::NoteDeviceData(0xA0000 + i * 0x40, 0xA0004 + i * 0x40);
+    }
+    CHECK(FastDraw::Serial() == serial);
+    const auto& delta = FastDraw::g_delta;
+    REQUIRE(delta.num_writes == FastDraw::Delta::MaxWrites);
+    REQUIRE(delta.num_device_writes == FastDraw::Delta::MaxWrites);
+    REQUIRE(delta.no_uniform_keeps);
+    const auto covered = [](const auto& begins, const auto& ends, u32 count, u64 address) {
+        for (u32 i = 0; i < count; ++i) {
+            if (begins[i] <= address && address + 4 <= ends[i]) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (u32 i = 0; i < 4 * FastDraw::Delta::MaxWrites; ++i) {
+        CHECK(covered(delta.write_begin, delta.write_end, delta.num_writes, 0x60000 + i * 0x20));
+        CHECK(covered(delta.device_begin, delta.device_end, delta.num_device_writes,
+                      0xA0000 + i * 0x40));
+    }
 }
 
 TEST_CASE("Fast draw serial never moves while disabled", "[fast_draw]") {
@@ -215,8 +321,7 @@ TEST_CASE("Fast draw records bind and constant data changes, keeps index buffer 
     CHECK_FALSE(FastDraw::g_delta.Empty());
 }
 
-TEST_CASE("Fast draw breaks on state, texture headers and delta overflow",
-          "[fast_draw]") {
+TEST_CASE("Fast draw breaks on state and texture headers", "[fast_draw]") {
     DeltaFixture f;
     f.Write(MAXWELL3D_REG_INDEX(tex_header.address_high), 0);
     f.Write(MAXWELL3D_REG_INDEX(tex_header.address_low), 0x40000);
@@ -244,13 +349,24 @@ TEST_CASE("Fast draw breaks on state, texture headers and delta overflow",
         f.SetConstantBuffer(0x40000, 0x1000, 0x100); // just past the headers
         f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), 1);
     }));
-    CHECK(breaks([&] {
+    CHECK_FALSE(breaks([&] {
         f.SetConstantBuffer(0x60000, 0x1000, 0);
         for (u32 i = 0; i <= FastDraw::Delta::MaxWrites; ++i) {
             f.Write(MAXWELL3D_REG_INDEX(const_buffer.offset), i * 0x20);
             f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), i);
         }
     }));
+    CHECK(FastDraw::g_delta.no_uniform_keeps);
+    REQUIRE(FastDraw::g_delta.num_writes == FastDraw::Delta::MaxWrites);
+    for (u32 i = 0; i <= FastDraw::Delta::MaxWrites; ++i) {
+        const GPUVAddr address = 0x60000 + i * 0x20;
+        bool covered = false;
+        for (u32 write = 0; write < FastDraw::g_delta.num_writes; ++write) {
+            covered |= FastDraw::g_delta.write_begin[write] <= address &&
+                       address + 4 <= FastDraw::g_delta.write_end[write];
+        }
+        CHECK(covered);
+    }
 }
 
 TEST_CASE("Fast draw breaks on texture header data written through another mapping",

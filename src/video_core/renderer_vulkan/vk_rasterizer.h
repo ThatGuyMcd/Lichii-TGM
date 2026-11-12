@@ -469,6 +469,8 @@ private:
         u64 map_serial{};
         u64 tick{};
         u64 render_pass{};
+        /// Raw types before native key canonicalization, including constant attributes.
+        u64 attribute_types{};
         Maxwell::PrimitiveTopology topology{};
         bool is_indexed{};
     };
@@ -482,6 +484,7 @@ private:
         HandleBind,
         HandleData,
         SampledImages,
+        VertexInput,
         Count,
     };
     /// Why a recorded draw can't be followed by a delta draw.

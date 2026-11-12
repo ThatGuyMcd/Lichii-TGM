@@ -28,6 +28,11 @@ settings, aspect profiles and explicit shader preparation option.
   and dangling links are checked before destructive operations.
 - Retains all OOT aspect profiles and their Photo Mode compatibility. Texture
   Pool x2 was already present and is retained.
+- Reuses compatible dynamic vertex-input draws while rejecting changed shader
+  input types. A full change list retains every written range and restreams
+  uniforms conservatively. This is a focused adaptation of
+  [Lichii #1161](https://github.com/zortos293/Lichii/pull/1161), preserving this
+  fork's native pipeline keys and motion handling.
 
 ## Settings and data
 
@@ -65,6 +70,11 @@ by earlier play sessions. It complements the explicit game-file preparation acti
 Windows x86_64 and Linux x86_64 AppImage packages must pass the full test suites,
 settings/UI retention checks, dependencies, package identity and checksum checks.
 Detailed results are recorded in the build manifest accompanying the packages.
+
+The local native-rendering performance candidate still needs matched gameplay
+validation. Diagnostic tracing changes CPU command routing, so performance claims
+must use separate measurements with detailed profiling and frame generation off.
+Native 60 FPS and a twofold improvement have not been established.
 
 Recent device-loss reports still need a controlled gameplay comparison. A Windows
 GPU engine timeout means the display engine stopped responding; it does not by

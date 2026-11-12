@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -23,6 +25,10 @@
 #include <vector>
 
 #include <fmt/format.h>
+
+#include "common/nx2_sampler_data.h"
+#include "common/scm_rev.h"
+#include "common/string_util.h"
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -44,6 +50,7 @@ struct Target {
     HANDLE handle;
     std::string name;
     const NT_TIB* tib; ///< the thread's stack bounds, null if unknown
+    DWORD id;
 };
 
 const NT_TIB* ThreadTib(HANDLE handle) {
@@ -136,7 +143,7 @@ std::vector<Target> FindThreads(const std::vector<std::string>& patterns) {
             LocalFree(wide);
         }
         if (Matches(name, patterns)) {
-            targets.push_back({handle, name, ThreadTib(handle)});
+            targets.push_back({handle, name, ThreadTib(handle), entry.th32ThreadID});
         } else {
             CloseHandle(handle);
         }
@@ -148,7 +155,7 @@ std::vector<Target> FindThreads(const std::vector<std::string>& patterns) {
 /// The address range of every loaded module, sorted.
 using Modules = std::vector<std::pair<DWORD64, DWORD64>>;
 
-Modules LoadedModules() {
+Modules LoadedModules(std::vector<Detail::RawModule>& records) {
     Modules modules;
     const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
@@ -159,6 +166,7 @@ Modules LoadedModules() {
     for (BOOL ok = Module32FirstW(snapshot, &entry); ok; ok = Module32NextW(snapshot, &entry)) {
         const auto begin = reinterpret_cast<DWORD64>(entry.modBaseAddr);
         modules.emplace_back(begin, begin + entry.modBaseSize);
+        records.push_back({begin, begin + entry.modBaseSize, Common::UTF16ToUTF8(entry.szExePath)});
     }
     CloseHandle(snapshot);
     std::sort(modules.begin(), modules.end());
@@ -318,7 +326,23 @@ struct Symbolizer {
 };
 
 std::string Report(const std::vector<Target>& targets, const std::vector<Sample>& samples,
-                   const char* path) {
+                   const char* path, const std::vector<Detail::RawModule>& modules,
+                   double requested_seconds, double sampled_seconds) {
+    // Collection has ended and every target is resumed before allocation or file output.
+    const std::string raw_path = std::string{path} + ".raw.json";
+    std::ofstream raw{std::filesystem::path{Common::UTF8ToUTF16W(raw_path)}, std::ios::binary};
+    std::vector<Detail::RawThread> threads;
+    for (const auto& target : targets) {
+        threads.push_back({target.id, target.name});
+    }
+    const bool written = raw && Detail::WriteRawSnapshot<Sample>(
+                                   raw, Common::g_scm_rev, threads, modules, samples, MaxDepth,
+                                   requested_seconds, sampled_seconds);
+    raw.flush();
+    if (raw.is_open()) {
+        raw.close();
+    }
+    const bool raw_ok = written && raw.good();
     // SymInitialize fails on a second call without SymCleanup, so keep one symbolizer.
     static Symbolizer symbolizer;
     symbolizer.Refresh();
@@ -404,6 +428,9 @@ std::string Report(const std::vector<Target>& targets, const std::vector<Sample>
         print("inclusive (on the stack)", inclusive, 90);
         text += "\n";
     }
+    text += raw_ok ? fmt::format("Raw snapshot: {} ({} samples, no PC cutoff)\n", raw_path,
+                                samples.size())
+                   : fmt::format("Raw snapshot export FAILED: {}\n", raw_path);
     if (std::FILE* const file = std::fopen(path, "w")) {
         std::fwrite(text.data(), 1, text.size(), file);
         std::fclose(file);
@@ -436,10 +463,12 @@ std::string SampleThreads(const std::vector<std::string>& patterns, double secon
     if (targets.empty()) {
         return "no thread matches";
     }
-    const Modules modules = LoadedModules();
+    std::vector<Detail::RawModule> raw_modules;
+    const Modules modules = LoadedModules(raw_modules);
     std::vector<Sample> samples;
     samples.reserve(static_cast<size_t>(seconds * 1100.0) * targets.size() + 16);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    const auto started = std::chrono::steady_clock::now();
+    const auto deadline = started + std::chrono::duration<double>(seconds);
     while (std::chrono::steady_clock::now() < deadline &&
            samples.size() + targets.size() <= samples.capacity()) {
         for (unsigned i = 0; i < targets.size(); ++i) {
@@ -459,11 +488,13 @@ std::string SampleThreads(const std::vector<std::string>& patterns, double secon
         }
         Sleep(1);
     }
+    const double sampled_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     // DbgHelp is single-threaded: the debug server's `sample` and EDEN_NX2_SAMPLE can report at
     // the same time.
     static std::mutex report_mutex;
     std::unique_lock report_lock{report_mutex};
-    std::string text = Report(targets, samples, out.c_str());
+    std::string text = Report(targets, samples, out.c_str(), raw_modules, seconds, sampled_seconds);
     report_lock.unlock();
     std::fprintf(stderr, "nx2 sampler: %zu samples written to %s\n", samples.size(), out.c_str());
     for (const auto& target : targets) {

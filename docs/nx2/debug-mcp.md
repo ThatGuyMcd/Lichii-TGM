@@ -255,6 +255,14 @@ sampled, so read fps from a run without it. A stack ends at its first frame in g
 shown as `(jit)`: a guest core thread (`CPUCore_*`) shows `(jit)` while it runs guest code and
 the host functions above `(jit)` while the JIT calls out.
 
+The companion `.txt.raw.json` retains every captured stack and instruction address,
+including empty and faulted walks, with thread IDs, the source commit, sampling
+duration and loaded module paths/address ranges. Addresses are hexadecimal strings.
+It is written after all sampled threads resume. The text report's hottest-PC list
+is limited to 60 entries; use the raw file with matching binary symbols or a
+verified linker map for complete offline attribution. Keep these process-specific
+captures local. A raw export failure is reported explicitly in the text output.
+
 **`speed_limit`** `{on?}`. Lifts (`false`) or restores (`true`) the speed limit live and returns
 the `previous` and current `on` state, so a test script can boot through the logos and menus
 unlimited. Without `on` it only reports the state. Use it through `--call`; the MCP adapter does

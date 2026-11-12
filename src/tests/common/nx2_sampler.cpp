@@ -4,10 +4,12 @@
 #include <atomic>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json.hpp>
 
 #include <windows.h>
 
@@ -75,8 +77,27 @@ TEST_CASE("Nx2Sampler ends a stack walk at generated code", "[common][nx2_sample
     thread.join();
     RtlDeleteFunctionTable(functions);
     VirtualFree(memory, 0, MEM_RELEASE);
+    std::ifstream raw_input{out.string() + ".raw.json"};
+    REQUIRE(raw_input.good());
+    const auto raw = nlohmann::json::parse(raw_input);
+    CHECK(raw.at("format") == "nx2-samples-raw");
+    CHECK(raw.at("sample_count").get<size_t>() > 0);
+    CHECK(raw.at("sample_count") == raw.at("samples").size());
+    bool sampled_jit = false;
+    for (const auto& sample : raw.at("samples")) {
+        if (!sample.at("frames").empty()) {
+            const auto pc = std::stoull(sample.at("frames")[0].get<std::string>(), nullptr, 16);
+            if (pc >= base && pc < base + 0x1000) {
+                sampled_jit = true;
+                CHECK(sample.at("frames").size() == 1);
+            }
+        }
+    }
+    CHECK(sampled_jit);
+    raw_input.close();
     std::filesystem::remove(out);
     std::filesystem::remove(out.string() + ".folded");
+    std::filesystem::remove(out.string() + ".raw.json");
 
     CHECK(report.find("(jit)") != std::string::npos);
 }

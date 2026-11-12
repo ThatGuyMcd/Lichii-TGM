@@ -16,7 +16,8 @@ namespace Nx2Sampler {
 void StartFromEnvironment();
 
 /// Samples the named threads for `seconds` now (blocking), writes the report to `out` (and
-/// the folded stacks to `out`.folded) and returns the report.
+/// the folded stacks to `out`.folded and all PCs/module bases to `out`.raw.json) and returns
+/// the report. Raw output is serialized after every sampled thread has resumed.
 std::string Sample(const char* names, double seconds, const std::string& out);
 
 } // namespace Nx2Sampler

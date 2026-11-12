@@ -286,6 +286,8 @@ if (TARGET SDL3::SDL3)
     add_test(NAME sdl_window_state_tests COMMAND sdl_window_state_tests)
 endif()
 
+target_sources(tests PRIVATE common/nx2_sampler_data.cpp)
+
 if (WIN32 AND ARCHITECTURE_x86_64)
     target_sources(tests PRIVATE common/nx2_sampler.cpp)
     add_executable(event_wait_probe ../../tools/nx2/event_wait_probe.cpp)

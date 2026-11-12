@@ -486,6 +486,58 @@ TEST_CASE("Handle tables are read for every element at once", "[video_core][text
     }
 }
 
+TEST_CASE("Handle table storage bases keep all 64 bindings distinct",
+          "[video_core][texture_handles]") {
+    constexpr GPUVAddr cbuf = 0x1000;
+    constexpr std::array<u32, 4> bindings{1, 33, 31, 63};
+    constexpr u32 count = 4;
+    HandleTestMemory memory;
+    Shader::Info info;
+    for (u32 binding = 0; binding < Shader::Info::MAX_SSBOS; ++binding) {
+        info.storage_buffers_descriptors.push_back(
+            {.cbuf_index = 0, .cbuf_offset = binding * 8, .count = 1, .is_written = false});
+    }
+    std::array<u32, count> expected{};
+    using Op = Shader::HandleOp;
+    std::vector<u32> code;
+    for (const u32 binding : bindings) {
+        const GPUVAddr base = 0x10000 + binding * 0x100;
+        memory.words[cbuf + binding * 8] = static_cast<u32>(base);
+        memory.words[cbuf + binding * 8 + 4] = 0;
+        for (u32 element = 0; element < count; ++element) {
+            const u32 value = binding * binding * 0x10000 + element * (binding + 1);
+            memory.words[base + element * sizeof(u32)] = value;
+            expected[element] ^= value;
+        }
+        code.insert(code.end(), {static_cast<u32>(Op::Index), static_cast<u32>(Op::Immediate),
+                                  static_cast<u32>(sizeof(u32)), static_cast<u32>(Op::Mul),
+                                  static_cast<u32>(Op::Storage), binding});
+        if (binding != bindings.front()) {
+            code.push_back(static_cast<u32>(Op::Xor));
+        }
+    }
+    info.handle_programs.push_back(std::move(code));
+    u32 base_reads{};
+    const auto cbuf_address = [&](u32 index) -> GPUVAddr {
+        REQUIRE(index == 0);
+        ++base_reads;
+        return cbuf;
+    };
+    std::vector<u32> handles;
+    VideoCommon::EvaluateTextureHandles(info, 0, memory, cbuf_address, 0, count,
+                                        [&](u32 element, u32 handle) {
+                                            CHECK(element == handles.size());
+                                            handles.push_back(handle);
+                                        });
+    CHECK(handles == std::vector<u32>(expected.begin(), expected.end()));
+    // Bindings separated by 32 must not share a known-base bit; every element reuses all four.
+    CHECK(base_reads == bindings.size());
+    for (u32 element = 0; element < count; ++element) {
+        CHECK(VideoCommon::EvaluateTextureHandle(info, 0, memory, cbuf_address, 0, element) ==
+              expected[element]);
+    }
+}
+
 namespace {
 // A light loop's shadow map handle: each invocation reads a light index from its own list, at an
 // address only it knows, then the handle of that light from a table of 96-byte entries.

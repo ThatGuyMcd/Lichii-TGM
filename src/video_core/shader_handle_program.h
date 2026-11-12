@@ -105,7 +105,8 @@ void EvaluateTextureHandles(const Shader::Info& info, u32 program, Memory& gpu_m
     std::array<CbufWord, 16> words;
     size_t num_words{};
     std::array<GPUVAddr, Shader::Info::MAX_SSBOS> bases;
-    u32 known_bases{};
+    static_assert(Shader::Info::MAX_SSBOS <= 64);
+    u64 known_bases{};
     const auto read_cbuf = [&](u32 index, u32 offset) -> u32 {
         for (size_t word = 0; word < num_words; ++word) {
             if (words[word].index == index && words[word].offset == offset) {
@@ -123,10 +124,10 @@ void EvaluateTextureHandles(const Shader::Info& info, u32 program, Memory& gpu_m
         if (binding >= bases.size()) {
             return 0U;
         }
-        if ((known_bases & (1U << binding)) == 0) {
+        if ((known_bases & (u64{1} << binding)) == 0) {
             bases[binding] =
                 StorageBufferBase(info, binding, gpu_memory, cbuf_address, storage_alignment);
-            known_bases |= 1U << binding;
+            known_bases |= u64{1} << binding;
         }
         return bases[binding] != 0 ? gpu_memory.template Read<u32>(bases[binding] + offset) : 0U;
     };

@@ -286,12 +286,16 @@ struct KeepRuntime : Runtime {
     u64 CurrentTick() const noexcept {
         return tick;
     }
+    void OnBufferDeleted(const Buffer& buffer) {
+        deleted_addresses.push_back(buffer.CpuAddr());
+    }
     std::vector<std::vector<u8>> allocations;
     StreamUniformRef last{}, bound{};
     u64 tick{1};
     bool bound_cached{};
     u32 cached_binds{};
     std::vector<u8> cached_bytes;
+    std::vector<DAddr> deleted_addresses;
 };
 
 struct KeepPolicy : Policy {
@@ -299,6 +303,12 @@ struct KeepPolicy : Policy {
 };
 
 using KeepCache = VideoCommon::BufferCache<KeepPolicy>;
+
+struct PersistentPolicy : KeepPolicy {
+    static constexpr bool HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = true;
+};
+
+using PersistentCache = VideoCommon::BufferCache<PersistentPolicy>;
 
 } // namespace
 
@@ -318,11 +328,34 @@ struct BufferCacheTestAccess {
         cache.memory_tracker.ForEachUploadRange(address, size, [](auto, auto) {});
         return id;
     }
-    static Buffer& Get(Cache& cache, BufferId id) {
+    template <class C>
+    static Buffer& Get(C& cache, BufferId id) {
         return cache.slot_buffers[id];
     }
-    static Buffer& Get(KeepCache& cache, BufferId id) {
-        return cache.slot_buffers[id];
+    template <class C>
+    static BufferCacheChannelInfo& Channel(C& cache) {
+        return *cache.channel_state;
+    }
+    template <class C>
+    static void Delete(C& cache, BufferId id) {
+        cache.DeleteBuffer(id);
+    }
+    template <class C>
+    static u64 Deletions(const C& cache) {
+        return cache.buffer_deletions;
+    }
+    template <class C>
+    static Binding& VertexSlot(C& cache, u32 index) {
+        return cache.VertexBufferSlot(index);
+    }
+    template <class C>
+    static auto& Segments(C& cache, bool compute) {
+        return compute ? cache.compute_segments : cache.graphics_segments;
+    }
+    template <class C>
+    static void BindUniforms(C& cache, size_t stage) {
+        cache.UpdateUniformBuffers(stage);
+        cache.BindHostGraphicsUniformBuffers(stage);
     }
     static void Dirty(Cache& cache, DAddr address, u64 size) {
         cache.memory_tracker.MarkRegionAsGpuModified(address, size);
@@ -545,6 +578,23 @@ private:
 };
 
 using Fixture = BasicFixture<Runtime, Cache>;
+
+struct ChannelDeletionFixture : BasicFixture<KeepRuntime, PersistentCache> {
+    ChannelDeletionFixture() {
+        std::scoped_lock lock{cache->mutex};
+        for (size_t id = 0; id < states.size(); ++id) {
+            auto& state = states[id];
+            state = std::make_unique<Tegra::Control::ChannelState>(static_cast<s32>(id));
+            state->memory_manager = &*memory;
+            state->payload.emplace(system, *memory, *state);
+            cache->CreateChannel(*state);
+        }
+    }
+    ~ChannelDeletionFixture() {
+        cache.reset(); // The cache's channels refer to states' engine payloads.
+    }
+    std::array<std::unique_ptr<Tegra::Control::ChannelState>, 3> states;
+};
 
 void SetEnv(const char* name, const char* value) {
 #ifdef _WIN32
@@ -2536,4 +2586,108 @@ TEST_CASE("Claimed CPU writes keep their bytes when an earlier one downloads the
     REQUIRE(f.bytes[0x10800] == 0xbb);
     REQUIRE(f.bytes[0x1080f] == 0xbb);
     REQUIRE(f.bytes[0x10810] == 0x12);
+}
+
+TEST_CASE("Deleted buffer slots are scrubbed from every active channel before reuse",
+          "[buffer_ports]") {
+    ChannelDeletionFixture f;
+    std::scoped_lock lock{f.cache->mutex};
+    const auto deleted = Access::Add(*f.cache, 0x10000, 0x10000);
+    const auto unrelated = Access::Add(*f.cache, 0x20000, 0x10000);
+    const VideoCommon::Binding survivor{
+        .device_addr = 0x20100, .size = 0x100, .buffer_id = unrelated};
+    std::memset(f.bytes, 0x44, 0x10000);
+    std::ranges::fill(Access::Get(*f.cache, deleted).bytes, 0x44);
+    VideoCommon::UniformBufferSizes sizes{};
+    sizes[0][0] = 0x100;
+    const auto seed = [&](s32 id) -> VideoCommon::BufferCacheChannelInfo& {
+        f.cache->BindToChannel(id);
+        auto& channel = Access::Channel(*f.cache);
+        const VideoCommon::Binding binding{
+            .device_addr = 0x10800 + static_cast<u64>(id) * 0x100,
+            .size = 0x100,
+            .buffer_id = deleted};
+        channel.index_buffer = binding;
+        channel.vertex_buffers[2] = binding;
+        channel.uniform_buffers[0][0] = binding;
+        channel.uniform_buffers[4][3] = survivor;
+        channel.storage_buffers[0][0] = binding;
+        static_cast<VideoCommon::Binding&>(channel.texture_buffers[0][0]) = binding;
+        channel.transform_feedback_buffers[0] = binding;
+        channel.count_buffer_binding = binding;
+        channel.indirect_buffer_binding = binding;
+        channel.compute_uniform_buffers[0] = binding;
+        channel.compute_storage_buffers[0] = binding;
+        static_cast<VideoCommon::Binding&>(channel.compute_texture_buffers[0]) = binding;
+        channel.enabled_uniform_buffer_masks[0] = 1;
+        channel.uniform_buffer_sizes = &sizes;
+        channel.uniform_buffer_skip_cache_size = 0;
+        channel.dirty_uniform_buffers.fill(0);
+        channel.uniform_buffer_binding_sizes[0][0] = sizes[0][0];
+        channel.maxwell3d.dirty.flags.reset();
+        return channel;
+    };
+    auto& current = seed(0);
+    auto& other = seed(1);
+    auto& retired = seed(2);
+    f.cache->EraseChannel(2);
+    f.cache->BindToChannel(0);
+    Access::VertexSlot(*f.cache, 2) = current.vertex_buffers[2];
+    for (const bool compute : {false, true}) {
+        auto& segments = Access::Segments(*f.cache, compute);
+        segments.push_back({deleted, 0x10800, 0x100});
+        segments.push_back({unrelated, 0x20100, 0x100});
+    }
+
+    Access::Delete(*f.cache, deleted);
+    CHECK(Access::Deletions(*f.cache) == 1);
+    CHECK(f.runtime.deleted_addresses == std::vector<DAddr>{0x10000});
+    for (const auto* channel : {&current, &other}) {
+        CHECK_FALSE(channel->index_buffer.buffer_id);
+        CHECK_FALSE(channel->vertex_buffers[2].buffer_id);
+        CHECK_FALSE(channel->uniform_buffers[0][0].buffer_id);
+        CHECK_FALSE(channel->storage_buffers[0][0].buffer_id);
+        CHECK_FALSE(channel->texture_buffers[0][0].buffer_id);
+        CHECK_FALSE(channel->transform_feedback_buffers[0].buffer_id);
+        CHECK_FALSE(channel->count_buffer_binding.buffer_id);
+        CHECK_FALSE(channel->indirect_buffer_binding.buffer_id);
+        CHECK_FALSE(channel->compute_uniform_buffers[0].buffer_id);
+        CHECK_FALSE(channel->compute_storage_buffers[0].buffer_id);
+        CHECK_FALSE(channel->compute_texture_buffers[0].buffer_id);
+        CHECK(channel->uniform_buffers[4][3].buffer_id == unrelated);
+        CHECK(channel->uniform_buffers[4][3].device_addr == survivor.device_addr);
+        CHECK(channel->has_deleted_buffers);
+        CHECK(channel->maxwell3d.dirty.flags[VideoCommon::Dirty::IndexBuffer]);
+        CHECK(channel->maxwell3d.dirty.flags[VideoCommon::Dirty::VertexBuffers]);
+        CHECK(channel->maxwell3d.dirty.flags[VideoCommon::Dirty::VertexBuffer0 + 2]);
+        for (size_t stage = 0; stage < channel->dirty_uniform_buffers.size(); ++stage) {
+            CHECK(channel->dirty_uniform_buffers[stage] == ~u32{0});
+            for (const u32 size : channel->uniform_buffer_binding_sizes[stage]) {
+                CHECK(size == 0);
+            }
+        }
+    }
+    // Only the bound channel owns the current host vertex slots; erased channels are untouched.
+    CHECK(Access::VertexSlot(*f.cache, 2).device_addr == current.vertex_buffers[2].device_addr);
+    CHECK_FALSE(Access::VertexSlot(*f.cache, 2).buffer_id);
+    CHECK(retired.uniform_buffers[0][0].buffer_id == deleted);
+    CHECK_FALSE(retired.has_deleted_buffers);
+    CHECK_FALSE(retired.maxwell3d.dirty.flags[VideoCommon::Dirty::VertexBuffer0 + 2]);
+    for (const bool compute : {false, true}) {
+        const auto& segments = Access::Segments(*f.cache, compute);
+        CHECK_FALSE(segments[0].buffer_id);
+        CHECK(segments[1].buffer_id == unrelated);
+    }
+
+    const auto reused = Access::Add(*f.cache, 0x30000, 0x10000);
+    REQUIRE(reused == deleted);
+    std::ranges::fill(Access::Get(*f.cache, reused).bytes, 0xee);
+    f.cache->BindToChannel(1);
+    Access::BindUniforms(*f.cache, 0);
+    CHECK(other.uniform_buffers[0][0].buffer_id != reused);
+    CHECK(Access::Get(*f.cache, other.uniform_buffers[0][0].buffer_id)
+              .IsInBounds(other.uniform_buffers[0][0].device_addr, sizes[0][0]));
+    REQUIRE(f.runtime.bound_cached);
+    CHECK(f.runtime.cached_bytes == std::vector<u8>(0x100, 0x44));
+    CHECK(Access::Get(*f.cache, reused).bytes.front() == 0xee);
 }

@@ -33,6 +33,12 @@ settings, aspect profiles and explicit shader preparation option.
   uniforms conservatively. This is a focused adaptation of
   [Lichii #1161](https://github.com/zortos293/Lichii/pull/1161), preserving this
   fork's native pipeline keys and motion handling.
+- Tracks all 64 storage-buffer bases when reading texture-handle tables, so
+  bindings above 31 cannot collide with lower slots. This is the narrow mask
+  correction from [Lichii #1485](https://github.com/zortos293/Lichii/pull/1485).
+- Clears deleted-buffer references from every active channel before a slot can
+  be reused, preserving each channel's dirty state and the fork's uniform/memory
+  handling. Adapted from [Lichii #1459](https://github.com/zortos293/Lichii/pull/1459).
 
 ## Settings and data
 

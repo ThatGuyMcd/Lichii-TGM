@@ -562,6 +562,10 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
             FastDraw::DeviceSpans& spans = handle_spans[stage][slot];
             spans.Update(*gpu_memory, cbuf.address, cbuf.size);
             if (delta.Reaches(cbuf.address, cbuf.size, spans)) {
+                if ((VideoCommon::Nx2Profile::Enabled() || FastDraw::VerifyEnabled()) &&
+                    delta.diagnostic_has_data && delta.diagnostic_all_known_equal) {
+                    ++FastDraw::t_constant_write_diagnostics.handle_data_equal_only;
+                }
                 return full(FullDraw::HandleData);
             }
         }
@@ -639,6 +643,7 @@ void RasterizerVulkan::ReportFastDraws() {
     FastDrawStats& stats = fast_draw_stats;
     if (stats.window_start == 0) {
         stats.window_start = now;
+        VideoCommon::Nx2FastDraw::t_constant_write_diagnostics = {};
         return;
     }
     if (now - stats.window_start < 10'000'000'000ULL) {
@@ -647,6 +652,7 @@ void RasterizerVulkan::ReportFastDraws() {
     // Logged only with EDEN_NX2_GPU_PROFILE or EDEN_NX2_FAST_DRAW_VERIFY.
     if (!VideoCommon::Nx2Profile::Enabled() && !fast_draw_verify) {
         stats = FastDrawStats{.window_start = now};
+        VideoCommon::Nx2FastDraw::t_constant_write_diagnostics = {};
         return;
     }
     const double seconds = static_cast<double>(now - stats.window_start) / 1e9;
@@ -714,6 +720,15 @@ void RasterizerVulkan::ReportFastDraws() {
                  static_cast<double>(stats.binding_mismatches) / seconds, stats.verified,
                  stats.pipeline_mismatches, stats.view_mismatches, stats.binding_mismatches);
     }
+    const auto cb = std::exchange(VideoCommon::Nx2FastDraw::t_constant_write_diagnostics, {});
+    LOG_INFO(Render_Vulkan,
+             "CB write diagnostics: window_s={:.3f} writes={} bytes={} equal_writes={} "
+             "equal_bytes={} changed_writes={} changed_bytes={} unavailable={} cross_page={} "
+             "sparse={} may_gpu_written={} non_native={} pending_report={} handle_data_equal_only={} "
+             "(guest equality only; handle rejection upper bound, not write-elision proof)",
+             seconds, cb.writes, cb.bytes, cb.equal_writes, cb.equal_bytes, cb.changed_writes,
+             cb.changed_bytes, cb.unavailable, cb.cross_page, cb.sparse, cb.may_gpu_written,
+             cb.non_native, cb.pending_report, cb.handle_data_equal_only);
     std::string breaks;
     for (size_t reason = 0; reason < stats.breaks.size(); ++reason) {
         if (stats.breaks[reason] != 0) {

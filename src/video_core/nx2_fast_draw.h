@@ -88,6 +88,30 @@ inline void SetEnabledForTest(bool on) {
     return verify;
 }
 
+/// Drawing-thread diagnostics only. These observations never permit a skipped write or reuse.
+struct ConstantWriteDiagnostics {
+    u64 writes{};
+    u64 bytes{};
+    u64 equal_writes{};
+    u64 equal_bytes{};
+    u64 changed_writes{};
+    u64 changed_bytes{};
+    u64 unavailable{};
+    u64 cross_page{};
+    u64 sparse{};
+    u64 may_gpu_written{};
+    u64 non_native{};
+    u64 pending_report{};
+    u64 handle_data_equal_only{};
+};
+
+inline thread_local ConstantWriteDiagnostics t_constant_write_diagnostics;
+
+/// Called only with existing fast-draw verification/profiling enabled, immediately before an
+/// actual CB write. True means guest bytes compared equal; it is not ownership/elision proof.
+[[nodiscard]] bool DiagnoseConstantWrite(const Tegra::MemoryManager& memory, GPUVAddr begin,
+                                         const void* words, u64 bytes);
+
 inline std::atomic<u64> g_serial{1};
 /// The last break's reason and, for Register and Method, its 3D method (diagnostics).
 inline std::atomic<u32> g_last_break{};
@@ -138,6 +162,10 @@ struct Delta {
     u32 num_device_writes{};
     /// A widened write range is conservative; restream uniforms instead of keeping old binds.
     bool no_uniform_keeps{};
+    /// Diagnostics only: unknown reports, changed data and unavailable comparisons clear this.
+    /// Neither field participates in Empty/Reaches or in any rendering decision.
+    bool diagnostic_has_data{};
+    bool diagnostic_all_known_equal{true};
 
     [[nodiscard]] bool Empty() const {
         return num_writes == 0 && (binds[0] | binds[1] | binds[2] | binds[3] | binds[4]) == 0;
@@ -205,21 +233,25 @@ inline void NoteBind(size_t stage, u32 slot) {
 }
 
 /// Inline constant buffer data written to GPU addresses [begin, end).
-inline void NoteConstantData(GPUVAddr begin, GPUVAddr end) {
+inline void NoteConstantData(GPUVAddr begin, GPUVAddr end, bool diagnostic_equal = false) {
     if (!Enabled()) {
         return;
     }
     Delta& delta = g_delta;
+    delta.diagnostic_has_data = true;
+    delta.diagnostic_all_known_equal &= diagnostic_equal;
     delta.no_uniform_keeps |=
         AppendRange(delta.write_begin, delta.write_end, delta.num_writes, begin, end);
 }
 
 /// The device addresses [begin, end) that inline constant buffer data landed on.
-inline void NoteDeviceData(DAddr begin, DAddr end) {
+inline void NoteDeviceData(DAddr begin, DAddr end, bool diagnostic_equal = false) {
     if (!Enabled()) {
         return;
     }
     Delta& delta = g_delta;
+    delta.diagnostic_has_data = true;
+    delta.diagnostic_all_known_equal &= diagnostic_equal;
     delta.no_uniform_keeps |=
         AppendRange(delta.device_begin, delta.device_end, delta.num_device_writes, begin, end);
 }

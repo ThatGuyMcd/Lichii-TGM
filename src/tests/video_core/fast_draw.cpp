@@ -1,16 +1,28 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <memory>
+#include <optional>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
+#include "common/page_table.h"
 #include "core/core.h"
 #include "core/device_memory.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/kernel.h"
+#include "core/memory.h"
 #include "tests/core/system_test_context.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
 #include "video_core/nx2_fast_draw.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 
@@ -34,6 +46,11 @@ public:
 class SerialRasterizer final : public VideoCore::RasterizerInterface {
 public:
     std::vector<u64> draws;
+    std::vector<std::pair<DAddr, std::size_t>> invalidations;
+
+    void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override {
+        invalidations.insert(invalidations.end(), sequences.begin(), sequences.end());
+    }
 
     void Draw(bool, u32) override { draws.push_back(FastDraw::Serial()); }
     void DrawTexture() override {}
@@ -286,7 +303,241 @@ struct DeltaFixture : FastDrawFixture {
     }
 };
 
+/// Production engine and memory manager, with real mapped guest bytes and observable cached
+/// write invalidations. No renderer or guest game is launched.
+struct ConstantDiagnosticFixture : DeltaFixture {
+    static constexpr GPUVAddr Gpu = 0x800000;
+    static constexpr DAddr Device = 0x10000;
+    static constexpr VAddr Cpu = 0x4000;
+
+    ConstantDiagnosticFixture() {
+        system.Initialize();
+        process = std::make_unique<Kernel::KProcess>(system.Kernel());
+        auto& table = process->GetPageTable().GetImpl();
+        table.Resize(20, 12);
+        backing = physical.GetPointerFromRaw<u8>(Device);
+        std::memset(backing, 0, 0x2000);
+        for (u64 page = 0; page < 2; ++page) {
+            const VAddr address = Cpu + page * 0x1000;
+            table.entries.GetAndFault(address >> 12)
+                .Store(false, Common::PageType::Memory, 1,
+                       reinterpret_cast<uintptr_t>(backing + page * 0x1000) - address);
+        }
+        process->GetMemory().SetCurrentPageTable(*process);
+        asid = device_memory.RegisterProcess(&process->GetMemory());
+        device_memory.BindInterface(&rasterizer);
+        device_memory.Map(Device, Cpu, 0x2000, asid);
+        memory.BindRasterizer(&rasterizer);
+        memory.Map(Gpu, Device, 0x2000, Tegra::PTEKind::PITCH, false);
+        maxwell3d.fast_maxwell3d = true;
+    }
+    ~ConstantDiagnosticFixture() {
+        device_memory.Unmap(Device, 0x2000);
+        device_memory.UnregisterProcess(asid);
+        system.Kernel().UnregisterKernelObject(process.get());
+    }
+    bool Invalidated(DAddr begin, u64 bytes) const {
+        return std::ranges::any_of(rasterizer.invalidations, [&](const auto& span) {
+            return span.first <= begin && begin + bytes <= span.first + span.second;
+        });
+    }
+
+    std::unique_ptr<Kernel::KProcess> process;
+    Core::Asid asid{};
+    u8* backing{};
+};
+
+struct ScopedConstantDiagnostics {
+    explicit ScopedConstantDiagnostics(bool enabled)
+        : profile{VideoCommon::Nx2Profile::g_enabled},
+          ampere{Tegra::g_nx2_ampere.load()}, sparse_low{Tegra::g_nx2_sparse_low.load()},
+          sparse_high{Tegra::g_nx2_sparse_high.load()},
+          written{Tegra::g_nx2_gpu_written_pages[0].load()},
+          counts{FastDraw::t_constant_write_diagnostics} {
+        VideoCommon::Nx2Profile::g_enabled = enabled;
+        Tegra::g_nx2_ampere = true;
+        Tegra::g_nx2_sparse_low = ~u64{0};
+        Tegra::g_nx2_sparse_high = 0;
+        Tegra::g_nx2_gpu_written_pages[0] = 0;
+        FastDraw::t_constant_write_diagnostics = {};
+    }
+    ~ScopedConstantDiagnostics() {
+        VideoCommon::Nx2Profile::g_enabled = profile;
+        Tegra::g_nx2_ampere = ampere;
+        Tegra::g_nx2_sparse_low = sparse_low;
+        Tegra::g_nx2_sparse_high = sparse_high;
+        Tegra::g_nx2_gpu_written_pages[0] = written;
+        FastDraw::t_constant_write_diagnostics = counts;
+    }
+    bool profile, ampere;
+    u64 sparse_low, sparse_high, written;
+    FastDraw::ConstantWriteDiagnostics counts;
+};
+
 } // namespace
+
+TEST_CASE("CB diagnostics preserve equal and changed engine writes and invalidations",
+          "[fast_draw][cb_diagnostics]") {
+    const bool diagnose = GENERATE(false, true);
+    const bool word_batch = GENERATE(false, true);
+    if (!diagnose && FastDraw::VerifyEnabled()) {
+        SKIP("The process-wide verification environment keeps diagnostics enabled");
+    }
+    ConstantDiagnosticFixture f;
+    const ScopedConstantDiagnostics diagnostics{diagnose};
+    constexpr u32 offset = 0x40;
+    constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
+    const std::array<u32, 2> methods{cb_data, cb_data + 1};
+    const std::array<u32, 2> original{0x11223344, 0x55667788};
+    const std::array<u32, 2> changed{0xabcdef01, 0x23456789};
+    std::memcpy(f.backing + offset, original.data(), sizeof(original));
+    f.SetConstantBuffer(f.Gpu, 0x2000, offset);
+    const auto write = [&](const auto& values) {
+        if (word_batch) {
+            f.maxwell3d.CallConstBufferWords(f.system, methods.data(), values.data(), 2);
+        } else {
+            f.maxwell3d.CallMultiMethod(f.system, cb_data, values.data(), 2, 2);
+        }
+    };
+    const u64 serial = FastDraw::Serial();
+    FastDraw::g_delta = {};
+    write(original);
+    CHECK(std::memcmp(f.backing + offset, original.data(), sizeof(original)) == 0);
+    CHECK(f.Reg(MAXWELL3D_REG_INDEX(const_buffer.offset)) == offset + sizeof(original));
+    CHECK(FastDraw::Serial() == serial);
+    REQUIRE(FastDraw::g_delta.num_writes == 1);
+    CHECK(FastDraw::g_delta.write_begin[0] == f.Gpu + offset);
+    CHECK(FastDraw::g_delta.write_end[0] == f.Gpu + offset + sizeof(original));
+    REQUIRE(FastDraw::g_delta.num_device_writes == 1);
+    CHECK(FastDraw::g_delta.device_begin[0] == f.Device + offset);
+    CHECK(FastDraw::g_delta.device_end[0] == f.Device + offset + sizeof(original));
+    CHECK(FastDraw::g_delta.diagnostic_has_data);
+    CHECK(FastDraw::g_delta.diagnostic_all_known_equal == diagnose);
+    CHECK(FastDraw::t_constant_write_diagnostics.writes == (diagnose ? 1 : 0));
+    CHECK(FastDraw::t_constant_write_diagnostics.equal_writes == (diagnose ? 1 : 0));
+    CHECK(FastDraw::t_constant_write_diagnostics.equal_bytes == (diagnose ? sizeof(original) : 0));
+    f.memory.FlushCaching();
+    CHECK(f.Invalidated(f.Device + offset, sizeof(original)));
+
+    f.rasterizer.invalidations.clear();
+    f.SetConstantBuffer(f.Gpu, 0x2000, offset);
+    FastDraw::g_delta = {};
+    write(changed);
+    CHECK(std::memcmp(f.backing + offset, changed.data(), sizeof(changed)) == 0);
+    CHECK(f.Reg(MAXWELL3D_REG_INDEX(const_buffer.offset)) == offset + sizeof(changed));
+    CHECK(FastDraw::Serial() == serial);
+    CHECK(FastDraw::g_delta.num_writes == 1);
+    CHECK(FastDraw::g_delta.num_device_writes == 1);
+    CHECK_FALSE(FastDraw::g_delta.diagnostic_all_known_equal);
+    CHECK(FastDraw::t_constant_write_diagnostics.writes == (diagnose ? 2 : 0));
+    CHECK(FastDraw::t_constant_write_diagnostics.changed_writes == (diagnose ? 1 : 0));
+    CHECK(FastDraw::t_constant_write_diagnostics.changed_bytes == (diagnose ? sizeof(changed) : 0));
+    f.memory.FlushCaching();
+    CHECK(f.Invalidated(f.Device + offset, sizeof(changed)));
+}
+
+TEST_CASE("CB diagnostics classify unsupported writes without changing engine effects",
+          "[fast_draw][cb_diagnostics]") {
+    // Unmapped, cross-page, sparse, ever GPU-written, non-native, pending report.
+    const u32 kind = GENERATE(0, 1, 2, 3, 4, 5);
+    CAPTURE(kind);
+    ConstantDiagnosticFixture f;
+    const ScopedConstantDiagnostics diagnostics{true};
+    const GPUVAddr address = kind == 0 ? f.Gpu + 0x4000 : f.Gpu;
+    const u32 offset = kind == 1 ? 0xffc : 0x40;
+    const std::array<u32, 2> words{0x12345678, 0xabcdef01};
+    f.SetConstantBuffer(address, 0x2000, offset);
+    if (kind == 2) {
+        Tegra::g_nx2_sparse_low = address + offset;
+        Tegra::g_nx2_sparse_high = address + offset + sizeof(words);
+    }
+    if (kind == 3) {
+        Tegra::Nx2MarkGpuWritten(f.Device + offset, sizeof(words));
+    }
+    if (kind == 4) {
+        Tegra::g_nx2_ampere = false;
+    }
+    std::optional<Tegra::Nx2AsyncReport> report;
+    if (kind == 5) {
+        // A 16-byte report beginning in the preceding slot can overlap this CB range.
+        report.emplace(f.Device + offset - 8);
+        report->Issue();
+    }
+    FastDraw::g_delta = {};
+    const u64 serial = FastDraw::Serial();
+    f.maxwell3d.CallMultiMethod(f.system, MAXWELL3D_REG_INDEX(const_buffer.buffer),
+                               words.data(), 2, 2);
+    const auto& counts = FastDraw::t_constant_write_diagnostics;
+    CHECK(counts.writes == 1);
+    CHECK(counts.bytes == sizeof(words));
+    CHECK(counts.unavailable == (kind == 0 ? 1 : 0));
+    CHECK(counts.cross_page == (kind == 1 ? 1 : 0));
+    CHECK(counts.sparse == (kind == 2 ? 1 : 0));
+    CHECK(counts.may_gpu_written == (kind == 3 ? 1 : 0));
+    CHECK(counts.non_native == (kind == 4 ? 1 : 0));
+    CHECK(counts.pending_report == (kind == 5 ? 1 : 0));
+    CHECK(counts.equal_writes == 0);
+    CHECK(counts.changed_writes == 0);
+    CHECK(FastDraw::Serial() == serial);
+    CHECK_FALSE(FastDraw::g_delta.diagnostic_all_known_equal);
+    CHECK_FALSE(FastDraw::g_delta.Empty());
+    CHECK(f.Reg(MAXWELL3D_REG_INDEX(const_buffer.offset)) == offset + sizeof(words));
+    if (kind != 0) {
+        CHECK(std::memcmp(f.backing + offset, words.data(), sizeof(words)) == 0);
+        f.memory.FlushCaching();
+        CHECK(f.Invalidated(f.Device + offset, sizeof(words)));
+    }
+}
+
+TEST_CASE("Equal CB diagnostics retain direct and aliased header serial breaks",
+          "[fast_draw][cb_diagnostics]") {
+    const bool alias = GENERATE(false, true);
+    ConstantDiagnosticFixture f;
+    const ScopedConstantDiagnostics diagnostics{true};
+    constexpr GPUVAddr alias_address = f.Gpu + 0x100000;
+    if (alias) {
+        f.memory.Map(alias_address, f.Device, 0x1000, Tegra::PTEKind::PITCH, false);
+    }
+    f.Write(MAXWELL3D_REG_INDEX(tex_header.address_high), 0);
+    f.Write(MAXWELL3D_REG_INDEX(tex_header.address_low), static_cast<u32>(f.Gpu));
+    f.Write(MAXWELL3D_REG_INDEX(tex_header.limit), 7);
+    f.SetConstantBuffer(alias ? alias_address : f.Gpu, 0x1000, 0x20);
+    const std::array<u32, 2> equal_words{};
+    FastDraw::g_delta = {};
+    const u64 serial = FastDraw::Serial();
+    f.maxwell3d.CallMultiMethod(f.system, MAXWELL3D_REG_INDEX(const_buffer.buffer),
+                               equal_words.data(), 2, 2);
+    CHECK(FastDraw::t_constant_write_diagnostics.equal_writes == 1);
+    CHECK(FastDraw::Serial() != serial);
+    CHECK(FastDraw::g_delta.num_writes == (alias ? 1 : 0));
+    CHECK(std::memcmp(f.backing + 0x20, equal_words.data(), sizeof(equal_words)) == 0);
+    f.memory.FlushCaching();
+    CHECK(f.Invalidated(f.Device + 0x20, sizeof(equal_words)));
+}
+
+TEST_CASE("Unknown report stores clear only the CB diagnostic equality marker",
+          "[fast_draw][cb_diagnostics]") {
+    ConstantDiagnosticFixture f;
+    const ScopedConstantDiagnostics diagnostics{true};
+    f.SetConstantBuffer(f.Gpu, 0x1000, 0x40);
+    FastDraw::g_delta = {};
+    f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), 0);
+    REQUIRE(FastDraw::g_delta.diagnostic_all_known_equal);
+    const u64 serial = FastDraw::Serial();
+    f.Write(MAXWELL3D_REG_INDEX(report_semaphore.address_high), 0);
+    f.Write(MAXWELL3D_REG_INDEX(report_semaphore.address_low), static_cast<u32>(f.Gpu + 0x100));
+    f.Write(MAXWELL3D_REG_INDEX(report_semaphore.payload), 1);
+    f.Write(MAXWELL3D_REG_INDEX(report_semaphore.query), 0);
+    CHECK(FastDraw::Serial() == serial);
+    CHECK_FALSE(FastDraw::g_delta.diagnostic_all_known_equal);
+    CHECK(FastDraw::t_constant_write_diagnostics.writes == 1);
+    REQUIRE(FastDraw::g_delta.num_writes == 2);
+    CHECK(FastDraw::g_delta.write_begin[1] == f.Gpu + 0x100);
+    CHECK(FastDraw::g_delta.write_end[1] == f.Gpu + 0x110);
+    FastDraw::DeviceSpans spans;
+    spans.Update(f.memory, f.Gpu + 0x100, 0x10);
+    CHECK(FastDraw::g_delta.Reaches(f.Gpu + 0x100, 0x10, spans));
+}
 
 TEST_CASE("Fast draw records bind and constant data changes, keeps index buffer changes light",
           "[fast_draw]") {

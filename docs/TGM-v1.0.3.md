@@ -81,8 +81,16 @@ commit `865afaa4f32f605850b0d1f8e10364b50dd38126`: fast-draw cost timing runs on
 when its diagnostic reports use it, and disabled profiling scopes retain a small
 inline check. Enabled profiling/stutter accounting is preserved, with regression
 coverage for nesting and GPU waits. Draw selection, reuse serials and memory/report
-ownership retain their existing behavior. The preceding candidate measured about
-30 native FPS in Castle Town; the new timing cleanup still requires measurement.
+ownership retain their existing behavior. Two 60-second Castle Town measurements
+of that timing cleanup returned 30.49 and 29.53 native game FPS with frame generation
+off. No useful boost was demonstrated. Camera, lighting and NPC differences prevent
+a causal percentage comparison with the original baseline.
+
+The next diagnostic candidate measures actual constant-buffer stores whose bytes
+already match guest memory and whether those stores block draw reuse. Every memory
+write, delta notification, header/alias check and cache invalidation remains in place.
+Equal guest bytes alone do not establish safe write elision. These counters guide
+the next optimization; they are not a performance improvement themselves.
 
 Castle Town checks exposed an inherited ordering issue in streamed uniform reuse:
 reuse ran before the current cached/streamed binding policy was evaluated. The
@@ -91,8 +99,9 @@ before attempting reuse. Regression cases cover a changed cache preference,
 adjacent GPU writes on the same page and overlapping GPU writes whose current
 buffer data differs from guest memory, in normal and verification modes. The
 observed runtime messages reported policy changes with matching bytes; they did
-not establish visible corruption. The corrected build still requires gameplay
-comparisons and performance measurements.
+not establish visible corruption. The corrected build and timing cleanup passed
+sampled Castle Town draw, uniform-buffer and descriptor comparisons with positive
+checks and zero mismatches. Broader gameplay coverage remains separate.
 
 Recent device-loss reports still need a controlled gameplay comparison. A Windows
 GPU engine timeout means the display engine stopped responding; it does not by

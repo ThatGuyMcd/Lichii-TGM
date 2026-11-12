@@ -760,7 +760,11 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods,
     }
     const VideoCommon::Nx2Profile::FineScope upload_scope{VideoCommon::Nx2Profile::Zone::CbUpload};
     if (VideoCommon::Nx2FastDraw::Enabled()) {
-        NoteFastDrawConstantData(address + offset, address + offset + bytes);
+        const bool diagnose = VideoCommon::Nx2Profile::Enabled() ||
+                              VideoCommon::Nx2FastDraw::VerifyEnabled();
+        const bool equal = diagnose && VideoCommon::Nx2FastDraw::DiagnoseConstantWrite(
+                                           memory_manager, address + offset, values.data(), bytes);
+        NoteFastDrawConstantData(address + offset, address + offset + bytes, equal);
     }
     memory_manager.WriteWordsCached(address + offset, values.data(), count);
     regs.const_buffer.offset += static_cast<u32>(bytes);
@@ -1100,7 +1104,7 @@ void Maxwell3D::ProcessCBBind(size_t stage_index) {
     rasterizer->BindGraphicsUniformBuffer(stage_index, bind_data.shader_slot, gpu_addr, size);
 }
 
-void Maxwell3D::NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end) {
+void Maxwell3D::NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end, bool diagnostic_equal) {
     namespace FastDraw = VideoCommon::Nx2FastDraw;
     // Texture and sampler headers are read when image views are resolved, which delta draws skip.
     constexpr u64 HeaderSize = 0x20;
@@ -1117,7 +1121,7 @@ void Maxwell3D::NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end) {
         FastDraw::Break(FastDraw::Reason::TextureHeaders);
         return;
     }
-    FastDraw::NoteConstantData(begin, end);
+    FastDraw::NoteConstantData(begin, end, diagnostic_equal);
     // The same device memory can be mapped at other GPU addresses: compare where it lands.
     fast_draw_header_spans.Update(memory_manager, tic, tic_size);
     fast_draw_sampler_spans.Update(memory_manager, tsc, tsc_size);
@@ -1131,7 +1135,7 @@ void Maxwell3D::NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end) {
                 FastDraw::Break(FastDraw::Reason::TextureHeaders);
                 return;
             }
-            FastDraw::NoteDeviceData(*device, device_end);
+            FastDraw::NoteDeviceData(*device, device_end, diagnostic_equal);
         }
         page = page_end;
     }
@@ -1152,7 +1156,11 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
     if (write_size != 0) {
         const GPUVAddr address{buffer_address + regs.const_buffer.offset};
         if (VideoCommon::Nx2FastDraw::Enabled()) {
-            NoteFastDrawConstantData(address, address + write_size);
+            const bool diagnose = VideoCommon::Nx2Profile::Enabled() ||
+                                  VideoCommon::Nx2FastDraw::VerifyEnabled();
+            const bool equal = diagnose && VideoCommon::Nx2FastDraw::DiagnoseConstantWrite(
+                                               memory_manager, address, start_base, write_size);
+            NoteFastDrawConstantData(address, address + write_size, equal);
         }
         memory_manager.WriteBlockCached(address, start_base, write_size);
     }

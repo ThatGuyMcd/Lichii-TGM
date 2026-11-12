@@ -184,18 +184,18 @@ TEST_CASE("Dynamic vertex formats preserve draw reuse only within shader input t
     using State = Vulkan::FixedPipelineState;
     constexpr u32 format = MAXWELL3D_REG_INDEX(vertex_attrib_format);
     Attribute attribute{};
-    attribute.constant = 0;
-    attribute.type = Attribute::Type::Float;
-    attribute.size = Attribute::Size::Size_R32;
+    attribute.constant.Assign(0U);
+    attribute.type.Assign(Attribute::Type::Float);
+    attribute.size.Assign(Attribute::Size::Size_R32);
     f.Write(format, attribute.hex);
     f.DrawArrays(0, 3);
     const u64 types = State::DynamicAttributeTypes(f.maxwell3d.regs);
 
     constexpr u32 stream = MAXWELL3D_REG_INDEX(vertex_streams);
     f.Write(stream, f.Reg(stream) ^ 1);
-    attribute.type = Attribute::Type::UNorm;
-    attribute.size = Attribute::Size::Size_R8_G8_B8_A8;
-    attribute.offset = 16;
+    attribute.type.Assign(Attribute::Type::UNorm);
+    attribute.size.Assign(Attribute::Size::Size_R8_G8_B8_A8);
+    attribute.offset.Assign(16U);
     f.Write(format, attribute.hex);
     f.DrawArrays(0, 3);
     CHECK(f.Reusable());
@@ -203,15 +203,15 @@ TEST_CASE("Dynamic vertex formats preserve draw reuse only within shader input t
     CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, false, types));
 
     // The engine keeps this write light; the rasterizer must reject its changed shader input.
-    attribute.type = Attribute::Type::UInt;
+    attribute.type.Assign(Attribute::Type::UInt);
     f.Write(format, attribute.hex);
     f.DrawArrays(0, 3);
     CHECK(f.Reusable());
     CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, types));
-    attribute.type = Attribute::Type::SInt;
+    attribute.type.Assign(Attribute::Type::SInt);
     f.Write(format, attribute.hex);
     CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, types));
-    attribute.constant = 1;
+    attribute.constant.Assign(1U);
     f.Write(format, attribute.hex);
     CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, types));
 }
@@ -222,18 +222,18 @@ TEST_CASE("Dynamic vertex validation uses the raw draw snapshot before native ke
     using Attribute = Maxwell3D::Regs::VertexAttribute;
     using State = Vulkan::FixedPipelineState;
     auto& attribute = f.maxwell3d.regs.vertex_attrib_format[17];
-    attribute.constant = 0;
-    attribute.type = Attribute::Type::Float;
+    attribute.constant.Assign(0U);
+    attribute.type.Assign(Attribute::Type::Float);
     const u64 raw_types = State::DynamicAttributeTypes(f.maxwell3d.regs);
     State canonical{};
-    canonical.dynamic_vertex_input = 1;
+    canonical.dynamic_vertex_input.Assign(1U);
     canonical.attribute_types = raw_types;
     canonical.CanonicalizeNative(1); // Native header does not list attribute 17.
     REQUIRE(canonical.attribute_types != raw_types);
     CHECK(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, raw_types));
-    attribute.offset = attribute.offset.Value() + 4;
+    attribute.offset.Assign(attribute.offset.Value() + 4U);
     CHECK(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, raw_types));
-    attribute.type = Attribute::Type::UInt;
+    attribute.type.Assign(Attribute::Type::UInt);
     CHECK_FALSE(State::CanReuseDynamicVertexInput(f.maxwell3d.regs, true, raw_types));
 }
 

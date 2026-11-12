@@ -76,6 +76,14 @@ validation. Diagnostic tracing changes CPU command routing, so performance claim
 must use separate measurements with detailed profiling and frame generation off.
 Native 60 FPS and a twofold improvement have not been established.
 
+A further isolated candidate adapts the timing-only portion of Lichii PR1161
+commit `865afaa4f32f605850b0d1f8e10364b50dd38126`: fast-draw cost timing runs only
+when its diagnostic reports use it, and disabled profiling scopes retain a small
+inline check. Enabled profiling/stutter accounting is preserved, with regression
+coverage for nesting and GPU waits. Draw selection, reuse serials and memory/report
+ownership retain their existing behavior. The preceding candidate measured about
+30 native FPS in Castle Town; the new timing cleanup still requires measurement.
+
 Castle Town checks exposed an inherited ordering issue in streamed uniform reuse:
 reuse ran before the current cached/streamed binding policy was evaluated. The
 candidate now checks that policy and performs any existing native-bank refresh

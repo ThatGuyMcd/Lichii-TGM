@@ -863,7 +863,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         fast_draw_stats = {};
     }
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
-    const u64 fast_draw_start = fast_draw_on ? Profile::Now() : 0;
+    // ReportFastDraws consumes costs only in profiled or verification runs.
+    const bool fast_draw_timed = fast_draw_on && (Profile::Enabled() || fast_draw_verify);
+    const u64 fast_draw_start = fast_draw_timed ? Profile::Now() : 0;
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
         FlushWork();
@@ -1415,6 +1417,8 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     }
     if (fast_draw_on) {
         NoteResolvedDraw(pipeline, is_indexed, is_indirect, draw_serial, draw_map_serial);
+    }
+    if (fast_draw_timed) {
         const size_t index = static_cast<size_t>(path);
         fast_draw_stats.prepare_ns[index] += Profile::Now() - fast_draw_start;
         ++fast_draw_stats.prepare_draws[index];

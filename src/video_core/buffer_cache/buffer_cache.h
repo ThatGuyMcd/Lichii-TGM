@@ -2876,32 +2876,6 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     const u32 size = (std::min)(binding.size, (*channel_state->uniform_buffer_sizes)[stage][index]);
     Buffer& buffer = slot_buffers[binding.buffer_id];
     TouchBuffer(buffer, binding.buffer_id);
-    bool verify_kept = false;
-    if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
-        if (UniformRangeKept(stage, index, device_addr, size)) {
-            if (ubo_keep_verify) {
-                ++uniform_keep.verified;
-                verify_kept = true;
-                if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
-                                                             device_addr, size)) {
-                    if (uniform_keep.mismatches++ < 16) {
-                        LOG_ERROR(HW_GPU,
-                                  "Uniform keep verify: stage {} slot {} at {:#x}+{:#x} changed "
-                                  "since the previous draw",
-                                  stage, index, device_addr, size);
-                    }
-                }
-            } else if (VideoCommon::RebindKeptUniform(runtime, stage, index, device_addr, size)) {
-                channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
-                channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
-                uniform_keep.streamed[stage] |= 1u << index;
-                ++uniform_keep.kept;
-                Nx2Profile::AddFine(Nx2Profile::FineCounter::UniformRebinds, 1);
-                Nx2Profile::AddFine(Nx2Profile::FineCounter::UniformBytes, size);
-                return;
-            }
-        }
-    }
     const bool has_host_buffer = binding.buffer_id != NULL_BUFFER_ID;
     const u32 offset = has_host_buffer ? buffer.Offset(device_addr) : 0;
     const bool needs_alignment_stream = [&]() {
@@ -2949,6 +2923,31 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             && !memory_tracker.IsRegionGpuModified(device_addr, size));
     Nx2Profile::AddFine(Nx2Profile::FineCounter::UniformBytes, size);
     if (use_fast_buffer) {
+        // Honor this draw's binding policy before reusing a previous stream allocation:
+        // cache preference or the page's GPU-modified state may have changed.
+        if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
+            if (UniformRangeKept(stage, index, device_addr, size)) {
+                if (ubo_keep_verify) {
+                    ++uniform_keep.verified;
+                    if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
+                                                              device_addr, size)) {
+                        if (uniform_keep.mismatches++ < 16) {
+                            LOG_ERROR(HW_GPU,
+                                      "Uniform keep verify: stage {} slot {} at {:#x}+{:#x} changed "
+                                      "since the previous draw",
+                                      stage, index, device_addr, size);
+                        }
+                    }
+                } else if (VideoCommon::RebindKeptUniform(runtime, stage, index, device_addr, size)) {
+                    channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
+                    channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
+                    uniform_keep.streamed[stage] |= 1u << index;
+                    ++uniform_keep.kept;
+                    Nx2Profile::AddFine(Nx2Profile::FineCounter::UniformRebinds, 1);
+                    return;
+                }
+            }
+        }
         if constexpr (IS_OPENGL) {
             if (runtime.HasFastBufferSubData()) {
                 // Fast path for Nvidia
@@ -3004,11 +3003,6 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
     }
     Nx2Profile::AddFine(Nx2Profile::FineCounter::UniformCached, 1);
     // Classic cached path
-    if (verify_kept && uniform_keep.mismatches++ < 16) {
-        LOG_ERROR(HW_GPU,
-                  "Uniform keep verify: stage {} slot {} at {:#x}+{:#x} is no longer streamed",
-                  stage, index, device_addr, size);
-    }
     if (SynchronizeBuffer(buffer, device_addr, size)) {
         ++channel_state->uniform_cache_hits[0];
     }

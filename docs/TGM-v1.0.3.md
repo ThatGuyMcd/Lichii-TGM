@@ -76,6 +76,16 @@ validation. Diagnostic tracing changes CPU command routing, so performance claim
 must use separate measurements with detailed profiling and frame generation off.
 Native 60 FPS and a twofold improvement have not been established.
 
+Castle Town checks exposed an inherited ordering issue in streamed uniform reuse:
+reuse ran before the current cached/streamed binding policy was evaluated. The
+candidate now checks that policy and performs any existing native-bank refresh
+before attempting reuse. Regression cases cover a changed cache preference,
+adjacent GPU writes on the same page and overlapping GPU writes whose current
+buffer data differs from guest memory, in normal and verification modes. The
+observed runtime messages reported policy changes with matching bytes; they did
+not establish visible corruption. The corrected build still requires gameplay
+comparisons and performance measurements.
+
 Recent device-loss reports still need a controlled gameplay comparison. A Windows
 GPU engine timeout means the display engine stopped responding; it does not by
 itself identify a particular emulator defect. See [Microsoft's 0x141 description](https://learn.microsoft.com/windows-hardware/drivers/debugger/bug-check-0x141---video-engine-timeout-detected).

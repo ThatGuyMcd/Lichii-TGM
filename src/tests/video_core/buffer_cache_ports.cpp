@@ -266,6 +266,7 @@ struct KeepRuntime : Runtime {
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size) {
         allocations.emplace_back(size);
         last = bound = StreamUniformRef{allocations.size() - 1};
+        bound_cached = false;
         return allocations.back();
     }
     StreamUniformRef LastStreamUniformRef() const noexcept {
@@ -274,6 +275,13 @@ struct KeepRuntime : Runtime {
     void RebindStreamUniform(StreamUniformRef ref, u32 size) {
         REQUIRE(allocations.at(ref.allocation).size() == size);
         bound = ref;
+        bound_cached = false;
+    }
+    void BindUniformBuffer(Buffer& buffer, u32 offset, u32 size) {
+        REQUIRE(offset + size <= buffer.bytes.size());
+        cached_bytes.assign(buffer.bytes.begin() + offset, buffer.bytes.begin() + offset + size);
+        bound_cached = true;
+        ++cached_binds;
     }
     u64 CurrentTick() const noexcept {
         return tick;
@@ -281,6 +289,9 @@ struct KeepRuntime : Runtime {
     std::vector<std::vector<u8>> allocations;
     StreamUniformRef last{}, bound{};
     u64 tick{1};
+    bool bound_cached{};
+    u32 cached_binds{};
+    std::vector<u8> cached_bytes;
 };
 
 struct KeepPolicy : Policy {
@@ -308,6 +319,9 @@ struct BufferCacheTestAccess {
         return id;
     }
     static Buffer& Get(Cache& cache, BufferId id) {
+        return cache.slot_buffers[id];
+    }
+    static Buffer& Get(KeepCache& cache, BufferId id) {
         return cache.slot_buffers[id];
     }
     static void Dirty(Cache& cache, DAddr address, u64 size) {
@@ -2293,6 +2307,77 @@ TEST_CASE("Uniform keep binds unwritten uniform buffers of delta draws without r
     Access::KeepDraw(*f.cache, *f.channel, &unchanged, f.id, KeepFixture::Ubo, KeepFixture::UboSize);
     REQUIRE(f.Counts().kept == 4);
     REQUIRE(f.runtime.allocations.size() == allocations);
+}
+
+TEST_CASE("Uniform keep follows the current streamed or cached binding policy",
+          "[buffer_ports]") {
+    const bool verify = GENERATE(false, true);
+    KeepFixture f{verify ? "EDEN_NX2_UBO_KEEP_VERIFY" : nullptr};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    std::memset(f.UboBytes(), 1, KeepFixture::UboSize);
+    f.Draw(nullptr);
+    f.Draw(&unchanged);
+    const auto before = f.Counts();
+
+    // TickFrame can choose cached uniforms after this slot was streamed. An unchanged
+    // delta must follow that current policy in both normal and verification modes.
+    auto& buffer = Access::Get(*f.cache, f.id);
+    std::fill_n(buffer.bytes.begin() + (KeepFixture::Ubo - 0x10000),
+                KeepFixture::UboSize, u8{1});
+    f.channel->uniform_buffer_skip_cache_size = 0;
+    Access::KeepDraw(*f.cache, *f.channel, &unchanged, f.id, KeepFixture::Ubo,
+                     KeepFixture::UboSize);
+    CHECK(f.runtime.bound_cached);
+    CHECK(f.runtime.cached_binds == 1);
+    CHECK(f.runtime.cached_bytes == std::vector<u8>(KeepFixture::UboSize, 1));
+    CHECK(f.Counts().kept == before.kept);
+    CHECK(f.Counts().verified == before.verified);
+    CHECK(f.Counts().mismatches == 0);
+
+    f.channel->uniform_buffer_skip_cache_size = KeepFixture::UboSize;
+    f.Draw(&unchanged); // First establishes that this slot is streamed again.
+    CHECK(f.Counts().kept == before.kept);
+    f.Draw(&unchanged);
+    CHECK(f.Counts().kept == before.kept + (verify ? 0 : 1));
+    CHECK(f.Counts().verified == before.verified + (verify ? 1 : 0));
+    CHECK(f.Counts().mismatches == 0);
+}
+
+TEST_CASE("Uniform keep respects GPU-modified pages for adjacent and overlapping writes",
+          "[buffer_ports]") {
+    const bool verify = GENERATE(false, true);
+    const bool overlaps = GENERATE(false, true);
+    KeepFixture f{verify ? "EDEN_NX2_UBO_KEEP_VERIFY" : nullptr};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    std::memset(f.UboBytes(), 1, KeepFixture::UboSize);
+    f.Draw(nullptr);
+    f.Draw(&unchanged);
+    const auto before = f.Counts();
+    const auto allocations = f.runtime.allocations.size();
+
+    auto& buffer = Access::Get(*f.cache, f.id);
+    std::fill_n(buffer.bytes.begin() + (KeepFixture::Ubo - 0x10000),
+                KeepFixture::UboSize, u8{1});
+    const DAddr written = overlaps ? KeepFixture::Ubo + 0x80 : KeepFixture::Ubo - 0x100;
+    std::vector<u8> expected(KeepFixture::UboSize, 1);
+    if (overlaps) {
+        // New GPU-owned bytes differ from both guest memory and the saved stream.
+        std::fill_n(buffer.bytes.begin() + (written - 0x10000), 4, u8{7});
+        std::fill_n(expected.begin() + 0x80, 4, u8{7});
+    }
+    // Even a non-overlapping write changes the page-level streaming policy.
+    Access::GpuWrite(*f.cache, f.id, written, 4);
+    for (u32 draw = 1; draw <= 2; ++draw) {
+        Access::KeepDraw(*f.cache, *f.channel, &unchanged, f.id, KeepFixture::Ubo,
+                         KeepFixture::UboSize);
+        CHECK(f.runtime.bound_cached);
+        CHECK(f.runtime.cached_binds == draw);
+        CHECK(f.runtime.cached_bytes == expected);
+        CHECK(f.runtime.allocations.size() == allocations);
+        CHECK(f.Counts().kept == before.kept);
+        CHECK(f.Counts().verified == before.verified);
+        CHECK(f.Counts().mismatches == 0);
+    }
 }
 
 TEST_CASE("Widened delta ranges restream uniforms and the next exact draw can keep them",

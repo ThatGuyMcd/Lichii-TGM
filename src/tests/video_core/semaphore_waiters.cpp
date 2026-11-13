@@ -8,8 +8,28 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "video_core/nx2.h"
+#include "video_core/engines/puller.h"
 
 using Tegra::Nx2SemaphoreWaiters;
+
+TEST_CASE("Puller teardown removes only its own semaphore waiter", "[video_core][nx2_waiters]") {
+    auto& waiters = Nx2SemaphoreWaiters::Get();
+    int other{};
+    const void* removed{};
+    REQUIRE(waiters.Add(&other, 0x2000, 7, Nx2SemaphoreWaiters::AcquireEqual));
+    {
+        Tegra::Engines::Puller puller;
+        removed = &puller;
+        REQUIRE(waiters.Add(&puller, 0x1000, 5, Nx2SemaphoreWaiters::AcquireGequal));
+        waiters.OnWrite(0x1000, 5);
+        CHECK(waiters.Latched(&puller));
+    }
+    waiters.OnWrite(0x1000, 5);
+    CHECK_FALSE(waiters.Latched(removed));
+    waiters.OnWrite(0x2000, 7);
+    CHECK(waiters.Latched(&other));
+    waiters.Remove(&other);
+}
 
 TEST_CASE("Semaphore waiters latch on the writes that meet them", "[video_core][nx2_waiters]") {
     Nx2SemaphoreWaiters waiters;

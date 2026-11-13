@@ -29,7 +29,9 @@ AboutDialog::AboutDialog(QWidget* parent)
         ui->labelLogo->setPixmap(yuzu_logo.pixmap(200));
     }
     ui->labelBuildInfo->setText(
-        ui->labelBuildInfo->text().arg(QString::fromStdString(yuzu_build_version),
+        ui->labelBuildInfo->text().arg(QString::fromStdString(yuzu_build_version) +
+                                           QStringLiteral(" | ") +
+                                           QString::fromUtf8(Common::g_scm_rev).left(10),
                                        QString::fromUtf8(Common::g_build_date).left(10)));
 }
 

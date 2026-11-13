@@ -48,6 +48,7 @@
 #include "video_core/shader_warm/shader_archives.h"
 #include "video_core/shader_warm/mesh_warm_builder.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
+#include "video_core/shader_warm/emission_stamp.h"
 #include "video_core/shader_warm/warm_records.h"
 
 namespace VideoCommon::ShaderWarm {
@@ -424,44 +425,79 @@ u64 ReadWarmCount(const fs::path& warm_file) {
     return !ec && actual == size ? entries : 0;
 }
 
+u64 EmissionStamp() {
+    return GeneratedEmissionStamp;
+}
+
 std::optional<WarmStamp> CurrentWarmStamp(const fs::path& warm_file, u64 entries, u32 driver,
                                           u32 device_id, u32 cache_version, u32 no_inline,
-                                          u32 link_mode) {
+                                          u32 link_mode, u64 variant) {
     std::error_code ec;
     const auto size = fs::file_size(warm_file, ec);
     if (ec) {
         return std::nullopt;
     }
-    const auto time = fs::last_write_time(warm_file, ec);
-    if (ec) {
+    std::ifstream in(warm_file, std::ios::binary);
+    if (!in) {
         return std::nullopt;
     }
-    return WarmStamp{size,      static_cast<s64>(time.time_since_epoch().count()),
-                     entries,   driver,
-                     device_id, cache_version,
-                     no_inline, link_mode};
+    std::vector<char> chunk(8u << 20);
+    u64 hash = size;
+    u64 read_total{};
+    while (in) {
+        in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+        const auto got = static_cast<size_t>(in.gcount());
+        if (got == 0) break;
+        hash = Common::CityHash64WithSeed(chunk.data(), got, hash);
+        read_total += got;
+    }
+    if (in.bad() || read_total != size) return std::nullopt;
+    if (variant == 0) {
+        const auto& resolution = Settings::values.resolution_info;
+        const std::array<u64, 7> inputs{
+            EmissionStamp(), resolution.active ? 1ULL : 0ULL,
+            resolution.up_scale, resolution.down_shift,
+            Settings::values.disable_shader_loop_safety_checks.GetValue() ? 1ULL : 0ULL,
+            Settings::values.fix_bloom_effects.GetValue() ? 1ULL : 0ULL,
+            Settings::values.renderer_debug.GetValue() ? 1ULL : 0ULL,
+        };
+        variant = Common::CityHash64(reinterpret_cast<const char*>(inputs.data()), sizeof(inputs));
+    }
+    WarmStamp stamp{size, hash, entries, driver, device_id, cache_version, no_inline, link_mode};
+    stamp.variant = variant;
+    return stamp;
 }
 
 std::optional<WarmStamp> ReadWarmMarker(const fs::path& warm_file) {
     std::ifstream in(WarmMarkerPath(warm_file));
     WarmStamp stamp;
-    if (!(in >> stamp.size >> stamp.write_time >> stamp.entries >> stamp.driver >>
-          stamp.device_id >> stamp.cache_version >> stamp.no_inline >> stamp.link_mode)) {
+    std::string format;
+    if (!(in >> format) || format != "tgm-v2" ||
+        !(in >> stamp.size >> stamp.content_hash >> stamp.entries >> stamp.driver >>
+          stamp.device_id >> stamp.cache_version >> stamp.no_inline >> stamp.link_mode >>
+          stamp.configuration >> stamp.variant)) {
         return std::nullopt;
-    }
-    if (!(in >> stamp.configuration)) {
-        stamp.configuration.clear();
     }
     return stamp;
 }
 
 bool WriteWarmMarker(const fs::path& warm_file, const WarmStamp& stamp) {
     std::ofstream out(WarmMarkerPath(warm_file), std::ios::trunc);
-    out << stamp.size << ' ' << stamp.write_time << ' ' << stamp.entries << ' ' << stamp.driver
+    out << "tgm-v2 " << stamp.size << ' ' << stamp.content_hash << ' ' << stamp.entries << ' ' << stamp.driver
         << ' ' << stamp.device_id << ' ' << stamp.cache_version << ' ' << stamp.no_inline << ' '
-        << stamp.link_mode << ' ' << stamp.configuration << '\n';
+        << stamp.link_mode << ' ' << stamp.configuration << ' ' << stamp.variant << '\n';
     out.close();
     return static_cast<bool>(out);
+}
+
+void DropStaleWarmMarker(const fs::path& warm_file, const fs::path& new_file) {
+    if (const auto marker = ReadWarmMarker(warm_file)) {
+        const auto incoming = CurrentWarmStamp(new_file, 0, 0, 0, 0);
+        if (incoming && incoming->size == marker->size &&
+            incoming->content_hash == marker->content_hash) return;
+    }
+    std::error_code ignored;
+    fs::remove(WarmMarkerPath(warm_file), ignored);
 }
 
 bool WarmPending(u64 title_id) {
@@ -1469,7 +1505,7 @@ Result BuildComputeWarmFiles(Core::System& system, const fs::path& game_path, u6
     // New files: the markers and counts of the old ones no longer apply. Each is removed right
     // before its file is replaced, so a failed replacement leaves the other file's marker intact.
     std::error_code ignored;
-    fs::remove(WarmMarkerPath(compute_path), ignored);
+    DropStaleWarmMarker(compute_path, compute_tmp);
     fs::remove(WarmCountPath(compute_path), ignored);
     fs::rename(compute_tmp, compute_path, ec);
     if (ec) {

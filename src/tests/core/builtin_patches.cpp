@@ -235,6 +235,67 @@ TEST_CASE("Built-in Max Resolution patch is gated on build id and original word"
     }
 }
 
+TEST_CASE("OOT quality patches record the accepted boot scale without overriding explicit modes",
+          "[patch_manager]") {
+    PatchManagerTestContext context;
+    const auto enabled = Settings::values.nvidia_dlss.GetValue();
+    const auto quality = Settings::values.nvidia_dlss_quality.GetValue();
+    const auto mode = Settings::values.oot_anti_aliasing.GetValue();
+    const auto legacy = Settings::values.ocarina_dlss_mode.GetValue();
+    const auto docked = Settings::values.use_docked_mode.GetValue();
+    SCOPE_EXIT {
+        Settings::values.nvidia_dlss.SetValue(enabled);
+        Settings::values.nvidia_dlss_quality.SetValue(quality);
+        Settings::values.oot_anti_aliasing.SetValue(mode);
+        Settings::values.ocarina_dlss_mode.SetValue(legacy);
+        Settings::values.use_docked_mode.SetValue(docked);
+        Settings::SetAppliedOcarinaRenderScale(std::nullopt);
+    };
+    using Quality = Settings::NvidiaDlssQuality;
+    constexpr size_t offset = sizeof(Loader::NSOHeader) + 0x806420;
+    constexpr u32 original = 0x52A7F009;
+    auto nso = MakeMain(OcarinaBuildId, TbzInstruction);
+    nso.resize(offset + sizeof(u32));
+    std::memcpy(nso.data() + offset, &original, sizeof(original));
+    Settings::values.nvidia_dlss.SetValue(true);
+    Settings::values.oot_anti_aliasing.SetValue(Settings::OotAntiAliasing::Game);
+    Settings::values.ocarina_dlss_mode.SetValue(Settings::OcarinaDlssMode::Quality);
+    Settings::values.use_docked_mode.SetValue(Settings::ConsoleMode::Docked);
+#ifdef EGLANTINE_NVIDIA_DLSS
+    constexpr bool supported = true;
+#else
+    constexpr bool supported = false;
+#endif
+    const auto patch = [&] { return WordAt(context.Manager().PatchNSO(nso, "main"), offset); };
+    for (const auto& [choice, word] : std::array<std::pair<Quality, u32>, 6>{{
+             {Quality::Automatic, original}, {Quality::Native, original},
+             {Quality::Quality, original}, {Quality::Balanced, 0x52A7EBE9},
+             {Quality::Performance, 0x52A7E809}, {Quality::UltraPerformance, 0x52A7E009}}}) {
+        Settings::values.nvidia_dlss_quality.SetValue(choice);
+        CHECK(patch() == (supported ? word : original));
+        CHECK(Settings::AppliedOcarinaRenderScale() ==
+              (supported && word != original ? std::optional{choice} : std::nullopt));
+    }
+
+    Settings::values.nvidia_dlss_quality.SetValue(Quality::Performance);
+    Settings::values.ocarina_dlss_mode.SetValue(Settings::OcarinaDlssMode::Balanced);
+    CHECK(patch() == (supported ? 0x52A7EBE9 : original));
+    Settings::values.oot_anti_aliasing.SetValue(Settings::OotAntiAliasing::NvidiaDlaa);
+    CHECK(patch() == original);
+    CHECK_FALSE(Settings::AppliedOcarinaRenderScale());
+    Settings::values.oot_anti_aliasing.SetValue(Settings::OotAntiAliasing::Game);
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution}};
+    CHECK(patch() == original);
+    CHECK_FALSE(Settings::AppliedOcarinaRenderScale());
+    Settings::values.disabled_addons.erase(OcarinaTitleId);
+    nso[offset] ^= 1;
+    CHECK(patch() == (original ^ 1));
+    CHECK_FALSE(Settings::AppliedOcarinaRenderScale());
+    for (const auto& entry : context.Manager().GetPatches()) {
+        CHECK(entry.name.find("render scale") == std::string::npos);
+    }
+}
+
 TEST_CASE("Built-in Max Resolution patch defers to a user mod at the same offset",
           "[patch_manager]") {
     SECTION("A different word from the mod is kept") {
@@ -278,6 +339,13 @@ TEST_CASE("Built-in Max Resolution patch is listed and loaded for Ocarina's main
 
 namespace {
 
+// The three "frame rate over 100" branches FPS Unlock removes, with their original words.
+constexpr std::array<std::pair<size_t, u32>, 3> GroundVelocityBranches{{
+    {sizeof(Loader::NSOHeader) + 0x13A070, 0x5400196C},
+    {sizeof(Loader::NSOHeader) + 0x13D710, 0x54001E2C},
+    {sizeof(Loader::NSOHeader) + 0x389AC2C, 0x540017CC},
+}};
+
 std::vector<u8> MakeDynamicMain() {
     auto nso = MakeMain(OcarinaBuildId, TbzInstruction);
     nso.resize(DynamicStateOffset + 16);
@@ -292,6 +360,9 @@ std::vector<u8> MakeDynamicMain() {
     std::memcpy(nso.data(), &header, sizeof(header));
     std::memcpy(nso.data() + DynamicCallOffset, &DynamicOriginalInstruction,
                 sizeof(DynamicOriginalInstruction));
+    for (const auto& [offset, original] : GroundVelocityBranches) {
+        std::memcpy(nso.data() + offset, &original, sizeof(original));
+    }
     return nso;
 }
 
@@ -360,6 +431,36 @@ TEST_CASE("Built-in FPS Unlock defaults on and replaces Dynamic FPS", "[patch_ma
     const auto unrelated = context.Manager(OtherTitleId).GetPatches();
     REQUIRE(std::ranges::find(unrelated, DynamicFps, &FileSys::Patch::name) == unrelated.end());
     REQUIRE(std::ranges::find(unrelated, FpsUnlock, &FileSys::Patch::name) == unrelated.end());
+}
+
+TEST_CASE("Built-in FPS Unlock removes the ground velocity branches", "[patch_manager]") {
+    PatchManagerTestContext context;
+    const auto manager = context.Manager();
+    auto nso = MakeDynamicMain();
+    auto patched = manager.PatchNSO(nso, "main");
+    for (const auto& [offset, original] : GroundVelocityBranches) {
+        REQUIRE(WordAt(patched, offset) == NopInstruction);
+    }
+
+    // Dynamic FPS never exceeds 60 fps and keeps the game's branches.
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{FpsUnlock}};
+    patched = manager.PatchNSO(nso, "main");
+    REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicCallInstruction);
+    for (const auto& [offset, original] : GroundVelocityBranches) {
+        REQUIRE(WordAt(patched, offset) == original);
+    }
+
+    // Another branch at one of the sites skips all of FPS Unlock.
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{DynamicFps}};
+    for (const auto& [changed, word] : GroundVelocityBranches) {
+        auto other = nso;
+        other[changed] ^= 1;
+        patched = manager.PatchNSO(other, "main");
+        REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicOriginalInstruction);
+        for (const auto& [offset, original] : GroundVelocityBranches) {
+            REQUIRE(WordAt(patched, offset) == WordAt(other, offset));
+        }
+    }
 }
 
 TEST_CASE("Built-in Dynamic FPS rejects mismatched or truncated modules transactionally",

@@ -28,6 +28,16 @@ static constexpr size_t BACKING_SIZE = 4_GiB;
 static constexpr auto PERMS = Common::MemoryPermission::ReadWrite;
 static constexpr auto HEAP = false;
 
+TEST_CASE("Host RAM pressure keeps unknown readings neutral and respects small machines",
+          "[common][host_memory]") {
+    CHECK_FALSE(Common::IsLowOnMemory(0, 16_GiB));
+    CHECK_FALSE(Common::IsLowOnMemory(1_GiB, 0));
+    CHECK(Common::IsLowOnMemory(512_MiB, 4_GiB));
+    CHECK_FALSE(Common::IsLowOnMemory(1_GiB, 4_GiB));
+    CHECK(Common::IsLowOnMemory(4_GiB - 1, 64_GiB));
+    CHECK_FALSE(Common::IsLowOnMemory(4_GiB, 64_GiB));
+}
+
 static bool MapsSingleGuestPages() {
 #ifdef _WIN32
     return true;

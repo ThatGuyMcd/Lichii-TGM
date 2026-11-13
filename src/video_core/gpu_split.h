@@ -228,6 +228,30 @@ public:
         NoteWrites(writes);
     }
 
+    /// A Maxwell3D state register write (not in execution_mask) from the front, shadow RAM
+    /// applied (not in replay) and changing the front's copy of the register. Writes in a row go
+    /// to the back as one entry once another entry follows or the front publishes or waits; the
+    /// back stores them and sets their dirty flags at once (Maxwell3D::WriteStateRegisters).
+    /// `flags`: the dirty flags the register sets; `breaks`: changing it ends fast draw reuse;
+    /// `anywhere`: the back may issue a deferred draw with it, which can write guest memory
+    /// anywhere. Port of Damfortx's state blocks (76548f0bf1), after #717's StateDelta.
+    void StateWrite(Tegra::Engines::EngineInterface* engine, u32 method, u32 value,
+                    std::array<u8, 2> flags, bool breaks, bool anywhere) {
+        if (engine != state_engine || state_count == MaxStateWrites) {
+            FlushState();
+            state_engine = engine;
+        }
+        state_writes[state_count++] = u64{method} | (u64{value} << 32);
+        for (const u8 flag : flags) {
+            state_flags[flag / 64] |= u64{1} << (flag % 64);
+        }
+        if (breaks) {
+            state_break = method;
+            state_breaks = true;
+        }
+        state_anywhere = state_anywhere || anywhere;
+    }
+
     /// Defer flag: the call doesn't end fast draw reuse (nx2_fast_draw.h).
     static constexpr u64 FastDrawNeutral = 1 << 7;
 
@@ -319,6 +343,7 @@ public:
 
     /// Compute or copy work was just sent: what can write GPU-written command lists.
     void NoteWriter() {
+        FlushState();
         last_writer_position = write_position;
     }
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
@@ -328,11 +353,13 @@ public:
     /// bit; semaphore acquires note it when a release still queued meets them): the guest's GPU
     /// work before it is complete before the commands after it are fetched.
     void NoteSync() {
+        FlushState();
         last_sync_position = write_position;
         synced_writer_position = last_writer_position;
     }
     /// The position after everything sent so far, for Ran and WaitForPosition.
-    [[nodiscard]] u64 Position() const {
+    [[nodiscard]] u64 Position() {
+        FlushState();
         return write_position;
     }
     /// Whether the back executed everything sent before `position`. It may tell so a little
@@ -341,12 +368,14 @@ public:
         return consumed.load(std::memory_order_acquire) >= position;
     }
     /// The position after the last compute or copy work sent (NoteWriter).
-    [[nodiscard]] u64 LastWriterPosition() const {
+    [[nodiscard]] u64 LastWriterPosition() {
+        FlushState();
         return (std::min)(last_writer_position, write_position);
     }
     /// Waits until the back executed everything sent before `position`, not what came after.
     /// Returns whether any of it was still queued.
     bool WaitForPosition(u64 position, DrainSite site) {
+        FlushState();
         return WaitFor((std::min)(position, write_position), site);
     }
     /// Waits until the back executed the work sent before the last NoteSync. Returns whether any
@@ -481,10 +510,15 @@ private:
         Method, ///< Bits 8-23 method, 32-63 argument; flags IsLast, HasSegment (word 1)
         Multi,  ///< Bits 8-23 method, 32-63 amount; word 1 methods pending, [segment], words
         Call,   ///< Bits 8-31 payload size in words; word 1 thunk, then the payload
+        State,  ///< Bits 8-23 last method that breaks, 32-63 count; flag HasBreak; words 1-4
+                ///< dirty flags; then (method | value << 32) per write (StateWrite)
     };
     static constexpr u64 IsLast = 1 << 4;
     static constexpr u64 HasSegment = 1 << 5;
     static constexpr u64 Direct = 1 << 6; ///< Method: call it even if not executable (macros)
+    static constexpr u64 HasBreak = 1 << 4; ///< State: a write ends fast draw reuse
+    static constexpr size_t StateFlagWords = 4;
+    static constexpr u32 MaxStateWrites = 128;
 
     static constexpr size_t RingWords = size_t{1} << 20; // 8 MiB
     static constexpr size_t RingMask = RingWords - 1;
@@ -554,8 +588,17 @@ private:
                                  static_cast<size_t>(payload[function_words])});
     }
 
+    /// Sends the state writes gathered so far (before any other entry, publish or wait).
+    void FlushState() {
+        if (state_count != 0) {
+            FlushStateSlow();
+        }
+    }
+    void FlushStateSlow();
+
     /// Room for an entry of `words` at the write position (never across the ring's end).
     u64* Reserve(size_t words) {
+        FlushState();
         const size_t index = write_position & RingMask;
         if (index + words <= RingWords && write_position + words - consumed_cache <= RingWords)
             [[likely]] {
@@ -616,6 +659,7 @@ private:
     bool log_methods{};
     void LogMethod(const Tegra::Engines::EngineInterface* engine, u32 method);
     void SelectEngine(Tegra::Engines::EngineInterface* engine) {
+        FlushState();
         if (engine != front_engine) [[unlikely]] {
             SwitchEngine(engine);
         }
@@ -695,6 +739,14 @@ private:
     /// PublishSoon), while the back may have nothing to do.
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
+    /// The state writes being gathered (StateWrite).
+    Tegra::Engines::EngineInterface* state_engine{};
+    u32 state_count{};
+    u32 state_break{};
+    bool state_breaks{};
+    bool state_anywhere{};
+    std::array<u64, StateFlagWords> state_flags{};
+    std::array<u64, MaxStateWrites> state_writes{};
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};

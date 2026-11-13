@@ -141,9 +141,26 @@ constexpr std::array DYNAMIC_FPS_RECORDS{
     BuiltinPatchRecord{0x6E6CC4, DYNAMIC_FPS_CALL, DYNAMIC_FPS_ORIGINAL},
     BuiltinPatchRecord{0x3C46200, DYNAMIC_FPS_ROUTINE, {}, true},
 };
+// The character controller takes a tenth of its ground's velocity once the frame rate is over
+// 100 (b.gt after fcmp with 100.0, in three places), so a moving platform leaves the player behind.
+constexpr std::array<u8, 4> GROUND_VELOCITY_ORIGINAL_A{
+    0x6C, 0x19, 0x00, 0x54,
+};
+constexpr std::array<u8, 4> GROUND_VELOCITY_ORIGINAL_B{
+    0x2C, 0x1E, 0x00, 0x54,
+};
+constexpr std::array<u8, 4> GROUND_VELOCITY_ORIGINAL_C{
+    0xCC, 0x17, 0x00, 0x54,
+};
+constexpr std::array<u8, 4> GROUND_VELOCITY_NOP{
+    0x1F, 0x20, 0x03, 0xD5,
+};
 constexpr std::array FPS_UNLOCK_RECORDS{
     BuiltinPatchRecord{0x6E6CC4, DYNAMIC_FPS_CALL, DYNAMIC_FPS_ORIGINAL},
     BuiltinPatchRecord{0x3C46200, FPS_UNLOCK_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x13A070, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_A},
+    BuiltinPatchRecord{0x13D710, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_B},
+    BuiltinPatchRecord{0x389AC2C, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_C},
 };
 
 constexpr std::array PHOTO_MODE_RECORDS{
@@ -1001,6 +1018,9 @@ std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualD
 }
 
 std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::string& name) const {
+    if (name == "main") {
+        Settings::SetAppliedOcarinaRenderScale(std::nullopt);
+    }
     if (title_id == Core::OotUltrawide::ProgramId && name == "main") {
         Core::OotUltrawide::ClearAcceptedProfile();
     }
@@ -1064,14 +1084,20 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
 
     const auto disabled = GetDisabledAddons();
     std::vector<std::string_view> replaced;
+    bool max_resolution_applied = false;
     for (const auto& patch : BUILTIN_PATCHES) {
         if (patch.title_id != title_id || patch.module != name) {
             continue;
         }
         if (patch.render_scale) {
 #ifdef EGLANTINE_NVIDIA_DLSS
-            if (VideoCommon::OotDlss::Requested() || !Settings::values.nvidia_dlss.GetValue() ||
-                *patch.render_scale != Settings::values.ocarina_dlss_mode.GetValue()) {
+            const auto quality = Settings::OcarinaDlssRenderScale();
+            const auto expected = *patch.render_scale == Settings::OcarinaDlssMode::Balanced
+                                      ? Settings::NvidiaDlssQuality::Balanced
+                                  : *patch.render_scale == Settings::OcarinaDlssMode::Performance
+                                      ? Settings::NvidiaDlssQuality::Performance
+                                      : Settings::NvidiaDlssQuality::UltraPerformance;
+            if (VideoCommon::OotDlss::Requested() || !max_resolution_applied || quality != expected) {
                 continue;
             }
 #else
@@ -1180,6 +1206,12 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
         }
         if (patch.aspect_ratio) {
             Core::OotUltrawide::AcceptProfile(*patch.aspect_ratio);
+        }
+        if (patch.name == "Max Resolution (built-in)") {
+            max_resolution_applied = true;
+        }
+        if (patch.render_scale) {
+            Settings::SetAppliedOcarinaRenderScale(Settings::OcarinaDlssRenderScale());
         }
         LOG_INFO(Loader, "    - Applying built-in patch \"{}\" ({} records) to {}", patch.name,
                  records.size(), name);

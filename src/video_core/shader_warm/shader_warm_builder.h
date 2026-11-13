@@ -57,7 +57,7 @@ std::filesystem::path WarmCountPath(const std::filesystem::path& warm_file);
 /// file of another size.
 u64 ReadWarmCount(const std::filesystem::path& warm_file);
 
-/// What a marker records: the precache file's size and last-write time, its entry count, the GPU
+/// What a marker records: the precache file's size and content hash, its entry count, the GPU
 /// driver version and device ID, the pipeline cache version and whether shared shader functions
 /// were built as calls (compute bit 0, graphics bit 1: the SPIR-V the driver compiled differs),
 /// and the graphics link mode (bit 0 fast links usable, bit 1 optimized links on: together they
@@ -66,7 +66,7 @@ u64 ReadWarmCount(const std::filesystem::path& warm_file);
 /// more.
 struct WarmStamp {
     u64 size{};
-    s64 write_time{};
+    u64 content_hash{};
     u64 entries{};
     u32 driver{};
     u32 device_id{};
@@ -74,21 +74,26 @@ struct WarmStamp {
     u32 no_inline{};
     u32 link_mode{};
     std::string configuration{"persist1"};
+    u64 variant{};
 
     /// True when `other` was written for the same file, driver, device, cache version, shader
     /// calls mode and link mode (the entry count is informative).
     [[nodiscard]] bool Matches(const WarmStamp& other) const noexcept {
-        return size == other.size && write_time == other.write_time && driver == other.driver &&
+        return size == other.size && content_hash == other.content_hash && driver == other.driver &&
                device_id == other.device_id && cache_version == other.cache_version &&
                no_inline == other.no_inline && link_mode == other.link_mode &&
-               configuration == other.configuration;
+               configuration == other.configuration && variant == other.variant;
     }
 };
 
-/// The stamp of `warm_file` as it is now, empty when its size or time cannot be read.
+/// The stamp of `warm_file` as it is now, empty when its contents cannot be read.
 std::optional<WarmStamp> CurrentWarmStamp(const std::filesystem::path& warm_file, u64 entries,
                                           u32 driver, u32 device_id, u32 cache_version,
-                                          u32 no_inline = 0, u32 link_mode = 0);
+                                          u32 no_inline = 0, u32 link_mode = 0, u64 variant = 0);
+
+[[nodiscard]] u64 EmissionStamp();
+void DropStaleWarmMarker(const std::filesystem::path& warm_file,
+                        const std::filesystem::path& new_file);
 
 /// The marker of `warm_file`, empty when there is none or it cannot be read.
 std::optional<WarmStamp> ReadWarmMarker(const std::filesystem::path& warm_file);

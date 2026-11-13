@@ -25,8 +25,11 @@
 #include <string>
 #include <string_view>
 #endif
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 
+#include "common/literals.h"
 #include "common/memory_detect.h"
 
 namespace Common {
@@ -155,6 +158,20 @@ std::optional<u64> GetSystemCommitRoom() {
     }
 #endif
     return std::nullopt;
+}
+
+bool IsHostLowOnMemory() {
+    using Clock = std::chrono::steady_clock;
+    static std::atomic<Clock::rep> checked_at{};
+    static std::atomic<bool> low{};
+    const Clock::rep now = Clock::now().time_since_epoch().count();
+    const Clock::rep last = checked_at.load(std::memory_order_relaxed);
+    if (last == 0 || now - last >= Clock::duration{std::chrono::seconds{1}}.count()) {
+        checked_at.store(now, std::memory_order_relaxed);
+        low.store(IsLowOnMemory(GetAvailablePhysicalMemory(), GetMemInfo().TotalPhysicalMemory),
+                  std::memory_order_relaxed);
+    }
+    return low.load(std::memory_order_relaxed);
 }
 
 } // namespace Common

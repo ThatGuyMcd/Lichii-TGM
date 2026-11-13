@@ -54,6 +54,8 @@ public:
         bool depth_inverted = true;
         /// -1: EDEN_NX2_DLSS_HDR decides; 0: colour is tonemapped LDR; 1: linear HDR.
         int color_hdr = -1;
+        /// Full depth allocation size when the scene occupies a padded image.
+        VkExtent2D depth_size{};
         /// sl::DLSSPreset for this caller when EDEN_NX2_DLSS_PRESET is unset; -1: preset K.
         int preset = -1;
         /// The game's exposure for HDR colour (what its tonemap multiplies the colour by), given

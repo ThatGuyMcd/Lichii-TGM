@@ -99,6 +99,7 @@ namespace {
 // One byte per option; the three percentages default to 100 while quality/style default to zero.
 std::atomic<u64> nvidia_dlss_runtime_options{(u64{100} << 16) | (u64{100} << 24) |
     (u64{100} << 32) | (static_cast<u64>(NvidiaDlssPreset::NvidiaDefault) << 40)};
+std::atomic<u32> applied_ocarina_render_scale{};
 } // namespace
 
 /// Publish quality, style and neural percentages together after frontend settings are applied.
@@ -114,6 +115,46 @@ void RefreshNvidiaDlssRuntimeSettings() {
         quality | (neural << 8) | (strength << 16) | (tone << 24) | (structure << 32) |
             (preset << 40) | (legacy_preset << 48),
         std::memory_order_relaxed);
+}
+
+std::optional<NvidiaDlssQuality> OcarinaDlssRenderScale() {
+    if (!values.nvidia_dlss.GetValue() ||
+        values.oot_anti_aliasing.GetValue() == OotAntiAliasing::NvidiaDlss ||
+        values.oot_anti_aliasing.GetValue() == OotAntiAliasing::NvidiaDlaa) {
+        return std::nullopt;
+    }
+    // Preserve profiles with an explicit Ocarina render scale. The general quality selects
+    // a boot scale when that older control is left at Quality.
+    switch (values.ocarina_dlss_mode.GetValue()) {
+    case OcarinaDlssMode::Balanced:
+        return NvidiaDlssQuality::Balanced;
+    case OcarinaDlssMode::Performance:
+        return NvidiaDlssQuality::Performance;
+    case OcarinaDlssMode::UltraPerformance:
+        return NvidiaDlssQuality::UltraPerformance;
+    default:
+        break;
+    }
+    const auto quality = values.nvidia_dlss_quality.GetValue();
+    if (!IsDockedMode() ||
+        (quality != NvidiaDlssQuality::Balanced && quality != NvidiaDlssQuality::Performance &&
+         quality != NvidiaDlssQuality::UltraPerformance)) {
+        return std::nullopt;
+    }
+    return quality;
+}
+
+void SetAppliedOcarinaRenderScale(std::optional<NvidiaDlssQuality> quality) {
+    applied_ocarina_render_scale.store(quality ? static_cast<u32>(*quality) + 1 : 0,
+                                     std::memory_order_relaxed);
+}
+
+std::optional<NvidiaDlssQuality> AppliedOcarinaRenderScale() {
+    const u32 value = applied_ocarina_render_scale.load(std::memory_order_relaxed);
+    if (value == 0) {
+        return std::nullopt;
+    }
+    return static_cast<NvidiaDlssQuality>(value - 1);
 }
 
 /// Decode the atomic option snapshot used by the GPU and scheduler threads.

@@ -118,6 +118,34 @@ TEST_CASE("ShaderPrecache: precached pipelines are kept per driver", "[video_cor
     REQUIRE(ShaderWarm::ReadPrecachedPipelines(file, stamp).size() == 2);
 }
 
+TEST_CASE("ShaderPrecache: content and emission variants invalidate warm markers", "[video_core]") {
+    TempDir dir;
+    const auto warm = dir.path / "warm-compute.bin";
+    const auto replacement = dir.path / "warm-compute.tmp";
+    WriteBytes(warm, "precache");
+    const auto original = ShaderWarm::CurrentWarmStamp(warm, 12, 1, 2, 3, 1, 2, 77);
+    REQUIRE(original);
+    REQUIRE(ShaderWarm::WriteWarmMarker(warm, *original));
+    WriteBytes(replacement, "precache");
+    ShaderWarm::DropStaleWarmMarker(warm, replacement);
+    const auto marker = ShaderWarm::ReadWarmMarker(warm);
+    REQUIRE(marker);
+    REQUIRE(marker->Matches(*original));
+    REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 1, 2, 3, 1, 2, 78)));
+    REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 1, 2, 3, 0, 2, 77)));
+    REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 1, 2, 3, 1, 0, 77)));
+    const auto time = std::filesystem::last_write_time(warm);
+    WriteBytes(warm, "precachf");
+    std::filesystem::last_write_time(warm, time);
+    REQUIRE_FALSE(marker->Matches(*ShaderWarm::CurrentWarmStamp(warm, 12, 1, 2, 3, 1, 2, 77)));
+    WriteBytes(replacement, "precachf");
+    ShaderWarm::DropStaleWarmMarker(warm, replacement);
+    REQUIRE_FALSE(ShaderWarm::ReadWarmMarker(warm));
+    WriteBytes(ShaderWarm::WarmMarkerPath(warm), "8 133981234567890000 12 1 2 3 1 2 persist1\n");
+    REQUIRE_FALSE(ShaderWarm::ReadWarmMarker(warm));
+    REQUIRE(ShaderWarm::EmissionStamp() != 0);
+}
+
 TEST_CASE("ShaderPrecache: the entry count belongs to a file of one size", "[video_core]") {
     TempDir dir;
     const auto warm = dir.path / "warm-compute.bin";

@@ -217,9 +217,9 @@ private:
     [[nodiscard]] bool CurrentTargetIsRedrawn();
 
     /// With `keep_pointers`, the slots an evicted pipeline of this key bound stay storage buffer
-    /// pointers whatever they hold now.
+    /// pointers whatever they hold now. `evicted`: a pipeline of this key was evicted.
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
-        const VideoCommon::EvictedPointerSlots::Slots* keep_pointers = nullptr);
+        const VideoCommon::EvictedPointerSlots::Slots* keep_pointers, bool evicted);
 
     /// Builds the current key's pipeline again from what an evicted one kept, without translating
     std::unique_ptr<GraphicsPipeline> RebuildGraphicsPipeline(KeptGraphicsStages kept);
@@ -508,6 +508,8 @@ private:
     /// The driver stages of the boot load, the precache and the background prebuild; builds it
     /// lists a driver crash ended earlier are left out
     std::optional<DriverBuildJournal> build_journal;
+    /// When the boot load that started the background prebuild began, until the prebuild is done
+    std::optional<std::chrono::steady_clock::time_point> prebuild_load_begin;
 
     GraphicsPipelineCacheKey graphics_key{};
     /// Native titles: the state as the registers give it. FixedPipelineState refreshes some fields
@@ -547,6 +549,7 @@ private:
     std::unordered_map<u64, u64> cleared_frames; ///< Target address -> last frame it was cleared
     std::deque<std::pair<u64, std::unique_ptr<GraphicsPipeline>>> evicted_pipelines; ///< (tick, pipeline)
     std::unordered_set<u64> used_and_evicted; ///< Key hashes of pipelines used this session, evicted since
+    std::unordered_set<u64> evicted_hashes;   ///< Key hashes of evicted pipelines not created again
     VideoCommon::EvictedPointerSlots evicted_pointer_slots;
     /// The SPIR-V and stage infos of evicted pipelines, which build them again when used again
     VideoCommon::BoundedStore<GraphicsPipelineCacheKey, KeptGraphicsStages> kept_stages{0};

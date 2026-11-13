@@ -254,8 +254,7 @@ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
     // The hint takes the pages out of the working set at once (VirtualUnlock), whether or not
     // the host needs the RAM, and an image made again over them faults them all back in during
     // its upload (Ocarina of Time: 1% lows). Only when RAM is short.
-    if (!Common::IsLowOnMemory(Common::GetAvailablePhysicalMemory(),
-                               Common::GetMemInfo().TotalPhysicalMemory)) {
+    if (!Common::IsHostLowOnMemory()) {
         return;
     }
     struct Run {
@@ -263,6 +262,13 @@ void DeviceMemoryManager<Traits>::HintCold(DAddr address, size_t size) {
         VAddr virtual_address; ///< 0: no CPU mapping known
         u64 size;
     };
+    // Images at GPU addresses without memory get placeholder addresses past the device address
+    // space, which has no pages to look up.
+    constexpr DAddr address_space_end = DAddr{1} << AS_BITS;
+    if (address >= address_space_end) {
+        return;
+    }
+    size = static_cast<size_t>((std::min)(DAddr{size}, address_space_end - address));
     std::vector<Run> runs;
     const size_t page_end = Common::DivCeil(address + size, Memory::YUZU_PAGESIZE);
     for (size_t page = address >> Memory::YUZU_PAGEBITS; page < page_end; ++page) {

@@ -43,4 +43,7 @@ struct ProcessMemoryUsage {
 /// minus what is committed. No value where the host reports no such limit (anything but Windows).
 [[nodiscard]] std::optional<u64> GetSystemCommitRoom();
 
+/// IsLowOnMemory for this host, read again at most once a second.
+[[nodiscard]] bool IsHostLowOnMemory();
+
 } // namespace Common

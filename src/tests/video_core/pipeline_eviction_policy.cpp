@@ -9,6 +9,16 @@ using Vulkan::DefaultKeptPipelines;
 using Vulkan::KeptPipelinesForCache;
 using Vulkan::MaxKeptPipelines;
 using Vulkan::MaxKeptPipelinesForMemory;
+using Vulkan::MaxUnusedPrebuiltPipelines;
+using Vulkan::PrebuildLimit;
+
+TEST_CASE("Prebuild admission is bounded by remaining kept capacity", "[video_core][pipeline_eviction]") {
+    REQUIRE(PrebuildLimit(27962, 5000) == 22962);
+    REQUIRE(PrebuildLimit(DefaultKeptPipelines, DefaultKeptPipelines) == 0);
+    REQUIRE(PrebuildLimit(DefaultKeptPipelines, 9000) == 0);
+    REQUIRE(PrebuildLimit(DefaultKeptPipelines, 0) == DefaultKeptPipelines);
+    REQUIRE(PrebuildLimit(0, 1500) == MaxUnusedPrebuiltPipelines);
+}
 using Vulkan::PipelinesToEvict;
 
 namespace {

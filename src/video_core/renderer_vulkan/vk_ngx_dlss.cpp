@@ -295,7 +295,7 @@ bool NvidiaDlssUpscaler::Upscale(const Inputs &in) {
             }
         }
         auto color = Resource(in.color, in.render_size);
-        auto depth = Resource(in.depth, in.render_size);
+        auto depth = Resource(in.depth, in.depth_size.width != 0 ? in.depth_size : in.render_size);
         auto motion = Resource(in.motion_vectors, in.render_size);
         auto output = Resource(out, in.upscale_size, true);
         parameters->Set(NVSDK_NGX_Parameter_Color, static_cast<void *>(&color));

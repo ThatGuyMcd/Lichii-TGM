@@ -234,7 +234,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "upscaling to 4K. The explicit Ocarina anti-aliasing modes keep their selected 4K output.\nRequires NVIDIA DLSS to be enabled. Apply changes while playing; "
               "switching resolution may briefly pause rendering.\n"
               "Quality, Balanced, Performance and Ultra Performance select a supported DLSS mode "
-              "for the current render/output sizes. Unsupported sizes use Automatic and log the fallback."));
+                "for the current render/output sizes. Unsupported sizes use Automatic and log the fallback.\n"
+                "In docked Ocarina with Max Resolution enabled, Balanced, Performance and Ultra "
+                "Performance also lower the scene resolution at the next game start. An explicit "
+                "Ocarina render scale takes priority; its anti-aliasing modes keep their own output."));
     INSERT(Settings, nvidia_dlss_preset, tr("NVIDIA DLSS model preset:"),
            tr("Game / NVIDIA default keeps the existing game model choice. M, E, F, J, K and L "
               "select an explicit supported model. Ocarina's explicit preset takes priority.\n"

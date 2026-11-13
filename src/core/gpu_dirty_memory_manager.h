@@ -25,6 +25,17 @@ public:
     ~GPUDirtyMemoryManager() = default;
 
     void Collect(PAddr address, size_t size) {
+        // A transform describes only one half-page. Split uploads before making its mask.
+        while (size != 0) {
+            const size_t in_page = (std::min<size_t>)(size, page_size - (address & page_mask));
+            CollectInPage(address, in_page);
+            address += in_page;
+            size -= in_page;
+        }
+    }
+
+private:
+    void CollectInPage(PAddr address, size_t size) {
         TransformAddress t = BuildTransform(address, size);
         TransformAddress tmp, original;
         do {
@@ -48,6 +59,7 @@ public:
                                                 std::memory_order_relaxed));
     }
 
+public:
     /// Calls `callback` for each write collected and not yet applied, without consuming them: those
     /// still collecting and those a Gather is handing out.
     void ForEachPending(const std::function<void(PAddr, size_t)>& callback) {

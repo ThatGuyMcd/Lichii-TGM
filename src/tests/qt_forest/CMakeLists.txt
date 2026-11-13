@@ -69,11 +69,11 @@ if (BUILD_TESTING OR YUZU_TESTS)
         add_executable(system_settings_tests system_settings.cpp
             ../../yuzu/configuration/configure_system.cpp
             ../../yuzu/configuration/configure_system.h
-            ../../yuzu/configuration/configure_system.ui
             ../../yuzu/configuration/shared_widget.cpp
             ../../yuzu/configuration/shared_widget.h
             ../../yuzu/configuration/configuration_shared.cpp)
-        set_target_properties(system_settings_tests PROPERTIES AUTOMOC ON AUTOUIC ON)
+        set_target_properties(system_settings_tests PROPERTIES AUTOMOC ON AUTOUIC ON
+            AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../../yuzu/configuration")
         target_include_directories(system_settings_tests PRIVATE ../..)
         target_compile_features(system_settings_tests PRIVATE cxx_std_20)
         target_link_libraries(system_settings_tests PRIVATE core frontend_common qt_common common

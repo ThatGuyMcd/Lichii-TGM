@@ -10,6 +10,19 @@
 
 namespace VideoCommon {
 
+/// Native titles refresh their device budget every 30 frames. Ramp their cache ceiling across
+/// 8--10 GiB rather than making a large step when a changing budget crosses 10 GiB.
+constexpr u64 TextureGcDeviceCeiling(u64 budget, u64 base_ceiling, bool native) {
+    constexpr u64 GiB = u64{1} << 30;
+    u64 ceiling = (std::max)(base_ceiling, budget / 8 * 5);
+    if (budget >= 10 * GiB) {
+        ceiling = (std::max)(ceiling, budget - (5 * GiB / 2));
+    } else if (native && budget > 8 * GiB) {
+        ceiling = (std::max)(ceiling, 5 * GiB + (budget - 8 * GiB) * 5 / 4);
+    }
+    return ceiling;
+}
+
 /// Commit the texture cache leaves to the rest of the process and the system.
 constexpr u64 HostCommitReserve = u64{2} << 30;
 

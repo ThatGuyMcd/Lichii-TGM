@@ -11,6 +11,7 @@
 
 #include "common/common_types.h"
 #include "video_core/macro_turing.h"
+#include "video_core/macro_hle_oot.h"
 
 namespace {
 
@@ -63,6 +64,68 @@ Effects Analyze(std::initializer_list<Mme> instructions, u32 start = 0) {
 }
 
 } // Anonymous namespace
+
+TEST_CASE("OOT data RAM replacement agrees with the Turing interpreter",
+          "[video_core][macro][oot_macro]") {
+    namespace Oot = Tegra::OotMacros;
+    // A synthetic DWRITE from the two FIFO values followed by the END delay slot.
+    // No guest program bytes are part of this test.
+    const std::array instructions{
+        Mme{.end = true, .op = {31, 0}, .src_a = {28, 24}, .src_b = {29, 24}}, Mme{}};
+    const auto code = Code(instructions);
+    Tegra::TuringMacroInterpreter interpreter;
+    Tegra::TuringMacroInterpreter::DataRam expected{};
+    std::mt19937 random{0x717};
+    for (u32 invocation = 0; invocation < 256; ++invocation) {
+        const u32 index = random() % Oot::DataRamWords;
+        std::vector<u32> parameters{index, random()};
+        auto actual = expected;
+        interpreter.active_dram = &expected;
+        const auto result = interpreter.Execute(code, 0, parameters,
+                                                [](u32) { return 0U; },
+                                                [](u32, u32) { FAIL("Unexpected method write"); return false; });
+        REQUIRE(result.success);
+        REQUIRE(Oot::Run(Oot::Id::E68, parameters, actual,
+                         [](u32, u32) { FAIL("Unexpected HLE method write"); }));
+        REQUIRE(actual == expected);
+    }
+    const auto before = expected;
+    const std::array bad_parameters{Oot::DataRamWords, 0xabcdefU};
+    CHECK_FALSE(Oot::Run(Oot::Id::E68, bad_parameters, expected,
+                         [](u32, u32) { FAIL("Rejected HLE emitted a method"); }));
+    CHECK(expected == before);
+}
+
+TEST_CASE("OOT replacement preflight preserves state before fallback",
+          "[video_core][macro][oot_macro]") {
+    namespace Oot = Tegra::OotMacros;
+    Tegra::TuringMacroInterpreter::DataRam ram{};
+    ram[0x54d] = 3;
+    ram[0x54e] = 4;
+    const auto before = ram;
+    const std::array truncated_streams{1U, 0x123U, 0x456U, 2U, 0xffU, 0x789U};
+    CHECK_FALSE(Oot::Run(Oot::Id::E9A, truncated_streams, ram,
+                        [](u32, u32) { FAIL("Truncated stream macro emitted a method"); }));
+    CHECK(ram == before);
+    CHECK(Oot::Find(0x3b26ab7eb3fc9863ULL) == nullptr); // Conditional rendering uses real queries.
+    CHECK(Oot::Find(0xbe42b5cb86694207ULL) == nullptr); // No validated SDK fixture for E1C yet.
+}
+
+TEST_CASE("OOT macro identity includes its END delay slot and rejects truncated code",
+          "[video_core][macro][oot_macro]") {
+    namespace Oot = Tegra::OotMacros;
+    const std::array instructions{Fifo(0x100, true), Fifo(0x101), Fifo(0x102)};
+    auto code = Code(instructions);
+    const u64 hash = Oot::HashMacro(code, 0);
+    REQUIRE(hash != 0);
+    code[6] ^= 0x100;
+    CHECK(Oot::HashMacro(code, 0) == hash); // Past the delay slot.
+    code[3] ^= 0x100;
+    CHECK(Oot::HashMacro(code, 0) != hash);
+    CHECK(Oot::HashMacro(std::span{code}.first(3), 0) == 0);
+    CHECK(Oot::HashMacro(code, 0xffffffffU) == 0);
+    CHECK(Oot::HashMacro(std::vector<u32>(1024 * 3), 0) == 0);
+}
 
 TEST_CASE("Turing macro effects: a FIFO read writes its registers, up to the one after END",
           "[video_core][macro]") {

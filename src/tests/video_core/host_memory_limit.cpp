@@ -9,6 +9,26 @@
 #include "common/memory_detect.h"
 #include "video_core/texture_cache/host_memory_limit.h"
 
+TEST_CASE("Native texture ceilings change continuously with the device budget",
+          "[video_core][texture_cache][host_memory_limit]") {
+    using VideoCommon::TextureGcDeviceCeiling;
+    constexpr u64 GiB = u64{1} << 30;
+    CHECK(TextureGcDeviceCeiling(8 * GiB, 0, true) == 5 * GiB);
+    CHECK(TextureGcDeviceCeiling(9 * GiB, 0, true) == 25 * GiB / 4);
+    CHECK(TextureGcDeviceCeiling(10 * GiB, 0, true) == 15 * GiB / 2);
+    const u64 before = TextureGcDeviceCeiling(10 * GiB - 1, 0, true);
+    const u64 after = TextureGcDeviceCeiling(10 * GiB, 0, true);
+    CHECK(after - before <= 2);
+    CHECK(TextureGcDeviceCeiling(9 * GiB, 0, false) == 45 * GiB / 8);
+    constexpr u64 max = (std::numeric_limits<u64>::max)();
+    CHECK(TextureGcDeviceCeiling(max, 0, true) == max - 5 * GiB / 2);
+    u64 critical = TextureGcDeviceCeiling(12 * GiB, 0, true);
+    u64 expected = critical - GiB;
+    u64 minimum = expected - GiB;
+    VideoCommon::ClampToHostCriticalMemory(4 * GiB, GiB, expected, critical, minimum);
+    CHECK(critical == 4 * GiB); // The larger device ceiling still obeys the final host clamp.
+}
+
 namespace {
 
 constexpr u64 MiB = u64{1} << 20;

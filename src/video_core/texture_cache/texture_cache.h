@@ -242,9 +242,10 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
     const auto Configure = [&](bool allow_aggressive) {
         high_priority_mode = out_of_memory || used_memory() >= expected_memory;
         aggressive_mode = allow_aggressive && (out_of_memory || used_memory() >= critical_memory);
-        ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
-        ticks_to_destroy = TextureGcEffectiveMinAge(ticks_to_destroy, min_age, aggressive_mode);
-        num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
+        const auto work = TextureGcWorkFor(used_memory(), critical_memory, min_age,
+                                          high_priority_mode, aggressive_mode);
+        ticks_to_destroy = work.min_age;
+        num_iterations = work.iterations;
     };
     const auto Cleanup = [&](ImageId image_id) {
         if (num_iterations == 0) {
@@ -464,15 +465,8 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     const u64 budget_expected = expected_memory;
     u64 max_critical = MaxCriticalMemory;
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
-        const u64 budget = runtime.GetDeviceMemoryBudget();
-        max_critical = (std::max)(max_critical, budget / 8 * 5);
-        // Cards with 10 GiB or more of budget: 5/8 left ~7.3 GiB on a 12 GB RX 6700 XT, under what
-        // Ocarina's Kokiri Forest keeps alive, so every aggressive pass evicted its CostlyLoad ASTC
-        // textures (a 6144x6144 5x5 one, 31 MiB) and the game re-created them ~128 frames later:
-        // a 24 ms texture stall every ~3 s. Keep 2.5 GiB of the budget for everything else instead.
-        if (budget >= 10_GiB) {
-            max_critical = (std::max)(max_critical, budget - 2560_MiB);
-        }
+        max_critical = TextureGcDeviceCeiling(runtime.GetDeviceMemoryBudget(), max_critical,
+                                               native_thresholds_applied);
     }
     critical_memory = (std::min)(critical_memory, max_critical);
     expected_memory =
@@ -1706,6 +1700,11 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
         if (True(image.flags & ImageFlagBits::UnwrittenSparse)) {
             // Written at last: a backed image replaces it where it is used next.
             image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
+            RemoveImageViewReferences(image.image_view_ids);
+            for (size_t c : active_channel_ids) {
+                channel_storage[c].graphics_image_table.Invalidate();
+                channel_storage[c].compute_image_table.Invalidate();
+            }
             return;
         }
         if (True(image.flags & ImageFlagBits::SparseTiles)) {
@@ -1859,10 +1858,18 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
             }
         }
         image.dirty_layers.clear(); // all of it
+        image.dirty_ranges.clear();
         if (True(image.flags & ImageFlagBits::Remapped)) {
             continue;
         }
         image.flags |= ImageFlagBits::Remapped;
+        if (True(image.flags & ImageFlagBits::UnwrittenSparse)) {
+            RemoveImageViewReferences(image.image_view_ids);
+            for (size_t c : active_channel_ids) {
+                channel_storage[c].graphics_image_table.Invalidate();
+                channel_storage[c].compute_image_table.Invalidate();
+            }
+        }
     }
 }
 
@@ -5094,6 +5101,11 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
                         image.gpu_addr);
             Tegra::Nx2SparseMarkWritten(image.gpu_addr, image.guest_size_bytes);
             image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
+            RemoveImageViewReferences(image.image_view_ids);
+            for (size_t c : active_channel_ids) {
+                channel_storage[c].graphics_image_table.Invalidate();
+                channel_storage[c].compute_image_table.Invalidate();
+            }
             VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);
         }
         MarkModification(image);

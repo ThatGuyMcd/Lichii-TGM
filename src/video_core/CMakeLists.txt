@@ -103,6 +103,8 @@ add_library(video_core STATIC
     host1x/vic.cpp
     host1x/vic.h
     macro.cpp
+    macro_hle_oot.cpp
+    macro_hle_oot.h
     macro.h
     macro_memo.h
     macro_turing.h

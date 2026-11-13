@@ -26,6 +26,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
+#include "video_core/macro_hle_oot.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_cmdpage_diag.h"
@@ -1468,6 +1469,7 @@ struct Maxwell3D::FrontState {
     Regs::ShadowRamControl control{};
     u32 executing_macro{};
     std::vector<u32> parameters;
+    std::array<OotMacros::Lookup, 0x80> oot_macros;
     u64 calls{};
     /// A method the draw manager handles was sent since the back last ran DrawDeferred: only
     /// then can it have a deferred instanced draw to issue at the end of a macro.
@@ -2103,48 +2105,56 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             }
             return true;
         };
+        const u32 slot = ((method - MacroRegistersStart) >> 1) % positions.size();
+        const auto replacement = slot < fs.oot_macros.size()
+                                     ? fs.oot_macros[slot].Resolve(engine.native_code,
+                                                                   engine.native_code_generation,
+                                                                   start)
+                                     : OotMacros::Id::None;
+        if (!OotMacros::Run(replacement, fs.parameters, native_data_ram, emit)) {
 #ifdef ARCHITECTURE_x86_64
-        if (!engine.native_jit) {
-            engine.native_jit = std::make_shared<TuringMacroJit>();
-        }
-        engine.native_jit->Prepare(engine.native_code, engine.native_code_generation);
-        auto result = engine.native_jit->Execute(
-            start, fs.parameters, std::span<u32>{native_data_ram}, read, emit);
-        if (!result.success && !result.side_effects &&
-            result.error == TuringMacroInterpreter::OutsideCodeError) {
-            // The compiled program disagrees with the uploaded words about where this entry
-            // point is and rejected the call (seen with the GPU thread split on Ocarina of Time,
-            // where every macro failed and nothing drew). Run it on the interpreter instead: it
-            // decodes the words as they are, and a macro that really is outside the uploaded RAM
-            // fails there too and is reported as before. Only calls that wrote nothing outside
-            // their registers are replayed.
-            // MME_DMA_READ_FIFOED appends to fs.parameters through emit, so the replay reads the
-            // live FIFO: the interpreter takes that vector and the words land in the same place
-            // the JIT's call would have put them. A replay that fails too is undone.
-            std::vector<u32> before_replay{fs.parameters};
-            const auto replayed = engine.native_interpreter.Execute(
-                engine.native_code, start, fs.parameters, read, emit);
-            if (replayed.success) {
-                result = replayed;
-                static std::atomic<u32> fallbacks{};
-                if (fallbacks.fetch_add(1, std::memory_order_relaxed) % 4096 == 0) {
-                    LOG_WARNING(HW_GPU,
-                                "Native MME (split front): the compiled program rejected start={:#x}; "
-                                "ran it on the interpreter ({} calls so far)",
-                                start, fallbacks.load(std::memory_order_relaxed));
-                }
-            } else {
-                fs.parameters = std::move(before_replay);
+            if (!engine.native_jit) {
+                engine.native_jit = std::make_shared<TuringMacroJit>();
             }
-        }
+            engine.native_jit->Prepare(engine.native_code, engine.native_code_generation);
+            auto result = engine.native_jit->Execute(
+                start, fs.parameters, std::span<u32>{native_data_ram}, read, emit);
+            if (!result.success && !result.side_effects &&
+                result.error == TuringMacroInterpreter::OutsideCodeError) {
+                // The compiled program disagrees with the uploaded words about where this entry
+                // point is and rejected the call (seen with the GPU thread split on Ocarina of Time,
+                // where every macro failed and nothing drew). Run it on the interpreter instead: it
+                // decodes the words as they are, and a macro that really is outside the uploaded RAM
+                // fails there too and is reported as before. Only calls that wrote nothing outside
+                // their registers are replayed.
+                // MME_DMA_READ_FIFOED appends to fs.parameters through emit, so the replay reads the
+                // live FIFO: the interpreter takes that vector and the words land in the same place
+                // the JIT's call would have put them. A replay that fails too is undone.
+                std::vector<u32> before_replay{fs.parameters};
+                const auto replayed = engine.native_interpreter.Execute(
+                    engine.native_code, start, fs.parameters, read, emit);
+                if (replayed.success) {
+                    result = replayed;
+                    static std::atomic<u32> fallbacks{};
+                    if (fallbacks.fetch_add(1, std::memory_order_relaxed) % 4096 == 0) {
+                        LOG_WARNING(HW_GPU,
+                                    "Native MME (split front): the compiled program rejected start={:#x}; "
+                                    "ran it on the interpreter ({} calls so far)",
+                                    start, fallbacks.load(std::memory_order_relaxed));
+                    }
+                } else {
+                    fs.parameters = std::move(before_replay);
+                }
+            }
 #else
-        const auto result =
-            engine.native_interpreter.Execute(engine.native_code, start, fs.parameters, read, emit);
+            const auto result =
+                engine.native_interpreter.Execute(engine.native_code, start, fs.parameters, read, emit);
 #endif
-        if (!result.success) {
-            engine.native_execution_failed = true;
-            LOG_ERROR(HW_GPU, "Native MME (split front) failed: start={:#x}, consumed={}/{}, error={}",
-                      start, result.consumed, parameter_count, result.error);
+            if (!result.success) {
+                engine.native_execution_failed = true;
+                LOG_ERROR(HW_GPU, "Native MME (split front) failed: start={:#x}, consumed={}/{}, error={}",
+                          start, result.consumed, parameter_count, result.error);
+            }
         }
     }
     fs.parameters.clear();
@@ -2559,7 +2569,8 @@ void Maxwell3D::DrawFromGpuArguments(Core::System& system, GPUVAddr arguments, D
     draw_manager.gpu_draw_arguments.reset();
 }
 
-void Maxwell3D::FrontTrackInstanceLoop(FrontState& fs, u32 method, u32 value) {
+// GCC 13 -O3 can miscompile the caller's macro-upload loop when this switch is inlined.
+YUZU_NO_INLINE void Maxwell3D::FrontTrackInstanceLoop(FrontState& fs, u32 method, u32 value) {
     switch (method) {
     case MAXWELL3D_REG_INDEX(draw.begin):
         // Instance id, bits 27:26: First leaves an instance loop, Subsequent enters one.

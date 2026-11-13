@@ -1358,6 +1358,9 @@ PipelineCache::~PipelineCache() {
     StopBackgroundJobs();
     // The pipelines' builds end before the driver pipeline cache they build into goes.
     shader_jobs->Shutdown();
+    // Driver jobs are finished before pending products or their binary/cache owners are freed.
+    translated_graphics.clear();
+    translating_graphics.clear();
     Common::NoteShutdownProgress();
     serialization_thread.WaitForRequests();
     Common::NoteShutdownProgress();
@@ -4589,6 +4592,13 @@ void ReportUnsupportedMeshPipeline(const GraphicsPipelineCacheKey& key, const Pr
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     namespace StutterTrace = VideoCommon::StutterTrace;
+    if (num_translated.load(std::memory_order_acquire) != 0) {
+        AdoptTranslatedGraphicsPipelines();
+    }
+    if (const auto pending = translating_graphics.find(graphics_key);
+        pending != translating_graphics.end() && !WaitForGraphicsTranslation(pending->second)) {
+        return nullptr;
+    }
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
     auto& pipeline{pair->second};
     if (is_new) {
@@ -4617,6 +4627,16 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
             } else {
                 translated_again += evicted ? 1 : 0;
                 pipeline = CreateGraphicsPipeline(keep ? &*keep : nullptr, evicted);
+                if (!pipeline) {
+                    if (const auto pending = translating_graphics.find(graphics_key);
+                        pending != translating_graphics.end()) {
+                        if (!WaitForGraphicsTranslation(pending->second)) {
+                            return nullptr;
+                        }
+                        // A detached miss erases this null slot; reacquire the cache entry.
+                        return CurrentGraphicsPipelineSlowPath();
+                    }
+                }
             }
         }
     } else if (StutterTrace::Enabled() && pipeline && !pipeline->WasUsed()) {
@@ -4662,6 +4682,9 @@ PipelineCache::WarmResult PipelineCache::WarmGraphicsLibraries(
 /// with, and every 600 frames evicts unused pipelines and forgets old render target records.
 void PipelineCache::TickFrame() {
     ++frame_count;
+    if (num_translated.load(std::memory_order_acquire) != 0) {
+        AdoptTranslatedGraphicsPipelines();
+    }
     native_wait_budget_us =
         static_cast<s64>(Settings::values.native_pipeline_wait_ms.GetValue()) * 1000;
     if (device.IsExtGraphicsPipelineLibrarySupported()) {
@@ -4899,26 +4922,7 @@ bool PipelineCache::CurrentTargetIsRedrawn() {
 /// draw may be skipped while it builds (asynchronous shaders; native draws only with
 /// EDEN_NX2_ASYNC_DISCARD=1; heavy pipelines with EDEN_NX2_HEAVY_SKIP). Each nullptr returned for
 /// an unbuilt pipeline is counted for the log.
-GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
-    static const size_t heavy_skip_words = HeavySkipWords();
-    // Tracked on every draw so a target's history is known before a heavy pipeline needs it.
-    const bool redrawn = heavy_skip_words != 0 && CurrentTargetIsRedrawn();
-    if (pipeline->IsBuilt()) {
-        if (pipeline->heavy_skipped_draws != 0) {
-            LOG_INFO(Render_Vulkan,
-                     "Nx2Perf heavy_skip: {:016x} ({} instructions) built, {} draws skipped over "
-                     "{:.0f} ms",
-                     pipeline->KeyHash(), pipeline->SourceWords(), pipeline->heavy_skipped_draws,
-                     std::chrono::duration<double, std::milli>(
-                         std::chrono::steady_clock::now() - pipeline->heavy_skip_begin)
-                         .count());
-            pipeline->heavy_skipped_draws = 0;
-        }
-        return pipeline;
-    }
-    if (!use_asynchronous_shaders) {
-        return pipeline;
-    }
+PipelineCache::PendingDrawPolicy PipelineCache::CurrentPendingDrawPolicy() const {
     // EDEN_NX2_ASYNC_DISCARD=1: skip native draws whose pipeline is still building instead of
     // waiting for it (experimental; the draw may be missing for a frame or more).
     /// Reads EDEN_NX2_ASYNC_DISCARD once and logs when it is on.
@@ -4947,6 +4951,62 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     }();
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
+    // The environment variable wins over the setting; the setting is read per call.
+    NativePendingMode mode = NativePendingMode::Wait;
+    if (native) {
+        switch (Settings::values.native_async_draws.GetValue()) {
+        case Settings::NativeAsyncDraws::Bounded:
+            mode = NativePendingMode::Bounded;
+            break;
+        case Settings::NativeAsyncDraws::Skip:
+            mode = NativePendingMode::Skip;
+            break;
+        default:
+            break;
+        }
+        if (discard_native) {
+            const auto pending_jobs = [this] {
+                const auto priorities = shader_jobs->Stats().priorities;
+                const auto& need_now =
+                    priorities[static_cast<size_t>(VideoCommon::ShaderJobPriority::NeedNow)];
+                const auto& soon =
+                    priorities[static_cast<size_t>(VideoCommon::ShaderJobPriority::Soon)];
+                return need_now.queued + need_now.running + soon.queued + soon.running;
+            };
+            mode = maxwell3d->regs.zeta_enable != 0 || pending_jobs() >= discard_min_pending
+                       ? NativePendingMode::Skip
+                       : NativePendingMode::Wait;
+        }
+    }
+    // Native draws are judged by the heuristic only when a mode other than Wait is chosen.
+    const bool can_discard = CanDiscardPendingDraw(
+        native, maxwell3d->regs.zeta_enable != 0, draw_state.draw_element_count,
+        draw_state.draw_element_count, native && mode != NativePendingMode::Wait);
+    return {native, mode, can_discard};
+}
+
+GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
+    static const size_t heavy_skip_words = HeavySkipWords();
+    // Tracked on every draw so a target's history is known before a heavy pipeline needs it.
+    const bool redrawn = heavy_skip_words != 0 && CurrentTargetIsRedrawn();
+    if (pipeline->IsBuilt()) {
+        if (pipeline->heavy_skipped_draws != 0) {
+            LOG_INFO(Render_Vulkan,
+                     "Nx2Perf heavy_skip: {:016x} ({} instructions) built, {} draws skipped over "
+                     "{:.0f} ms",
+                     pipeline->KeyHash(), pipeline->SourceWords(), pipeline->heavy_skipped_draws,
+                     std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - pipeline->heavy_skip_begin)
+                         .count());
+            pipeline->heavy_skipped_draws = 0;
+        }
+        return pipeline;
+    }
+    if (!use_asynchronous_shaders) {
+        return pipeline;
+    }
+    const auto policy = CurrentPendingDrawPolicy();
+    const bool native = policy.native;
     pipeline->hold_reason = !native || heavy_skip_words == 0 ? 0 : 1;
     {
         const auto& regs = maxwell3d->regs;
@@ -4981,37 +5041,8 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
         ++heavy_skip_counters.draws;
         return nullptr;
     }
-    // The environment variable wins over the setting; the setting is read per call.
-    NativePendingMode mode = NativePendingMode::Wait;
-    if (native) {
-        switch (Settings::values.native_async_draws.GetValue()) {
-        case Settings::NativeAsyncDraws::Bounded:
-            mode = NativePendingMode::Bounded;
-            break;
-        case Settings::NativeAsyncDraws::Skip:
-            mode = NativePendingMode::Skip;
-            break;
-        default:
-            break;
-        }
-        if (discard_native) {
-            const auto pending_jobs = [this] {
-                const auto priorities = shader_jobs->Stats().priorities;
-                const auto& need_now =
-                    priorities[static_cast<size_t>(VideoCommon::ShaderJobPriority::NeedNow)];
-                const auto& soon =
-                    priorities[static_cast<size_t>(VideoCommon::ShaderJobPriority::Soon)];
-                return need_now.queued + need_now.running + soon.queued + soon.running;
-            };
-            mode = maxwell3d->regs.zeta_enable != 0 || pending_jobs() >= discard_min_pending
-                       ? NativePendingMode::Skip
-                       : NativePendingMode::Wait;
-        }
-    }
-    // Native draws are judged by the heuristic only when a mode other than Wait is chosen.
-    const bool can_discard = CanDiscardPendingDraw(
-        native, maxwell3d->regs.zeta_enable != 0, draw_state.draw_element_count,
-        draw_state.draw_element_count, native && mode != NativePendingMode::Wait);
+    const auto mode = policy.mode;
+    const bool can_discard = policy.can_discard;
     bool discard = can_discard;
     if (native) {
         switch (DecideNativePending(mode, can_discard, native_wait_budget_us)) {
@@ -5108,7 +5139,7 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
                                             GraphicsStages& out, bool reference_spirv,
                                             ParallelTranslation* parallel,
                                             std::vector<std::shared_ptr<ShaderPools>>* stage_pools,
-                                            bool allow_libraries) {
+                                            bool allow_libraries, std::optional<bool> oot_motion) {
     auto hash = key.Hash();
     std::vector<VideoCommon::StageTranslation> translations;
     std::array<VideoCommon::StageTranslation*, Maxwell::MaxShaderProgram> translated{};
@@ -5470,9 +5501,9 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
     }();
     const bool mesh_shadow = mesh_motion == 's';
     const bool oot_z32 =
-        VideoCommon::OotDlss::ObjectMotionRequested() &&
-        (program_id != 0 ? program_id : Settings::GetCurrentProgramID()) ==
-            VideoCommon::OotDlss::ProgramId &&
+        oot_motion.value_or(VideoCommon::OotDlss::ObjectMotionRequested() &&
+                            (program_id != 0 ? program_id : Settings::GetCurrentProgramID()) ==
+                                VideoCommon::OotDlss::ProgramId) &&
         key.state.depth_enabled != 0 &&
         key.state.depth_format == static_cast<u32>(Tegra::DepthFormat::Z32_FLOAT);
     const char* oot_reject = nullptr;
@@ -5732,7 +5763,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ParallelTranslation* parallel, bool libraries_only, bool notify_runtime_build,
     DescriptorPool* transient_descriptors,
     std::array<std::vector<u32>, Maxwell::MaxShaderStage>* spirv_out,
-    bool* frozen_pointer_word) try {
+    bool* frozen_pointer_word, bool allow_translation, std::optional<bool> oot_motion) try {
     LOG_DEBUG(Render_Vulkan, "{:#016x}", key.Hash());
     auto translation_key = MakeShaderTranslationKey(key, envs, device);
     translation_key.emission_contract =
@@ -5742,9 +5773,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     // Motion injection reads the depth target and the current title/request in addition to
     // the upstream runtime key. Never reuse an ordinary shader for its motion variant.
     translation_key.motion_contract =
-        (VideoCommon::OotDlss::ObjectMotionRequested() &&
-         (program_id != 0 ? program_id : Settings::GetCurrentProgramID()) ==
-             VideoCommon::OotDlss::ProgramId && key.state.depth_enabled &&
+        (oot_motion.value_or(VideoCommon::OotDlss::ObjectMotionRequested() &&
+                             (program_id != 0 ? program_id : Settings::GetCurrentProgramID()) ==
+                                 VideoCommon::OotDlss::ProgramId) && key.state.depth_enabled &&
          key.state.depth_format == static_cast<u32>(Tegra::DepthFormat::Z32_FLOAT)) ? 1U : 0U;
     const bool reuse_allowed = !IsAmdProprietaryWindows(device.GetDriverID()) &&
                                !libraries_only && !spirv_out && !VideoCommon::Nx2Perf::Verify();
@@ -5789,6 +5820,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         pipeline->SetSourceWords(reused->source_words);
         return pipeline;
     }
+    if (!allow_translation) {
+        return nullptr;
+    }
     std::vector<RecordingEnvironment> recorders;
     std::vector<Shader::Environment*> recorded_envs;
     recorders.reserve(envs.size());
@@ -5804,7 +5838,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     };
     GraphicsStages stages;
     if (!TranslateGraphicsStages(pools, key, recorded_envs, stages, emit_pools != nullptr, parallel,
-                                 &stage_pools, spirv_out == nullptr)) {
+                                 &stage_pools, spirv_out == nullptr, oot_motion)) {
         return nullptr;
     }
     auto& programs{stages.programs};
@@ -6237,6 +6271,22 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                              precompiled_record ? &*precompiled_record : nullptr);
         }
     } else {
+        if (!keep_pointers && CanTranslateAsynchronously()) {
+            main_pools.ReleaseContents();
+            pipeline = CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(),
+                                              nullptr, true, nullptr, nullptr, false, true,
+                                              nullptr, nullptr, nullptr, false);
+            if (pipeline) {
+                SerializeGraphicsPipeline(graphics_key, std::move(environments.envs));
+                return pipeline;
+            }
+            if (QueueGraphicsTranslation(environments.envs)) {
+                return nullptr;
+            }
+            GraphicsEnvironments fresh;
+            environments = std::move(fresh);
+            GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
+        }
     // Texture descriptors are read without a flush (ReadTextureInfo), so parallel translation
     // never submits through the GPU thread's scheduler or needs a pool-wide flush.
     if (std::ranges::count_if(graphics_key.unique_hashes, [](u64 hash) { return hash != 0; }) >=
@@ -6255,16 +6305,24 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         pipeline = CreateGraphicsPipeline(pools, graphics_key, environments.Span(), nullptr, true,
                                           std::move(emit_pools), parallel ? &*parallel : nullptr);
     }
-    if (!pipeline || pipeline_cache_filename.empty()) {
-        return pipeline;
+    if (pipeline) {
+        SerializeGraphicsPipeline(graphics_key, std::move(environments.envs));
     }
-    if (disk_pipelines.contains(graphics_key.Hash())) {
+    return pipeline;
+}
+
+void PipelineCache::SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                               GraphicsEnvironmentArray envs) {
+    if (pipeline_cache_filename.empty()) {
+        return;
+    }
+    if (disk_pipelines.contains(key.Hash())) {
         // In the disk cache already, only not built at boot.
         QueueVulkanPipelineCacheFlush();
-        return pipeline;
+        return;
     }
-    disk_pipelines.insert(graphics_key.Hash());
-    serialization_thread.QueueWork([this, key = graphics_key, envs = std::move(environments.envs)] {
+    disk_pipelines.insert(key.Hash());
+    serialization_thread.QueueWork([this, key, envs = std::move(envs)] {
         boost::container::static_vector<const GenericEnvironment*, Maxwell::MaxShaderProgram>
             env_ptrs;
         for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
@@ -6281,7 +6339,165 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
     });
     QueueVulkanPipelineCacheFlush();
-    return pipeline;
+}
+
+bool PipelineCache::CanTranslateAsynchronously() const {
+    if (!use_asynchronous_shaders || synchronous_graphics.contains(graphics_key)) {
+        return false;
+    }
+    const auto policy = CurrentPendingDrawPolicy();
+    if (!policy.native || policy.mode == NativePendingMode::Wait || !policy.can_discard) {
+        return false;
+    }
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        if (graphics_key.unique_hashes[index] != 0 &&
+            (!shader_infos[index] || !shader_infos[index]->lowered_native)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool PipelineCache::QueueGraphicsTranslation(GraphicsEnvironmentArray& envs) {
+    std::shared_ptr<const std::vector<Tegra::Texture::TICEntry>> texture_pool;
+    u64 snapshot_bytes{};
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        if (graphics_key.unique_hashes[index] == 0) {
+            continue;
+        }
+        if (!envs[index].Detach(texture_pool)) {
+            return false;
+        }
+        snapshot_bytes += envs[index].SnapshotSizeBytes();
+    }
+    if (texture_pool) {
+        snapshot_bytes += texture_pool->size() * sizeof(Tegra::Texture::TICEntry);
+    }
+    auto reservation = queued_ir.TryReserve(snapshot_bytes);
+    if (!reservation) {
+        return false;
+    }
+    const bool oot_motion = VideoCommon::OotDlss::ObjectMotionRequested() &&
+                            (program_id != 0 ? program_id : Settings::GetCurrentProgramID()) ==
+                                VideoCommon::OotDlss::ProgramId;
+    auto job = shader_jobs->Submit({
+        .priority = VideoCommon::ShaderJobPriority::Soon,
+        .cpu_bytes = TranslationBytes(snapshot_bytes),
+        .cpu = [this, key = graphics_key, envs = std::move(envs), oot_motion,
+                reservation = std::move(reservation)](VideoCommon::ShaderJobContext& context) mutable
+            -> VideoCommon::ShaderDriverStage {
+            if (!context.StopRequested()) {
+                TranslateGraphicsPipeline(key, std::move(envs), oot_motion);
+            }
+            reservation.reset();
+            return {};
+        },
+    });
+    translating_graphics.emplace(graphics_key, std::move(job));
+    return true;
+}
+
+bool PipelineCache::WaitForGraphicsTranslation(VideoCommon::ShaderJobHandle job) {
+    const auto adopt = [&] {
+        AdoptTranslatedGraphicsPipelines();
+        // A cancelled/failed scheduler job may have produced no result (including an allocation
+        // failure handing it back). Release its null cache slot so the owner can translate it.
+        if (job.Ready() && translating_graphics.erase(graphics_key) != 0) {
+            synchronous_graphics.insert(graphics_key);
+            const auto current = graphics_cache.find(graphics_key);
+            if (current != graphics_cache.end() && !current->second) {
+                graphics_cache.erase(current);
+            }
+        }
+        return true;
+    };
+    if (job.Ready()) {
+        return adopt();
+    }
+    const auto policy = CurrentPendingDrawPolicy();
+    const auto action = policy.native
+                            ? DecideNativePending(policy.mode, policy.can_discard,
+                                                  native_wait_budget_us)
+                            : policy.can_discard ? NativeDrawAction::Skip : NativeDrawAction::Wait;
+    switch (action) {
+    case NativeDrawAction::Skip:
+        return false;
+    case NativeDrawAction::Wait:
+        shader_jobs->RunOrWait(job);
+        break;
+    case NativeDrawAction::WaitTimed: {
+        if (translating_graphics.size() > GetTotalPipelineWorkers()) {
+            return false;
+        }
+        shader_jobs->Promote(job, VideoCommon::ShaderJobPriority::NeedNow);
+        const auto begin = std::chrono::steady_clock::now();
+        const bool ready = job.WaitFor(std::chrono::microseconds{native_wait_budget_us});
+        const auto spent = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now() - begin).count();
+        native_wait_budget_us -= spent;
+        native_wait_used_us += spent;
+        if (!ready) {
+            return false;
+        }
+        break;
+    }
+    }
+    return adopt();
+}
+
+void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                               GraphicsEnvironmentArray envs, bool oot_motion) {
+    boost::container::static_vector<Shader::Environment*, Maxwell::MaxShaderProgram> env_ptrs;
+    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+        if (key.unique_hashes[index] != 0) {
+            env_ptrs.push_back(&envs[index]);
+        }
+    }
+    std::shared_ptr<ShaderPools> emit_pools = TakeSparePools();
+    ShaderPools& pools = *emit_pools;
+    std::unique_ptr<GraphicsPipeline> pipeline;
+    bool translate_on_gpu_thread{};
+    try {
+        pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, true,
+                                          std::move(emit_pools), nullptr, false, true,
+                                          nullptr, nullptr, nullptr, true, oot_motion);
+    } catch (const VideoCommon::DetachedEnvironmentMiss&) {
+        translate_on_gpu_thread = true;
+    } catch (const std::exception& exception) {
+        LOG_ERROR(Render_Vulkan, "Detached graphics translation failed: {}", exception.what());
+        translate_on_gpu_thread = true;
+    }
+    for (auto& env : envs) {
+        env.DropSnapshot();
+    }
+    std::scoped_lock lock{translated_mutex};
+    translated_graphics.push_back({key, std::move(pipeline), std::move(envs),
+                                   translate_on_gpu_thread});
+    num_translated.store(translated_graphics.size(), std::memory_order_release);
+}
+
+void PipelineCache::AdoptTranslatedGraphicsPipelines() {
+    std::vector<TranslatedGraphicsPipeline> translated;
+    {
+        std::scoped_lock lock{translated_mutex};
+        translated.swap(translated_graphics);
+        num_translated.store(0, std::memory_order_relaxed);
+    }
+    for (auto& result : translated) {
+        translating_graphics.erase(result.key);
+        if (result.translate_on_gpu_thread) {
+            synchronous_graphics.insert(result.key);
+            const auto current = graphics_cache.find(result.key);
+            if (current != graphics_cache.end() && !current->second) {
+                graphics_cache.erase(current);
+            }
+            continue;
+        }
+        if (result.pipeline) {
+            SerializeGraphicsPipeline(result.key, std::move(result.envs));
+        }
+        graphics_cache.insert_or_assign(result.key, std::move(result.pipeline));
+    }
 }
 
 ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(const ComputePipelineCacheKey& key,

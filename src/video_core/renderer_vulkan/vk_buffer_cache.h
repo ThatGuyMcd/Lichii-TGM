@@ -424,7 +424,7 @@ private:
     u64 bound_index_epoch = 0;
     bool bound_index_valid = false;
 
-    Nx2ListSlots nx2_list_slots{memory_allocator, scheduler};
+    Nx2ListSlots nx2_list_slots;
 };
 
 struct BufferCacheParams {

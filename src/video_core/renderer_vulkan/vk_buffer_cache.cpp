@@ -442,7 +442,9 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
       staging_pool{staging_pool_}, guest_descriptor_queue{guest_descriptor_queue_},
       quad_index_pass(device, scheduler, descriptor_pool, staging_pool,
                       compute_pass_descriptor_queue),
-      multi_range_buffers(device_), reorder_check{UploadReorderCheck::Create(scheduler_)} {
+        multi_range_buffers(device_), reorder_check{UploadReorderCheck::Create(scheduler_)},
+        nx2_list_slots{device_, memory_allocator_, scheduler_, descriptor_pool,
+                       compute_pass_descriptor_queue} {
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool enable_vertex_repack = VertexRepackEnabled();
     LOG_INFO(Render_Vulkan, "69-byte vertex layout repacking {} ({})",

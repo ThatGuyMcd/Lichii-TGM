@@ -6,6 +6,7 @@
 
 #include "common/logging.h"
 #include "video_core/renderer_vulkan/nx2_list_slots.h"
+#include "video_core/renderer_vulkan/vk_compute_pass.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 
@@ -20,6 +21,14 @@ template <typename T, size_t Extent>
     return {reinterpret_cast<const u8*>(words.data()), words.size_bytes()};
 }
 } // Anonymous namespace
+
+Nx2ListSlots::Nx2ListSlots(const Device& device_, MemoryAllocator& memory_allocator_,
+                           Scheduler& scheduler_, DescriptorPool& descriptor_pool_,
+                           ComputePassDescriptorQueue& descriptor_queue_)
+    : device{device_}, memory_allocator{memory_allocator_}, scheduler{scheduler_},
+      descriptor_pool{descriptor_pool_}, descriptor_queue{descriptor_queue_} {}
+
+Nx2ListSlots::~Nx2ListSlots() = default;
 
 void Nx2ListSlots::Release(u32 slot) {
     if (slot >= SlotCount) {
@@ -41,14 +50,13 @@ void Nx2ListSlots::Snapshot(VkBuffer src, u64 src_offset, u32 count, u32 slot) {
     const VkDeviceSize base = VkDeviceSize{slot} * SlotBytes;
     copies.clear();
     copies.push_back(VkBufferCopy{src_offset, base, VkDeviceSize{count} * 4});
-    if (count == Tegra::Nx2ListIndirect::SlotWords) {
-        // The grid as DispatchNativeCompute takes it: height and depth are 16 bits. The upper
-        // halves of their words in the slot stay 0 from the fill (Prepare).
-        copies.push_back(VkBufferCopy{src_offset, base + DispatchOffset, 4});
-        copies.push_back(VkBufferCopy{src_offset + 4, base + DispatchOffset + 4, 2});
-        copies.push_back(VkBufferCopy{src_offset + 8, base + DispatchOffset + 8, 2});
-    }
     RecordCopies(src, *buffer, copies);
+    if (count == Tegra::Nx2ListIndirect::SlotWords) {
+        // Keep the raw snapshot for owed uploads, and derive the QMD's 31/16/16-bit grid.
+        arguments_pass->Convert(*buffer, VkDeviceSize{SlotCount} * SlotBytes,
+                                static_cast<u32>(base / sizeof(u32)),
+                                static_cast<u32>((base + DispatchOffset) / sizeof(u32)));
+    }
 }
 
 void Nx2ListSlots::NoteOwed(DAddr device_addr, u32 value, u32 guest_word) {
@@ -171,12 +179,14 @@ void Nx2ListSlots::Prepare() {
             .flags = 0,
             .size = VkDeviceSize{SlotCount} * SlotBytes,
             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = nullptr,
         },
         MemoryUsage::DeviceLocal);
+    arguments_pass = std::make_unique<ListGridArgumentsPass>(device, scheduler, descriptor_pool,
+                                                            descriptor_queue);
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([dst = *buffer](vk::CommandBuffer cmdbuf) {
         static constexpr VkMemoryBarrier WRITE_BARRIER{
@@ -249,12 +259,12 @@ void Nx2ListSlots::CheckDispatch(u32 slot) {
         return;
     }
     const auto& words = check_words[slot];
-    // The grid DispatchNativeCompute dispatches from the words (the width as the slot has it).
-    const std::array<u32, 3> grid{words[0], words[1] & 0xffff, words[2] & 0xffff};
+    // The same bit widths as the QMD and the conversion shader.
+    const std::array<u32, 3> grid{words[0] & 0x7fffffff, words[1] & 0xffff, words[2] & 0xffff};
     if (!(grid[0] && grid[1] && grid[2])) {
         Stats::Count(Stats::Get().empty_grids);
     }
-    if (grid[0] >> 31) {
+    if (words[0] >> 31) {
         Stats::Count(Stats::Get().wide_grids);
     }
     CheckRecord(Stats::Check::Dispatch, slot, *buffer,

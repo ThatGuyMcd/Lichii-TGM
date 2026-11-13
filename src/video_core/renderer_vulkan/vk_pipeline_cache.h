@@ -39,6 +39,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/bounded_store.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/renderer_vulkan/async_draw_policy.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
@@ -212,6 +213,30 @@ private:
     /// may be skipped while it builds (asynchronous shaders, CanDiscardPendingDraw, heavy skip).
     [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline);
 
+    struct PendingDrawPolicy {
+        bool native;
+        NativePendingMode mode;
+        bool can_discard;
+    };
+    [[nodiscard]] PendingDrawPolicy CurrentPendingDrawPolicy() const;
+    using GraphicsEnvironmentArray =
+        std::array<VideoCommon::GraphicsEnvironment,
+                   Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram>;
+    struct TranslatedGraphicsPipeline {
+        GraphicsPipelineCacheKey key;
+        std::unique_ptr<GraphicsPipeline> pipeline;
+        GraphicsEnvironmentArray envs;
+        bool translate_on_gpu_thread{};
+    };
+    [[nodiscard]] bool CanTranslateAsynchronously() const;
+    bool QueueGraphicsTranslation(GraphicsEnvironmentArray& envs);
+    bool WaitForGraphicsTranslation(VideoCommon::ShaderJobHandle job);
+    void TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                   GraphicsEnvironmentArray envs, bool oot_motion);
+    void AdoptTranslatedGraphicsPipelines();
+    void SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                   GraphicsEnvironmentArray envs);
+
     /// EDEN_NX2_HEAVY_SKIP: the current draw's render target was also drawn to in one of the two
     /// frames before this one, so it is redrawn every frame and a skipped draw only shows for a
     /// moment. A target drawn once (a baked texture) would keep the missing draw.
@@ -246,7 +271,8 @@ private:
                                  std::span<Shader::Environment* const> envs, GraphicsStages& out,
                                  bool reference_spirv, ParallelTranslation* parallel = nullptr,
                                  std::vector<std::shared_ptr<ShaderPools>>* stage_pools = nullptr,
-                                 bool allow_libraries = true);
+                                 bool allow_libraries = true,
+                                 std::optional<bool> oot_motion = std::nullopt);
 
     /// Builds the pipeline as a job of shader_jobs with build_in_parallel, else leaves it for the
     /// caller's Build() (see BuildQueue). With `parallel` the stages translate at once on
@@ -259,7 +285,8 @@ private:
         ParallelTranslation* parallel = nullptr, bool libraries_only = false,
         bool notify_runtime_build = true, DescriptorPool* transient_descriptors = nullptr,
         std::array<std::vector<u32>, 5>* spirv_out = nullptr,
-        bool* frozen_pointer_word = nullptr);
+        bool* frozen_pointer_word = nullptr, bool allow_translation = true,
+        std::optional<bool> oot_motion = std::nullopt);
 
     /// Released IR pools for a build, or new ones
     [[nodiscard]] std::shared_ptr<ShaderPools> TakeSparePools();
@@ -510,6 +537,11 @@ private:
     /// IR of the pipelines whose job emits their SPIR-V
     QueuedIrBudget queued_ir{VideoCommon::DefaultShaderJobBudget()};
     std::optional<ScheduledPrebuild<GraphicsPipelineCacheKey, GraphicsPipeline>> scheduled_prebuild;
+    std::unordered_map<GraphicsPipelineCacheKey, VideoCommon::ShaderJobHandle> translating_graphics;
+    std::unordered_set<GraphicsPipelineCacheKey> synchronous_graphics;
+    std::mutex translated_mutex;
+    std::vector<TranslatedGraphicsPipeline> translated_graphics;
+    std::atomic<size_t> num_translated{};
     /// The driver stages of the boot load, the precache and the background prebuild; builds it
     /// lists a driver crash ended earlier are left out
     std::optional<DriverBuildJournal> build_journal;

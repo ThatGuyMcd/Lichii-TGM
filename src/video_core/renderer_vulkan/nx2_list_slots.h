@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -16,17 +17,21 @@
 #include "common/common_types.h"
 #include "video_core/nx2_list_indirect.h"
 #include "video_core/nx2_list_indirect_stats.h"
+#include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
 
 class MemoryAllocator;
 class Scheduler;
+class Device;
+class DescriptorPool;
+class ListGridArgumentsPass;
 
 /// The split GPU thread's back's slots for GPU-written command list words the host GPU takes
 /// over (Nx2ListIndirect). A slot is SlotBytes of device-local memory: the list's words as the
 /// back found them at the list's place (the snapshot, raw), and at DispatchOffset the same three
-/// as DispatchNativeCompute takes a grid: width, height & 0xffff, depth & 0xffff (a
+/// as DispatchNativeCompute takes a grid: width & 0x7fffffff, height & 0xffff, depth & 0xffff (a
 /// VkDispatchIndirectCommand). Holds keep a slot from being used again: the front's while its
 /// macros' words hold the slot's placeholders, the back's while a QMD's grid or a word compute
 /// dispatches bind as constant buffer data holds them.
@@ -40,8 +45,10 @@ public:
     static constexpr u32 SlotBytes = 32;
     static constexpr u32 DispatchOffset = 16;
 
-    explicit Nx2ListSlots(MemoryAllocator& memory_allocator_, Scheduler& scheduler_)
-        : memory_allocator{memory_allocator_}, scheduler{scheduler_} {}
+    explicit Nx2ListSlots(const Device& device_, MemoryAllocator& memory_allocator_,
+                          Scheduler& scheduler_, DescriptorPool& descriptor_pool_,
+                          ComputePassDescriptorQueue& descriptor_queue_);
+    ~Nx2ListSlots();
 
     /// Any thread (the front's): a slot nobody holds, held for the caller.
     [[nodiscard]] std::optional<u32> Acquire() {
@@ -184,8 +191,12 @@ private:
     /// Waits for the host GPU and compares what CheckRecord copied.
     void CheckFlush();
 
+    const Device& device;
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
+    DescriptorPool& descriptor_pool;
+    ComputePassDescriptorQueue& descriptor_queue;
+    std::unique_ptr<ListGridArgumentsPass> arguments_pass;
     vk::Buffer buffer;
     vk::Buffer readback; ///< Read's, host-visible
     std::array<std::atomic<u32>, SlotCount> holds{};

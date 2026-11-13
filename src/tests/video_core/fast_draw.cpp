@@ -24,6 +24,9 @@
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
+#include "video_core/native_lowering.h"
+#include "video_core/macro_turing.h"
+#include "video_core/shader_environment.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
@@ -859,4 +862,66 @@ TEST_CASE("Unsplit callbacks end draw reuse before they execute", "[fast_draw][u
     REQUIRE(calls == 1);
     REQUIRE(inside != before);
     REQUIRE_FALSE(f.Reusable());
+}
+
+TEST_CASE("Detached shader environments own guest bytes after their engine and mappings are gone",
+          "[shader_reuse][detached_translation]") {
+    auto fixture = std::make_unique<ConstantDiagnosticFixture>();
+    auto& f = *fixture;
+    f.maxwell3d.GetNativeMacroEngine().native_turing = true;
+    f.maxwell3d.regs.tex_header.address_low = static_cast<u32>(f.Gpu + 0x400);
+    f.maxwell3d.regs.tex_header.address_high = 0;
+    f.maxwell3d.regs.tex_header.limit = 0;
+    f.maxwell3d.regs.viewport_scale_offset_enabled = 1;
+    auto& cbuf = f.maxwell3d.state.shader_stages[0].const_buffers[0];
+    cbuf.enabled = true;
+    cbuf.address = f.Gpu + 0x200;
+    cbuf.size = 16;
+    const u64 pointer = f.Gpu + 0x1000;
+    std::memcpy(f.backing + 0x200, &pointer, sizeof(pointer));
+    auto& tail = f.maxwell3d.state.shader_stages[0].const_buffers[1];
+    tail.enabled = true;
+    tail.address = f.Gpu + 0x1ffd;
+    tail.size = 3;
+    f.backing[0x1ffd] = 0x12;
+    f.backing[0x1ffe] = 0x34;
+    f.backing[0x1fff] = 0x56;
+    auto lowered = std::make_shared<VideoCommon::LoweredNativeCode>();
+    lowered->source_size = 144;
+    lowered->code.resize(32);
+    VideoCommon::GraphicsEnvironment env{
+        f.maxwell3d, f.memory, Maxwell3D::Regs::ShaderType::VertexB, f.Gpu, 0, lowered};
+    std::shared_ptr<const std::vector<Tegra::Texture::TICEntry>> texture_pool;
+    REQUIRE(env.Detach(texture_pool));
+    REQUIRE(env.SnapshotSizeBytes() >= cbuf.size + tail.size);
+    // Detach must own the bytes, and classify pointers while mappings still exist.
+    std::memset(f.backing, 0xcc, 0x2000);
+    fixture.reset();
+    u32 first{}, last{}, viewport{};
+    bool mapped{}, rejected_table{};
+    std::exception_ptr failure;
+    std::jthread translator([&] {
+        try {
+            first = env.ReadCbufValue(0, 0);
+            last = env.ReadCbufValue(1, 0);
+            viewport = env.ReadViewportTransformState();
+            mapped = env.IsCbufStorageBufferPointer(0, 0);
+            try {
+                (void)env.IsCbufIndirectStorageBufferPointer(0, 0, 8);
+            } catch (const VideoCommon::DetachedEnvironmentMiss&) {
+                rejected_table = true;
+            }
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    });
+    translator.join();
+    REQUIRE_FALSE(failure);
+    CHECK(first == static_cast<u32>(pointer));
+    CHECK(last == 0x00563412);
+    CHECK(viewport == 1);
+    CHECK(mapped);
+    CHECK(rejected_table);
+    env.DropSnapshot();
+    CHECK(env.SnapshotSizeBytes() == 0);
 }

@@ -19,6 +19,8 @@
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
+#include "common/scope_exit.h"
+#include "video_core/renderer_vulkan/mesh_draw_buffers.h"
 #include "video_core/renderer_vulkan/mesh_fallback_limits.h"
 
 namespace {
@@ -542,4 +544,57 @@ TEST_CASE("Mesh fallback reserves auxiliary storage buffers in the descriptor se
     // No limit is represented by zero. Reject huge inputs without addition overflow.
     REQUIRE(FitsStorageBufferSetLimit(200, 4, 0));
     REQUIRE_FALSE(FitsStorageBufferSetLimit((std::numeric_limits<size_t>::max)(), 4, 8));
+}
+
+TEST_CASE("Mesh draw storage survives submissions made while configuring the draw",
+          "[video_core][mesh_fallback]") {
+    struct Pool {
+        struct Ref {
+            size_t index;
+        };
+        struct Entry {
+            bool deferred;
+            u64 tick;
+        };
+        u64 tick{1};
+        std::vector<Entry> entries;
+        Ref Request(u64, int, bool deferred) {
+            entries.push_back({deferred, tick});
+            return {entries.size() - 1};
+        }
+        void FreeDeferred(Ref ref) {
+            CHECK(entries.at(ref.index).deferred);
+            entries.at(ref.index) = {false, tick};
+        }
+        bool Available(Ref ref, u64 completed_tick) const {
+            const Entry& entry = entries.at(ref.index);
+            return !entry.deferred && entry.tick <= completed_tick;
+        }
+    } pool;
+    Vulkan::MeshDrawBuffers<Pool::Ref> draw;
+    u64 arena_tick{1};
+    std::vector<Pool::Ref> refs;
+    {
+        SCOPE_EXIT {
+            draw.Release(pool, pool.tick, [&](u64 tick) { arena_tick = tick; });
+        };
+        draw.UseArena();
+        for (int index = 0; index < 4; ++index) {
+            refs.push_back(draw.Request(pool, 64, 0));
+        }
+        // Configure submits the allocation's command buffer before recording its consumer.
+        pool.tick = 2;
+        for (const auto ref : refs) {
+            REQUIRE_FALSE(pool.Available(ref, 1));
+        }
+        // The scope also releases on an early Configure failure.
+    }
+    REQUIRE(arena_tick == 2);
+    for (const auto ref : refs) {
+        CHECK_FALSE(pool.Available(ref, 1));
+        CHECK(pool.Available(ref, 2));
+    }
+    pool.tick = 3;
+    draw.Release(pool, pool.tick, [&](u64 tick) { arena_tick = tick; });
+    CHECK(arena_tick == 2);
 }

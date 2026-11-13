@@ -42,6 +42,9 @@ void LimitSampledTextureArrays(IR::Program& program, const HostTranslateInfo& ho
 /// every stage; LimitSampledTextureArrays sizes a stage's arrays as if it had them to itself
 void LimitPipelineSampledTextureArrays(std::span<IR::Program* const> programs,
                                        const HostTranslateInfo& host_info);
+void LimitSharedStageSampledTextureArrays(std::span<IR::Program* const> programs,
+                                          const HostTranslateInfo& host_info,
+                                          u32 auxiliary_resources);
 void LayerPass(IR::Program& program, const HostTranslateInfo& host_info);
 void VendorWorkaroundPass(IR::Program& program);
 void VerificationPass(const IR::Program& program);

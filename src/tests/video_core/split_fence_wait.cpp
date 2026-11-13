@@ -161,3 +161,46 @@ TEST_CASE("Immediate fence waits still submit outstanding work", "[video_core][s
     }
     REQUIRE(callback.load());
 }
+
+TEST_CASE("Recycled fence operation lists release captures and stop across idle boundaries",
+          "[video_core][split_fence_wait]") {
+    ScopedSystemTestContext context;
+    Core::System system;
+    Tegra::GPU gpu{system, false, false};
+    Null::RasterizerNull rasterizer{gpu};
+    Cache texture, buffer, query;
+    const auto previous = Settings::values.gpu_fence_behavior.GetValue();
+    SCOPE_EXIT { Settings::values.gpu_fence_behavior.SetValue(previous); };
+    Settings::values.gpu_fence_behavior.SetValue(Settings::GpuFenceBehavior::Accurate);
+    for (u32 instance = 0; instance < 32; ++instance) {
+        Submission submission;
+        std::vector<u32> callbacks;
+        std::vector<std::weak_ptr<u32>> captures;
+        {
+            FenceManager manager{rasterizer, gpu, texture, buffer, query, submission};
+            for (u32 wave = 0; wave < 4; ++wave) {
+                for (u32 index = 0; index < 16; ++index) {
+                    auto payload = std::make_shared<u32>(wave * 16 + index);
+                    captures.push_back(payload);
+                    manager.SyncOperation([&, payload] { callbacks.push_back(*payload); });
+                    manager.SignalFence([] {});
+                }
+                // Drain before another wave, repeatedly crossing the worker's sleep/wake edge.
+                manager.WaitPendingFences(true);
+            }
+            manager.WaitPendingFences(true);
+            REQUIRE_FALSE(submission.timed_out.load());
+            REQUIRE_FALSE(submission.wrong_owner);
+        }
+        REQUIRE(callbacks.size() == 64);
+        for (u32 index = 0; index < callbacks.size(); ++index) {
+            CHECK(callbacks[index] == index);
+            CHECK(captures[index].expired());
+        }
+    }
+    // Also stop a newly started worker whose first action can be entering its empty wait.
+    for (u32 instance = 0; instance < 32; ++instance) {
+        Submission submission;
+        FenceManager manager{rasterizer, gpu, texture, buffer, query, submission};
+    }
+}

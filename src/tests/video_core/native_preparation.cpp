@@ -37,6 +37,9 @@ TEST_CASE("Prepared stages with pipeline-dependent infos require whole-key reuse
     info.texture_descriptors.back().is_descriptor_array = true;
     REQUIRE_FALSE(CanReusePreparedStageInfo(info));
     info.texture_descriptors.back().is_descriptor_array = false;
+    info.binds_unmapped_pointer_word = true;
+    REQUIRE_FALSE(CanReusePreparedStageInfo(info));
+    info.binds_unmapped_pointer_word = false;
     info.requires_layer_emulation = true;
     REQUIRE_FALSE(CanReusePreparedStageInfo(info));
 }
@@ -287,6 +290,8 @@ TEST_CASE("Prepared shader infos roundtrip and refuse truncation and invalid val
     info.oot_motion.shadow_size[3] = 29;
     info.texture_descriptors.emplace_back();
     info.texture_descriptors.back().is_descriptor_array = true;
+    info.texture_descriptors.back().handle_is_pointer_word = true;
+    info.binds_unmapped_pointer_word = true;
     info.frag_color_components[2] = 11;
     info.storage_buffers_descriptors.emplace_back();
     info.storage_buffers_descriptors.back().cbuf_index = 3;

@@ -48,11 +48,13 @@
 #include "core/core.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
+#include "shader_recompiler/geometry_output_limits.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "video_core/oot_dlss.h"
+#include "video_core/driver_cache_stats.h"
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -68,6 +70,7 @@
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/graphics_warm_policy.h"
 #include "video_core/renderer_vulkan/mesh_fallback_limits.h"
+#include "video_core/renderer_vulkan/pipeline_cache_boot.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/noperspective_policy.h"
 #include "video_core/renderer_vulkan/native_key_compatibility.h"
@@ -112,6 +115,43 @@ namespace Vulkan {
 
 namespace {
 using Shader::Backend::SPIRV::EmitSPIRV;
+void LogDriverCacheFolderStats(VkDriverId driver) noexcept {
+    try {
+        std::filesystem::path folder;
+#ifdef _WIN32
+        const char* local = std::getenv("LOCALAPPDATA");
+        if (!local || !*local) return;
+        if (driver == VK_DRIVER_ID_NVIDIA_PROPRIETARY) {
+            folder = std::filesystem::path{local} / "NVIDIA/GLCache";
+        } else if (driver == VK_DRIVER_ID_AMD_PROPRIETARY) {
+            folder = std::filesystem::path{local} / "AMD/VkCache";
+        } else {
+            return;
+        }
+#elif defined(__linux__) && !defined(__ANDROID__)
+        if (driver != VK_DRIVER_ID_NVIDIA_PROPRIETARY) return;
+        if (const char* path = std::getenv("__GL_SHADER_DISK_CACHE_PATH"); path && *path) {
+            folder = path;
+        } else if (const char* cache = std::getenv("XDG_CACHE_HOME"); cache && *cache) {
+            folder = std::filesystem::path{cache} / "nvidia/GLCache";
+        } else if (const char* user = std::getenv("HOME"); user && *user) {
+            folder = std::filesystem::path{user} / ".cache/nvidia/GLCache";
+        } else {
+            return;
+        }
+#else
+        return;
+#endif
+        const auto stats = VideoCommon::ReadDriverCacheStats(folder);
+        const auto age = VideoCommon::DriverCacheAgeSeconds(stats);
+        LOG_INFO(Render_Vulkan,
+                 "Driver cache folder {}: {} files, {} MiB, newest written {} s ago{}",
+                 Common::FS::PathToUTF8String(folder), stats.files, stats.bytes >> 20,
+                 age.value_or(-1), stats.incomplete ? " (scan incomplete)" : "");
+    } catch (const std::filesystem::filesystem_error&) {
+    } catch (const std::bad_alloc&) {
+    }
+}
 using Shader::Maxwell::ConvertLegacyToGeneric;
 using Shader::Maxwell::GenerateGeometryPassthrough;
 using Shader::Maxwell::MergeDualVertexPrograms;
@@ -774,6 +814,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                                  !device_.DriverCachesPipelines())},
       mesh_warm_enabled{Settings::values.use_mesh_shader_warmup.GetValue()},
       serialization_thread(1, "VkPipelineSerialization", {}, Common::ThreadPlacement::Background) {
+    LogDriverCacheFolderStats(device.GetDriverID());
     if (Settings::values.use_vulkan_driver_pipeline_cache.GetValue() && !use_vulkan_pipeline_cache) {
         LOG_INFO(Render_Vulkan, "Driver keeps its own pipeline cache, not saving a Vulkan one");
     }
@@ -1402,6 +1443,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     namespace CacheV2 = VideoCommon::ShaderCacheV2;
     pipeline_cache_filename = base_dir / CacheV2::FileName;
+    PipelineCacheBoot boot{pipeline_cache_filename};
+    const bool build_at_boot = boot.BuildAtBoot();
+    if (boot.Busy()) {
+        LOG_WARNING(Render_Vulkan, "Another emulator is loading this title's cache; building no "
+                                   "cached pipelines at boot this time");
+    } else if (!build_at_boot) {
+        LOG_WARNING(Render_Vulkan, "The last boot ended while building cached pipelines; building "
+                                   "none at boot this time");
+    }
     const auto migration =
         MigrateLegacyPipelineCache(base_dir, pipeline_cache_filename, MaxUsedPipelineAge(device));
     if (migration.version) {
@@ -1414,6 +1464,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         LOG_WARNING(Render_Vulkan, "Couldn't start shader cache v2 from the older cache");
     }
     cache_v2 = std::make_unique<CacheV2::Cache>(pipeline_cache_filename);
+    if (!build_at_boot) {
+        cache_v2->KeepStalePrograms();
+    }
     shader_cache_v2 = cache_v2.get();
     pipeline_binaries = PipelineBinaries::Open(device, base_dir);
     // Without the lock: another emulator's appends are complete records or a cut-off tail.
@@ -1446,7 +1499,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     // on the loading screen too, unless an earlier precache built them for this driver.
     namespace ShaderWarm = VideoCommon::ShaderWarm;
     const bool precache = ShaderWarm::PrecacheBeforeStart(
-        Settings::values.precache_shaders.GetValue(), ShaderWarm::TakeWarmBeforeStart());
+                              Settings::values.precache_shaders.GetValue(),
+                              ShaderWarm::TakeWarmBeforeStart()) && build_at_boot;
     std::unordered_set<u64> precached_pipelines;
     if (precache) {
         precached_pipelines = ShaderWarm::ReadPrecachedPipelines(
@@ -1483,8 +1537,14 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                                            device.GetVendorID(), device.GetDeviceID(),
                                            CACHE_VERSION, CacheV2::FormatVersion),
                           GetTotalPipelineWorkers() + 4, "pipeline");
+    // Marker ownership is subordinate to the existing title/cache locks. The explicit offline
+    // preparation worker has its own lock and journal policy and never enters this boot path.
+    if (!boot.Begin()) {
+        LOG_WARNING(Common_Filesystem, "Couldn't create the pipeline-cache boot marker");
+    }
     LoadPipelinesV2(title_id, std::move(log_v2), stop_loading, callback, load_begin, precache,
-                    std::move(precached_pipelines));
+                    std::move(precached_pipelines), build_at_boot);
+    boot.Complete();
 }
 
 bool PipelineCache::KeyFitsDevice(const GraphicsPipelineCacheKey& key) const {
@@ -1566,10 +1626,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::TranslateCachedGraphics(
     for (auto& env : envs) {
         env_ptrs.push_back(&env);
     }
-    auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), statistics, false)};
-    incomplete = !pipeline && std::ranges::any_of(envs, [this](const FileEnvironment& env) {
-        return env.LacksRecordedValue(host_info.EnvironmentReadProperties());
-    });
+    bool frozen_pointer_word{};
+    auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), statistics, false,
+                                          nullptr, nullptr, false, true, nullptr, nullptr,
+                                          &frozen_pointer_word)};
+    incomplete = frozen_pointer_word ||
+                 (!pipeline && std::ranges::any_of(envs, [this](const FileEnvironment& env) {
+                     return env.LacksRecordedValue(host_info.EnvironmentReadProperties());
+                 }));
     return pipeline;
 }
 
@@ -1578,7 +1642,8 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                                     std::stop_token stop_loading,
                                     const VideoCore::DiskResourceLoadCallback& callback,
                                     std::chrono::steady_clock::time_point load_begin,
-                                    bool precache, std::unordered_set<u64> precached_pipelines) {
+                                    bool precache, std::unordered_set<u64> precached_pipelines,
+                                    bool build_at_boot) {
     namespace CacheV2 = VideoCommon::ShaderCacheV2;
     namespace StutterTrace = VideoCommon::StutterTrace;
     using CacheV2::RecordKind;
@@ -1665,7 +1730,7 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
     std::vector<CacheV2::LogAppend> relinked_appends;
     std::vector<CacheV2::LogRecord> relinked_records;
     std::unordered_set<u64> replaced_records;
-    if (!stale_programs.empty() && !stop_loading.stop_requested()) {
+    if (build_at_boot && !stale_programs.empty() && !stop_loading.stop_requested()) {
         const size_t stale_count = stale_programs.size();
         CacheV2::ForEach for_each = [&jobs](size_t count, const std::function<void(size_t)>& task) {
             VideoCommon::ParallelFor(jobs, count, task);
@@ -1777,6 +1842,9 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                 unreadable(record, "Compute pipeline record without a key");
                 continue;
             }
+            if (!build_at_boot) {
+                continue;
+            }
             compute_keys[*key].push_back(records.size());
             records.push_back(&record);
             continue;
@@ -1801,6 +1869,10 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
         }
         const u64 hash = key->Hash();
         if (!disk_pipelines.insert(hash).second) {
+            continue;
+        }
+        if (!build_at_boot) {
+            ++skipped_pipelines;
             continue;
         }
         if (build_journal->Skip(hash)) {
@@ -2039,7 +2111,9 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
     records.clear();
     log.reset();
 
-    PreparePrecompiled(pipeline_cache_filename.parent_path(), precache, stop_loading, callback);
+    if (build_at_boot) {
+        PreparePrecompiled(pipeline_cache_filename.parent_path(), precache, stop_loading, callback);
+    }
 
     if (use_vulkan_pipeline_cache) {
         SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
@@ -2649,9 +2723,11 @@ void PipelineCache::PrecacheMeshWarm(u64 title_id, std::stop_token stop_loading,
                          }
                          ShaderPools pools;
                          DescriptorPool descriptors{device, scheduler};
+                         bool frozen_pointer_word{};
                          auto pipeline = CreateGraphicsPipeline(
                              pools, key, std::span{pointers.data(), count}, nullptr, false,
-                             nullptr, nullptr, false, false, &descriptors);
+                             nullptr, nullptr, false, false, &descriptors, nullptr,
+                             &frozen_pointer_word);
                          if (!pipeline) {
                              ++rejected;
                              return;
@@ -2763,7 +2839,7 @@ bool DriverCachesPipelines(const Device& device) {
 namespace {
 /// Rechecked on a pipeline miss, so live settings changes cannot draw old prepared translations.
 std::string PreparedTranslationPolicy() {
-    std::string result;
+    std::string result{" pointer-word-recapture=1"};
     const auto add = [&](auto value) { result += fmt::format(" {}", value); };
     add(Settings::GetCurrentProgramID());
     add(Settings::values.resolution_info.active);
@@ -3310,12 +3386,22 @@ Common::UniqueFunction<bool> PipelineCache::PrepareNativeRecord(const std::files
         if (!entry.pipeline || entry.pipeline->BuildFailed()) {
             throw std::runtime_error("compute pipeline build failed");
         }
+        if (entry.pipeline->StageInfo().binds_unmapped_pointer_word) {
+            throw std::runtime_error(
+                "recipe captured an unmapped storage pointer; runtime must recapture it");
+        }
         Shader::SerializeInfo(entry.pipeline->StageInfo(), infos[0]);
         pipelines->compute = std::move(entry.pipeline);
     } else {
+        bool frozen_pointer_word{};
         auto pipeline = CreateGraphicsPipeline(pools, graphics, MakeSpan(pointers), nullptr,
                                                false, nullptr, nullptr, false, false,
-                                               &pipelines->descriptors, &spirv);
+                                               &pipelines->descriptors, &spirv,
+                                               &frozen_pointer_word);
+        if (frozen_pointer_word) {
+            throw std::runtime_error(
+                "recipe captured an unmapped storage pointer; runtime must recapture it");
+        }
         if (!pipeline || pipeline->Failed()) {
             throw std::runtime_error("graphics pipeline build failed");
         }
@@ -3511,7 +3597,8 @@ bool PipelineCache::LoadPrecompiledInfos(const std::filesystem::path& precompile
                     const auto info_bytes = Warm::PreparedStore::ReadBlob(file, {offset, size});
                     std::span<const u8> input{info_bytes};
                     Shader::Info info;
-                    if (!Shader::DeserializeInfo(input, info) || !input.empty()) {
+                    if (!Shader::DeserializeInfo(input, info) || !input.empty() ||
+                        info.binds_unmapped_pointer_word) {
                         throw std::runtime_error("invalid prepared info");
                     }
                     validated_stage_reuse.emplace(info_id, Warm::CanReusePreparedStageInfo(info));
@@ -3578,7 +3665,8 @@ static bool ReadKeptInfo(std::ifstream& file, std::pair<u64, u32> blob, Shader::
     const auto bytes = VideoCommon::ShaderWarm::PreparedStore::ReadBlob(file, {blob.first, blob.second});
     std::span<const u8> input{bytes};
     info = {};
-    return Shader::DeserializeInfo(input, info) && input.empty() && !info.requires_layer_emulation;
+    return Shader::DeserializeInfo(input, info) && input.empty() && !info.requires_layer_emulation &&
+           !info.binds_unmapped_pointer_word;
 }
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreatePrecompiledGraphicsPipeline(
@@ -4313,8 +4401,10 @@ PipelineCache::WarmResult PipelineCache::WarmGraphicsLibraries(
         return WarmResult::Unbuildable;
     }
     pools.ReleaseContents();
+    bool frozen_pointer_word{};
     const auto pipeline{
-        CreateGraphicsPipeline(pools, key, envs, nullptr, false, nullptr, nullptr, true)};
+        CreateGraphicsPipeline(pools, key, envs, nullptr, false, nullptr, nullptr, true, false,
+                               nullptr, nullptr, &frozen_pointer_word)};
     if (!pipeline) {
         return WarmResult::Unbuildable;
     }
@@ -4932,6 +5022,10 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
         if (!eligible) {
             return false;
         }
+        std::array<Shader::IR::Program*, 2> compute_programs{&programs[mesh_index], &programs[1]};
+        Shader::Optimization::LimitSharedStageSampledTextureArrays(
+            std::span{compute_programs.data(), has_task ? size_t{2} : size_t{1}}, host_info,
+            has_task ? 4U : 1U);
         // The output buffer's binding follows every program's (unified bindings, one per
         // descriptor element, as the SPIR-V backend numbers them). The task and mesh programs
         // share the compute stage, so their descriptors and the emulation's own buffers count
@@ -4939,6 +5033,7 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
         u32 output_binding{};
         u32 compute_storage_buffers{has_task ? 4U : 1U};
         u32 compute_sampled_images{};
+        u32 compute_samplers{};
         u32 compute_resources{compute_storage_buffers};
         for (size_t index = 1; index < Maxwell::MaxShaderProgram; ++index) {
             if (key.unique_hashes[index] == 0) {
@@ -4962,14 +5057,19 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
             add(info.image_buffer_descriptors, nullptr);
             add(info.texture_descriptors, &compute_sampled_images);
             add(info.image_descriptors, nullptr);
+            if (emulated) {
+                compute_samplers += Shader::NumDescriptors(info.texture_descriptors);
+            }
         }
         if (compute_storage_buffers > device.GetMaxPerStageDescriptorStorageBuffers() ||
             compute_sampled_images > device.GetMaxPerStageDescriptorSampledImages() ||
+            compute_samplers > device.GetMaxPerStageDescriptorSamplers() ||
             compute_resources > device.GetMaxPerStageResources()) {
             LOG_WARNING(Render_Vulkan,
-                        "Mesh emulation skipped: {} storage buffers, {} sampled images and {} "
-                        "resources exceed the compute stage limits",
-                        compute_storage_buffers, compute_sampled_images, compute_resources);
+                        "Mesh emulation skipped: {} storage buffers, {} sampled images, {} "
+                        "samplers and {} resources exceed the compute stage limits",
+                        compute_storage_buffers, compute_sampled_images, compute_samplers,
+                        compute_resources);
             return false;
         }
         mesh_emulation.emplace();
@@ -5335,6 +5435,11 @@ bool PipelineCache::TranslateGraphicsStages(ShaderPools& pools, const GraphicsPi
             }
         }
         ConvertLegacyToGeneric(program, runtime_info);
+        if (index == static_cast<size_t>(Maxwell::ShaderType::Geometry)) {
+            Shader::PruneUnreadGeometryOutputs(
+                program, programs[static_cast<size_t>(Maxwell::ShaderType::Pixel)],
+                key.state.xfb_enabled, device.IsNvGeometryShaderPassthroughSupported());
+        }
         // EDEN_NX2_MESH_EMULATION_DUMP=<dir>: write the emulation's vertex shader for spirv-val.
         // (Emitting the mesh program a second time here to dump its compute shader crashed the
         // build that followed, so only the vertex shader is written.)
@@ -5363,7 +5468,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools,
     ParallelTranslation* parallel, bool libraries_only, bool notify_runtime_build,
     DescriptorPool* transient_descriptors,
-    std::array<std::vector<u32>, Maxwell::MaxShaderStage>* spirv_out) try {
+    std::array<std::vector<u32>, Maxwell::MaxShaderStage>* spirv_out,
+    bool* frozen_pointer_word) try {
     LOG_DEBUG(Render_Vulkan, "{:#016x}", key.Hash());
     // Declared before the programs, whose IR they hold
     std::vector<std::shared_ptr<ShaderPools>> stage_pools;
@@ -5378,6 +5484,17 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         return nullptr;
     }
     auto& programs{stages.programs};
+    if (frozen_pointer_word != nullptr &&
+        std::ranges::any_of(programs, [](const Shader::IR::Program& program) {
+            return program.info.binds_unmapped_pointer_word;
+        })) {
+        *frozen_pointer_word = true;
+        LOG_INFO(Render_Vulkan,
+                 "Cached graphics record {:016x} binds an unmapped pointer as a texture handle; "
+                 "recapturing it at runtime",
+                 key.Hash());
+        return nullptr;
+    }
     if (libraries_only && key.unique_hashes[1] != 0 && !CanWarmGraphicsProgram(programs[1])) {
         return nullptr;
     }

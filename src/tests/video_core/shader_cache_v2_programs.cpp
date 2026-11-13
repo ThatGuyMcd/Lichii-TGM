@@ -40,6 +40,7 @@
 #include "video_core/native_lowering.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/renderer_null/null_rasterizer.h"
+#include "video_core/renderer_vulkan/pipeline_cache_boot.h"
 #include "video_core/shader_cache_v2/cache.h"
 #include "video_core/shader_cache_v2/cache_file.h"
 #include "video_core/shader_cache_v2/cache_format.h"
@@ -327,6 +328,65 @@ TEST_CASE("Shader cache v2: a record of another lowering is stale and never used
     const auto unknown_traps = unknown.Traps();
     REQUIRE(cache.FindProgram(KeyInputs(unknown, unknown_sph, unknown_traps)).lookup ==
             V2::ProgramLookup::Miss);
+}
+
+TEST_CASE("Shader cache v2: recovery preserves stale stamps until pipelines are re-lowered",
+          "[video_core][shader_cache_v2]") {
+    TempDir temp;
+    const auto file = temp.path / "cache.bin";
+    const auto programs = TestPrograms();
+    const auto& program = programs[0];
+    V2::ProgramRecord stale = RecordOf(program, *LowerFresh(program));
+    stale.lowering_stamp ^= 1;
+    WriteLog(file, std::span{&stale, 1});
+    const auto log = V2::ReadLogFile(file);
+    V2::Cache cache{file};
+    cache.KeepStalePrograms();
+    cache.LoadPrograms(log.parsed.live);
+    cache.RecordProgram(RecordOf(program, *LowerFresh(program)));
+    const auto sph = program.Header();
+    const auto traps = program.Traps();
+    REQUIRE(cache.FindProgram(KeyInputs(program, sph, traps)).lookup == V2::ProgramLookup::Stale);
+    const auto& unknown = programs[4];
+    cache.RecordProgram(RecordOf(unknown, *LowerFresh(unknown)));
+    REQUIRE(cache.Writer().Drain(5s));
+    REQUIRE(cache.Writer().Stats().written_records == 1);
+}
+
+TEST_CASE("Shader cache boot recovery owns its marker and survives an interrupted load",
+          "[video_core][shader_cache_v2]") {
+    TempDir temp;
+    const auto file = temp.path / "cache.bin";
+    const auto marker = Vulkan::PipelineCacheBoot::MarkerPath(file);
+    {
+        Vulkan::PipelineCacheBoot first{file};
+        REQUIRE(first.BuildAtBoot());
+        REQUIRE(first.Begin());
+        REQUIRE(std::filesystem::exists(marker));
+        {
+            Vulkan::PipelineCacheBoot other{file};
+            REQUIRE(other.Busy());
+            REQUIRE_FALSE(other.BuildAtBoot());
+            other.Complete();
+            REQUIRE(std::filesystem::exists(marker));
+        }
+        // No Complete: model a failed load/unwind. Destruction only releases the OS lock.
+    }
+    {
+        Vulkan::PipelineCacheBoot recovery{file};
+        REQUIRE_FALSE(recovery.Busy());
+        REQUIRE_FALSE(recovery.BuildAtBoot());
+        REQUIRE(recovery.Begin());
+        recovery.Complete();
+        REQUIRE_FALSE(std::filesystem::exists(marker));
+    }
+    {
+        Vulkan::PipelineCacheBoot normal{file};
+        REQUIRE(normal.BuildAtBoot());
+        REQUIRE(normal.Begin());
+        normal.Complete();
+        REQUIRE_FALSE(std::filesystem::exists(marker));
+    }
 }
 
 TEST_CASE("Shader cache v2: a damaged program record never gives code",

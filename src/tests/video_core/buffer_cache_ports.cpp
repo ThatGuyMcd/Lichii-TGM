@@ -2510,6 +2510,57 @@ TEST_CASE("Uniform keep verify counts guest writes the delta did not report",
     REQUIRE(f.Counts().kept == 0);
 }
 
+TEST_CASE("Uniform keep verify checks only the ranges a keep would bind", "[buffer_ports]") {
+    KeepFixture f{"EDEN_NX2_UBO_KEEP_VERIFY"};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    f.Draw(nullptr);
+    ++f.runtime.tick;
+    f.UboBytes()[3] = 9;
+    f.Draw(&unchanged);
+    CHECK(f.Counts().verified == 0);
+    CHECK(f.Counts().mismatches == 0);
+    f.Draw(&unchanged);
+    CHECK(f.Counts().verified == 1);
+    CHECK(f.Counts().mismatches == 0);
+}
+
+TEST_CASE("Uniform keep ends at DMA copies, DMA clears and inline uploads over the range",
+          "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    f.Draw(nullptr);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+
+    // This source has no GPU-written ranges: invalidation cannot depend on new downloads.
+    std::memset(f.bytes + 0x8000, 8, 0x10);
+    REQUIRE(f.cache->DMACopy(0x108000, KeepFixture::UboGpu + 0x20, 0x10));
+    REQUIRE(std::all_of(f.UboBytes() + 0x20, f.UboBytes() + 0x30,
+                        [](u8 value) { return value == 8; }));
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 2);
+
+    REQUIRE(f.cache->DMAClear(KeepFixture::UboGpu + 0x40, 4, 0x09090909));
+    // MaxwellDMA stores the cleared words after the cache operation.
+    std::memset(f.UboBytes() + 0x40, 9, 0x10);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 2);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 3);
+
+    // GPU ownership on the next page permits an in-place upload without changing this UBO's
+    // streamed/cached binding policy. The engine subsequently writes the guest-memory bytes.
+    Access::GpuWrite(*f.cache, f.id, 0x11000, 4);
+    constexpr DAddr inline_begin = KeepFixture::Ubo + 0xf0;
+    std::vector<u8> data(0x11010 - inline_begin, 10);
+    REQUIRE(f.cache->InlineMemory(inline_begin, data.size(), data));
+    std::memcpy(f.UboBytes() + 0xf0, data.data(), 0x10);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 3);
+}
+
 TEST_CASE("Mesh task count slots follow the copies of their command list page",
           "[buffer_ports]") {
     Fixture f;

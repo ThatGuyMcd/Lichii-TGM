@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <new>
 #include <chrono>
 #include <climits>
 #include <cstdlib>
@@ -88,11 +89,15 @@ const char* GetLevelName(Level log_level) {
 // Some IDEs prefer <file>:<line> instead, so let's just do that :)
 std::string FormatLogMessage(const Entry& entry) noexcept {
     if (!entry.filename) return "";
-    auto const time_seconds = uint32_t(entry.timestamp.count() / 1000000);
-    auto const time_fractional = uint32_t(entry.timestamp.count() % 1000000);
-    auto const class_name = GetLogClassName(entry.log_class);
-    auto const level_name = GetLevelName(entry.log_level);
-    return fmt::format("[{:4d}.{:06d}] {} <{}> {}:{}:{}: {}\n", time_seconds, time_fractional, class_name, level_name, entry.filename, entry.line_num, entry.function, entry.message);
+    try {
+        auto const time_seconds = uint32_t(entry.timestamp.count() / 1000000);
+        auto const time_fractional = uint32_t(entry.timestamp.count() % 1000000);
+        auto const class_name = GetLogClassName(entry.log_class);
+        auto const level_name = GetLevelName(entry.log_level);
+        return fmt::format("[{:4d}.{:06d}] {} <{}> {}:{}:{}: {}\n", time_seconds, time_fractional, class_name, level_name, entry.filename, entry.line_num, entry.function, entry.message);
+    } catch (const std::bad_alloc&) {
+        return {};
+    }
 }
 
 template <typename It>
@@ -468,6 +473,29 @@ void Start() {
 void Stop() {
     if (logging_instance)
         logging_instance->ForEachBackend([](Backend& backend) { backend.Flush(); });
+}
+
+void FmtCrashMessageImpl(const char* filename, unsigned int line_num, const char* function, fmt::string_view format, const fmt::format_args& args) noexcept {
+#ifndef __OPENORBIS__
+    if (!logging_instance || !logging_instance->file_backend)
+        return;
+    char buffer[2048];
+    const auto result = fmt::vformat_to_n(buffer, sizeof(buffer) - 1, format, args);
+    const std::size_t length = (std::min)(result.size, sizeof(buffer) - 1);
+    buffer[length] = '\0';
+    const Entry e{
+        .message = buffer,
+        .message_len = length,
+        .timestamp = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - logging_instance->time_origin),
+        .log_class = Class::Common,
+        .log_level = Level::Critical,
+        .filename = TrimSourcePath(filename),
+        .function = function,
+        .line_num = line_num,
+    };
+    logging_instance->file_backend->Write(e);
+    logging_instance->file_backend->Flush();
+#endif
 }
 
 void SetGlobalFilter(const Filter& filter) {

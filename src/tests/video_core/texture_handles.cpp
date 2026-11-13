@@ -633,6 +633,9 @@ TEST_CASE("Hosts without handle table arrays keep the word the earlier search fi
         CHECK(descriptor.count == (supported ? 64U : 1U));
         CHECK((descriptor.handle_program != ~0U) == supported);
         CHECK(descriptor.cbuf_offset == (supported ? 0U : 0x520U));
+        CHECK(descriptor.handle_is_pointer_word == !supported);
+        CHECK(shader.program.info.binds_unmapped_pointer_word == !supported);
+        CHECK(VideoCommon::HandleIsStoragePointer(shader.program.info, descriptor, 0) == !supported);
     }
 }
 
@@ -913,6 +916,36 @@ TEST_CASE("Storage handle words are read from the host-aligned buffer base",
     }
 }
 
+TEST_CASE("Task and mesh texture arrays share the compute stage budget",
+          "[video_core][texture_handles]") {
+    for (const bool sampler_limited : {false, true}) {
+        CAPTURE(sampler_limited);
+        std::array<HandleProgram, 2> stages;
+        for (HandleProgram& shader : stages) {
+            const LightTable table{shader};
+            shader.Sample(table.handle);
+            shader.Run();
+            shader.program.info.constant_buffer_descriptors.push_back({.index = 0, .count = 1});
+            shader.program.info.storage_buffers_descriptors.push_back({.count = 1});
+        }
+        stages[0].program.info.texture_buffer_descriptors.push_back({.count = 1});
+        Shader::HostTranslateInfo host;
+        host.ApplyDescriptorLimitPolicy();
+        host.max_per_stage_resources = 21;
+        host.max_per_stage_descriptor_sampled_images = 32;
+        host.max_per_stage_descriptor_samplers = sampler_limited ? 8 : 32;
+        const std::array programs{&stages[0].program, &stages[1].program};
+        Shader::Optimization::LimitSharedStageSampledTextureArrays(programs, host, 4);
+        for (const auto& shader : stages) {
+            CHECK(shader.program.info.texture_descriptors.front().count ==
+                  (sampler_limited ? 4U : 6U));
+        }
+        host.max_per_stage_resources = 10;
+        REQUIRE_THROWS(
+            Shader::Optimization::LimitSharedStageSampledTextureArrays(programs, host, 4));
+    }
+}
+
 TEST_CASE("A texture handle word that holds a storage buffer address is not a handle",
           "[video_core][texture_handles]") {
     Shader::Info info;
@@ -934,5 +967,22 @@ TEST_CASE("A texture handle word that holds a storage buffer address is not a ha
     CHECK_FALSE(VideoCommon::HandleIsStoragePointer(info, desc, 0));
     desc.cbuf_index = 0;
     desc.handle_program = 0; // computed for each draw: a real handle
+    CHECK_FALSE(VideoCommon::HandleIsStoragePointer(info, desc, 0));
+}
+
+TEST_CASE("A handle word the translation saw dereferenced is not a handle without a storage buffer",
+          "[video_core][texture_handles]") {
+    const Shader::Info info;
+    Shader::TextureDescriptor desc{};
+    desc.cbuf_index = 0;
+    desc.cbuf_offset = 0x520;
+    desc.count = 1;
+    desc.size_shift = 3;
+    CHECK_FALSE(VideoCommon::HandleIsStoragePointer(info, desc, 0));
+    desc.handle_is_pointer_word = true;
+    CHECK(VideoCommon::HandleIsStoragePointer(info, desc, 0));
+    desc.has_secondary = true; // an address built from two words
+    CHECK(VideoCommon::HandleIsStoragePointer(info, desc, 0));
+    desc.handle_program = 0;
     CHECK_FALSE(VideoCommon::HandleIsStoragePointer(info, desc, 0));
 }

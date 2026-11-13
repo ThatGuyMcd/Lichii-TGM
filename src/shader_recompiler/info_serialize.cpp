@@ -238,6 +238,7 @@ void VisitTexture(Io& io, D& d) {
     io(d.size_shift);
     io(d.handle_program);
     io(d.is_descriptor_array);
+    io(d.handle_is_pointer_word);
 }
 template <typename Io, typename D>
 void VisitImage(Io& io, D& d) {
@@ -349,6 +350,7 @@ void VisitInfo(Io& io, I& info) {
     io(info.uses_global_memory);
     io(info.requires_coherent_global_memory);
     io(info.requires_coherent_image_memory);
+    io(info.binds_unmapped_pointer_word);
     io(info.uses_cooperative_matrix);
     io(info.native_global_bounds);
     io(info.uses_atomic_image_u32);

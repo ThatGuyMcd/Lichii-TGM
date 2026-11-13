@@ -19,6 +19,40 @@
 using Service::Audio::SysmixOutput;
 using SysmixTests::Context;
 
+TEST_CASE("No microphone sysmix capture bypasses the host but output still opens",
+          "[sysmix][input][no_microphone]") {
+    Context context;
+    auto& selected = Settings::values.audio_input_device_id;
+    const bool was_global = selected.UsingGlobal();
+    const auto previous = selected.GetValue(true);
+    selected.SetGlobal(true);
+    selected.SetValue(AudioCore::Sink::no_input_device_name);
+    SCOPE_EXIT { selected.SetValue(previous); selected.SetGlobal(was_global); };
+    SysmixOutput input{context.system, *context.process, context.sink, 2,
+                      Context::Base, Context::Size, 2, true};
+    REQUIRE(input.Open(2, 1, 48000, 4096, 0, 0).IsSuccess());
+    REQUIRE(context.sink.streams.empty());
+    REQUIRE(input.SetEngaged(true).IsSuccess());
+    for (int tick = 0; tick < 3; ++tick) {
+        context.system.CoreTiming().cpu_ticks += Common::WallClock::CPUTickFreq / 200;
+        context.system.CoreTiming().Advance();
+        input.Pump();
+    }
+    u32 written{};
+    REQUIRE(context.Memory().Read32Acquire(Context::Base + 0x1004, written));
+    REQUIRE(written >= 240);
+    std::vector<s16> samples(written);
+    REQUIRE(context.Memory().ReadBlock(Context::Base + 0x1040, samples.data(), samples.size() * 2));
+    REQUIRE(std::ranges::all_of(samples, [](s16 sample) { return sample == 0; }));
+    REQUIRE(input.SetEngaged(false).IsSuccess());
+    input.Close();
+    SysmixOutput output{context.system, *context.process, context.sink, 3,
+                       Context::Base, Context::Size, 0, false};
+    REQUIRE(output.Open(2, 2, 48000, 1024, 0, 0).IsSuccess());
+    REQUIRE(context.sink.streams.size() == 1);
+    output.Close();
+}
+
 TEST_CASE("sysmix input accepts a ring without output timestamp storage", "[sysmix][input]") {
     Context context;
     SysmixOutput stream{context.system, *context.process, context.sink, 2,

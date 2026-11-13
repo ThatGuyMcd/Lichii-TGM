@@ -12,6 +12,7 @@ namespace VideoCommon::ShaderWarm {
 [[nodiscard]] inline bool CanReusePreparedStageInfo(const Shader::Info& info,
                                                    bool object_motion_active = false) {
     return !object_motion_active && !info.loads.Legacy() && !info.requires_layer_emulation &&
+           !info.binds_unmapped_pointer_word &&
            !info.oot_motion.history && !info.oot_motion.image && !info.oot_motion.shadow &&
            std::ranges::none_of(info.texture_descriptors,
                                 [](const auto& descriptor) { return descriptor.is_descriptor_array; });

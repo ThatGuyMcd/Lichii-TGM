@@ -21,6 +21,7 @@
 #include "shader_recompiler/frontend/maxwell/translate/translate.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
+#include "shader_recompiler/geometry_output_limits.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/translate_profile.h"
 
@@ -404,6 +405,10 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
             }
 
             if (!normalized_host_info.support_geometry_shader_passthrough) {
+                // The lowered shader copies only Position and the generics; the mask's other
+                // bits (InstanceId, VertexId, FrontFace...) would declare stage inputs a geometry
+                // shader can't have, BaseInstance without DrawParameters among them.
+                LimitLoweredGeometryPassthroughInputs(program.info);
                 program.output_vertices = GetOutputTopologyVertices(program.output_topology);
                 LowerGeometryPassthrough(program, normalized_host_info);
             }

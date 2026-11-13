@@ -4,6 +4,8 @@
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include "audio_core/sink/input_processing.h"
+#include "audio_core/device/device_session.h"
+#include "audio_core/device/audio_buffer.h"
 #include "common/scope_exit.h"
 #include "tests/audio_core/sysmix_test_context.h"
 
@@ -42,4 +44,35 @@ TEST_CASE("Capture uses the input sink gain instead of rereading configuration",
     SECTION("legacy capture with underrun padding") {
         REQUIRE(stream.ReleaseBuffer(4) == std::vector<s16>{500, -1000, 0, 0});
     }
+}
+
+TEST_CASE("No microphone legacy capture opens no host device and releases silent PCM",
+          "[audio][input][no_microphone]") {
+    SysmixTests::Context context;
+    auto& selected = Settings::values.audio_input_device_id;
+    const bool was_global = selected.UsingGlobal();
+    const auto previous = selected.GetValue(true);
+    selected.SetGlobal(true);
+    selected.SetValue(AudioCore::Sink::no_input_device_name);
+    SCOPE_EXIT { selected.SetValue(previous); selected.SetGlobal(was_global); };
+    // This fixture deliberately has no AudioCore host sinks: any attempted acquisition fails.
+    AudioCore::DeviceSession session{context.system};
+    REQUIRE(session.Initialize("test capture", AudioCore::SampleFormat::PcmInt16, 2, 0,
+                               &*context.process, 0, AudioCore::Sink::StreamType::In).IsSuccess());
+    REQUIRE(session.Start().IsSuccess());
+    std::array<u8, 32> stale{};
+    stale.fill(0x77);
+    constexpr u64 address = SysmixTests::Context::Base + 0x1040;
+    REQUIRE(context.Memory().WriteBlock(address, stale.data(), stale.size()));
+    AudioCore::AudioBuffer buffer{};
+    buffer.samples = address;
+    buffer.size = stale.size();
+    session.ReleaseBuffer(buffer);
+    REQUIRE(context.Memory().ReadBlock(address, stale.data(), stale.size()));
+    REQUIRE(std::ranges::all_of(stale, [](u8 value) { return value == 0; }));
+    session.Stop();
+    session.Finalize();
+    REQUIRE(session.Initialize("capture again", AudioCore::SampleFormat::PcmInt16, 1, 1,
+                               &*context.process, 0, AudioCore::Sink::StreamType::In).IsSuccess());
+    session.Finalize();
 }

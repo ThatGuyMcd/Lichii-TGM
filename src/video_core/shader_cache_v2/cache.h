@@ -71,6 +71,10 @@ public:
     /// Queues the record of a program unless the log holds it from this build's lowering
     void RecordProgram(const ProgramRecord& record);
 
+    /// Recovery skipped re-lowering the old pipelines. Keep their programs' stamps stale so a
+    /// later normal boot still knows it must move those pipelines to this build's lowering.
+    void KeepStalePrograms();
+
 private:
     /// A record of this build's lowering, its code moved out into `code`
     struct LoadedProgram {
@@ -86,6 +90,7 @@ private:
 
     std::mutex mutex;
     std::unordered_map<u64, u64> programs; ///< Record key -> lowering stamp
+    bool keep_stale{}; ///< Under mutex
     /// Written by LoadPrograms only before `loaded_ready` is set, then never changed
     std::unordered_map<u64, LoadedProgram> loaded;
     std::atomic<bool> loaded_ready{};

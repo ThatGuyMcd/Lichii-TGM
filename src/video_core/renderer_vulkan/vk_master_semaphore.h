@@ -78,9 +78,9 @@ private:
 private:
     const Device& device;             ///< Device.
     vk::Semaphore semaphore;          ///< Timeline semaphore.
-    std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.
-    std::atomic<u64> current_tick{1}; ///< Current logical tick.
-    std::mutex wait_mutex;
+    alignas(64) std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.
+    alignas(64) std::atomic<u64> current_tick{1}; ///< Current logical tick.
+    alignas(64) std::mutex wait_mutex;
     std::mutex free_mutex;
     std::condition_variable_any wait_cv;
     std::queue<Waitable> wait_queue;  ///< Queue for the fences to be waited on by the wait thread.

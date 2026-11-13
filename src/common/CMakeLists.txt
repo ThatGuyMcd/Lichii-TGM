@@ -184,7 +184,7 @@ set_source_files_properties(zbic_compression.cpp PROPERTIES
 
 if(WIN32)
     target_sources(common PRIVATE windows/timer_resolution.cpp
-        windows/timer_resolution.h)
+        windows/timer_resolution.h windows/crash_handler.cpp windows/crash_handler.h)
     target_link_libraries(common PRIVATE dxgi ntdll)
 endif()
 

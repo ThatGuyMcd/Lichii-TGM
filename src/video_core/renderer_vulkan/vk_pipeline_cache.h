@@ -257,7 +257,8 @@ private:
         bool build_in_parallel, std::shared_ptr<ShaderPools> emit_pools = nullptr,
         ParallelTranslation* parallel = nullptr, bool libraries_only = false,
         bool notify_runtime_build = true, DescriptorPool* transient_descriptors = nullptr,
-        std::array<std::vector<u32>, 5>* spirv_out = nullptr);
+        std::array<std::vector<u32>, 5>* spirv_out = nullptr,
+        bool* frozen_pointer_word = nullptr);
 
     /// Released IR pools for a build, or new ones
     [[nodiscard]] std::shared_ptr<ShaderPools> TakeSparePools();
@@ -299,7 +300,7 @@ private:
                          std::stop_token stop_loading,
                          const VideoCore::DiskResourceLoadCallback& callback,
                          std::chrono::steady_clock::time_point load_begin, bool precache,
-                         std::unordered_set<u64> precached_pipelines);
+                         std::unordered_set<u64> precached_pipelines, bool build_at_boot);
 
     /// Reads a v2 graphics record and translates its pipeline, left for Build(). Null when it
     /// doesn't translate, `incomplete` when the record lacks a value the translation reads.

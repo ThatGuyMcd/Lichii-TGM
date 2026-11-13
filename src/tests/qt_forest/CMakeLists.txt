@@ -66,6 +66,22 @@ if (BUILD_TESTING OR YUZU_TESTS)
         ENVIRONMENT "${forest_test_environment}"
         ENVIRONMENT_MODIFICATION "${forest_test_modification}")
     if (TARGET common)
+        add_executable(system_settings_tests system_settings.cpp
+            ../../yuzu/configuration/configure_system.cpp
+            ../../yuzu/configuration/configure_system.h
+            ../../yuzu/configuration/configure_system.ui
+            ../../yuzu/configuration/shared_widget.cpp
+            ../../yuzu/configuration/shared_widget.h
+            ../../yuzu/configuration/configuration_shared.cpp)
+        set_target_properties(system_settings_tests PROPERTIES AUTOMOC ON AUTOUIC ON)
+        target_include_directories(system_settings_tests PRIVATE ../..)
+        target_compile_features(system_settings_tests PRIVATE cxx_std_20)
+        target_link_libraries(system_settings_tests PRIVATE core frontend_common qt_common common
+            Qt6::Widgets Qt6::Test)
+        add_test(NAME system_settings COMMAND system_settings_tests)
+        set_tests_properties(system_settings PROPERTIES TIMEOUT 45
+            ENVIRONMENT "${forest_test_environment}"
+            ENVIRONMENT_MODIFICATION "${forest_test_modification}")
         add_executable(shader_preparation_ui_tests shader_preparation.cpp
             ../../yuzu/shader_preparation_job.cpp ../../yuzu/shader_preparation_job.h)
         set_target_properties(shader_preparation_ui_tests PROPERTIES AUTOMOC ON)

@@ -1754,6 +1754,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
 
     ClearDownload(*cpu_dest_address, amount);
     MarkVertexBuffersStale(*cpu_dest_address, amount);
+    NoteUniformWrite(*cpu_dest_address, amount);
     NoteReadCheckEvent(*cpu_dest_address, amount, ReadCheckEvent::GpuWrite,
                        GpuWaitStats::WriteSite::DmaCopy); // TEST
 
@@ -1812,7 +1813,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     }
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
-        NoteUniformWrite(*cpu_dest_address, amount);
         const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
         if (should_sync) {
             runtime.Finish();
@@ -1843,6 +1843,7 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     FinishReadDownloads(*cpu_dst_address, size);
     ClearDownload(*cpu_dst_address, size);
     gpu_modified_ranges.Subtract(*cpu_dst_address, size);
+    NoteUniformWrite(*cpu_dst_address, size);
     NoteReadCheckEvent(*cpu_dst_address, size, ReadCheckEvent::DmaClear); // TEST
     // As an inline write: command list pages read the cleared words from guest memory.
     Nx2NoteListHostWrite(*cpu_dst_address, size);
@@ -2927,7 +2928,8 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
         // cache preference or the page's GPU-modified state may have changed.
         if constexpr (!IS_OPENGL && VideoCommon::StreamUniformReusable<Runtime>) {
             if (UniformRangeKept(stage, index, device_addr, size)) {
-                if (ubo_keep_verify) {
+                if (ubo_keep_verify && VideoCommon::KeptUniformMatches(
+                                           runtime, stage, index, device_addr, size)) {
                     ++uniform_keep.verified;
                     if (!VideoCommon::KeptUniformHolds<Runtime>(device_memory, stage, index,
                                                               device_addr, size)) {
@@ -2938,7 +2940,8 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
                                       stage, index, device_addr, size);
                         }
                     }
-                } else if (VideoCommon::RebindKeptUniform(runtime, stage, index, device_addr, size)) {
+                } else if (!ubo_keep_verify && VideoCommon::RebindKeptUniform(
+                                                   runtime, stage, index, device_addr, size)) {
                     channel_state->fast_bound_uniform_buffers[stage] |= 1u << binding_index;
                     channel_state->uniform_buffer_binding_sizes[stage][binding_index] = size;
                     uniform_keep.streamed[stage] |= 1u << index;
@@ -4484,6 +4487,7 @@ bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
         return false;
     }
 
+    NoteUniformWrite(dest_address, copy_size);
     InlineMemoryImplementation(dest_address, copy_size, inlined_buffer);
 
     return true;

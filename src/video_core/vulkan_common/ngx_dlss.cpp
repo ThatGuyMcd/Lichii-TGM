@@ -16,6 +16,7 @@
 #include "common/string_util.h"
 #include "video_core/vulkan_common/ngx_api.h"
 #include "video_core/vulkan_common/ngx_dlss.h"
+#include "video_core/vulkan_common/ngx_runtime_path.h"
 #include "video_core/vulkan_common/nvidia_dlss.h"
 
 namespace Vulkan {
@@ -89,6 +90,9 @@ std::filesystem::path FindModel() {
             if (std::filesystem::is_regular_file(path, ec)) {
                 return path;
             }
+        }
+        if (const auto versioned = FindRuntimeInDirectory(dir); !versioned.empty()) {
+            return versioned;
         }
     }
     return {};

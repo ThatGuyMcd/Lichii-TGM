@@ -17,6 +17,7 @@
 #include "common/nx2_sampler.h"
 #include "common/adpf.h"
 #include "common/settings.h"
+#include "common/rtc_offset.h"
 #include "common/settings_enums.h"
 #include "common/string_util.h"
 #include "core/arm/exclusive_monitor.h"
@@ -171,8 +172,8 @@ ProgramPlatform ReadProgramPlatform(System& system, const FileSys::VirtualFile& 
         if (loader.ReadProgramId(actual_program_id) != Loader::ResultStatus::Success) {
             return {};
         }
-        return {actual_program_id,
-                Loader::AppLoader_NX::ReadPlatform(file, actual_program_id) == 2};
+        const auto platform = Loader::AppLoader_NX::ReadProgramPlatform(file, actual_program_id);
+        return {actual_program_id, platform && platform->platform == 2};
     }
     if (type == Loader::FileType::XCI || type == Loader::FileType::XCZ) {
         const FileSys::XCI xci{file, program_id, program_index};
@@ -317,15 +318,15 @@ struct System::Impl {
 
         timezone_service->SetDeviceLocationName(name);
 
-        u64 time_offset = 0;
+        s64 time_offset = 0;
         if (Settings::values.custom_rtc_enabled) {
             time_offset = Settings::values.custom_rtc_offset.GetValue();
         }
 
         const auto posix_time = std::chrono::system_clock::now().time_since_epoch();
-        const u64 current_time =
+        const s64 current_time =
             +std::chrono::duration_cast<std::chrono::seconds>(posix_time).count();
-        const u64 new_time = current_time + time_offset;
+        const u64 new_time = static_cast<u64>(Common::ApplyRtcOffset(current_time, time_offset));
 
         Service::PSC::Time::SystemClockContext context{};
         settings_service->SetUserSystemClockContext(context);
@@ -622,6 +623,7 @@ struct System::Impl {
         Settings::values.use_squashed_iterated_blend = false;
         Settings::SetGameHandheldOverride(false);
 
+        kernel.RequestSuspendEmulation();
         is_powered_on = false;
         exit_locked = false;
         exit_requested = false;

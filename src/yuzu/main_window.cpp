@@ -145,6 +145,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 
 // Frontend //
 #include "frontend_common/play_time_manager.h"
+#include "frontend_common/recommended_settings.h"
 
 #ifdef ENABLE_UPDATE_CHECKER
 #include "frontend_common/update_checker.h"
@@ -2105,11 +2106,21 @@ bool MainWindow::LoadROM(const QString& filename, Service::AM::FrontendAppletPar
                 const auto title =
                     tr("Error while loading ROM! %1", "%1 signifies a numeric error code.")
                         .arg(QString::fromStdString(error_code));
+                const auto status = static_cast<Loader::ResultStatus>(error_id);
+                const bool missing_keys =
+                    status == Loader::ResultStatus::ErrorMissingProductionKeyFile ||
+                    status == Loader::ResultStatus::ErrorMissingHeaderKey ||
+                    status == Loader::ResultStatus::ErrorMissingTitlekey ||
+                    status == Loader::ResultStatus::ErrorMissingTitlekek ||
+                    status == Loader::ResultStatus::ErrorMissingKeyAreaKey;
                 const auto description =
-                    tr("%1<br>Please redump your files or ask on Discord/Stoat for help.",
-                       "%1 signifies an error string.")
-                        .arg(QString::fromStdString(
-                            GetResultStatusString(static_cast<Loader::ResultStatus>(error_id))));
+                    (missing_keys
+                         ? tr("%1<br>Install your decryption keys with Tools > Install Decryption "
+                              "Keys, then start the game again.",
+                              "%1 signifies an error string.")
+                         : tr("%1<br>Please redump your files or ask on Discord/Stoat for help.",
+                              "%1 signifies an error string."))
+                        .arg(QString::fromStdString(GetResultStatusString(status)));
 
                 QMessageBox::critical(this, title, description);
             } else {
@@ -2576,6 +2587,10 @@ void MainWindow::OnEmulationStopTimeout() {
 void MainWindow::TerminateEmulationThread() {
     if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
         LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
+        // On Windows terminate() emits finished with the thread's mutex held, and
+        // OnEmulationStopped calls isRunning(), which takes it. Both callers run it afterwards.
+        disconnect(QtCommon::emu_thread.get(), &QThread::finished, this,
+                   &MainWindow::OnEmulationStopped);
         QtCommon::emu_thread->terminate();
         QtCommon::emu_thread->wait();
     }
@@ -4595,7 +4610,7 @@ void MainWindow::OnApplyRecommendedSettings() {
     if (!RecommendedSettingsDialog::Ask(this) || emulation_running) {
         return;
     }
-    const auto changes = Settings::ApplyRecommendedSettings(Settings::values);
+    const auto changes = FrontendCommon::ApplyRecommendedSettings(Settings::values);
     LOG_INFO(Config, "Applied the recommended settings: {} changed", changes.size());
     Settings::UpdateGPUAccuracy();
     OnSaveConfig();
@@ -4607,7 +4622,7 @@ void MainWindow::OnRestorePreviousSettings() {
     if (emulation_running) {
         return;
     }
-    const auto changes = Settings::RestorePreviousSettings(Settings::values);
+    const auto changes = FrontendCommon::RestorePreviousSettings(Settings::values);
     LOG_INFO(Config, "Restored the settings from before the recommended ones: {} changed",
              changes.size());
     Settings::UpdateGPUAccuracy();

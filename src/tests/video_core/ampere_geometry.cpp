@@ -10,6 +10,7 @@
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
 #include "shader_recompiler/object_pool.h"
+#include "shader_recompiler/geometry_output_limits.h"
 
 namespace {
 using Shader::Ampere::Instruction;
@@ -40,6 +41,100 @@ constexpr std::array<Instruction, 16> GEOMETRY_PROGRAM{{
     EXIT,
 }};
 } // namespace
+
+TEST_CASE("Lowered geometry passthrough excludes vertex-only system inputs",
+          "[video_core][ampere]") {
+    Shader::Info info;
+    info.passthrough.mask.set();
+    Shader::LimitLoweredGeometryPassthroughInputs(info);
+    for (size_t index = 0; index < info.passthrough.mask.size(); ++index) {
+        CHECK(info.passthrough.mask[index] ==
+              (index >= static_cast<size_t>(Shader::IR::Attribute::PositionX) &&
+               index <= static_cast<size_t>(Shader::IR::Attribute::Generic31W)));
+    }
+}
+
+TEST_CASE("Geometry pruning retains read varyings and refuses ambiguous interfaces",
+          "[video_core][ampere]") {
+    using namespace Shader;
+    IR::Program geometry;
+    geometry.stage = Stage::Geometry;
+    IR::Program fragment;
+    fragment.stage = Stage::Fragment;
+    geometry.info.stores.Set(IR::Attribute::PositionX);
+    geometry.info.stores.Set(IR::Attribute::Generic0X);
+    geometry.info.stores.Set(IR::Attribute::Generic0W);
+    geometry.info.stores.Set(IR::Attribute::Generic31X);
+    fragment.info.loads.Set(IR::Attribute::Generic0W);
+    const auto original = geometry.info.stores;
+    const auto unchanged = [&] {
+        PruneUnreadGeometryOutputs(geometry, fragment, false, false);
+        CHECK(geometry.info.stores.Generic(31));
+        geometry.info.stores = original;
+    };
+    fragment.info.loads_indexed_attributes = true;
+    unchanged();
+    fragment.info.loads_indexed_attributes = false;
+    PruneUnreadGeometryOutputs(geometry, fragment, true, false);
+    CHECK(geometry.info.stores.Generic(31));
+    geometry.is_geometry_passthrough = true;
+    PruneUnreadGeometryOutputs(geometry, fragment, false, true);
+    CHECK(geometry.info.stores.Generic(31));
+    geometry.is_geometry_passthrough = false;
+    PruneUnreadGeometryOutputs(geometry, fragment, false, false);
+    CHECK(geometry.info.stores.Generic(0, 0));
+    CHECK(geometry.info.stores.Generic(0, 3));
+    CHECK_FALSE(geometry.info.stores.Generic(31));
+    CHECK(geometry.info.stores[IR::Attribute::PositionX]);
+}
+
+TEST_CASE("Pruned geometry stores emit without a dangling SPIR-V output ID",
+          "[video_core][ampere]") {
+    using namespace Shader;
+    ObjectPool<IR::Inst> pool;
+    IR::Block block{pool};
+    IR::IREmitter ir{block};
+    ir.SetAttribute(IR::Attribute::Generic0X, ir.Imm32(1.0f), ir.Imm32(0));
+    ir.SetAttribute(IR::Attribute::Generic31X, ir.Imm32(2.0f), ir.Imm32(0));
+    ir.EmitVertex(ir.Imm32(0));
+    ir.EndPrimitive(ir.Imm32(0));
+    IR::Program geometry;
+    geometry.stage = Stage::Geometry;
+    geometry.output_topology = OutputTopology::PointList;
+    geometry.output_vertices = 1;
+    geometry.invocations = 1;
+    geometry.blocks.push_back(&block);
+    geometry.post_order_blocks.push_back(&block);
+    IR::AbstractSyntaxNode body{};
+    body.type = IR::AbstractSyntaxNode::Type::Block;
+    body.data.block = &block;
+    IR::AbstractSyntaxNode end{};
+    end.type = IR::AbstractSyntaxNode::Type::Return;
+    geometry.syntax_list = {body, end};
+    geometry.info.stores.Set(IR::Attribute::Generic0X);
+    geometry.info.stores.Set(IR::Attribute::Generic31X);
+    IR::Program fragment;
+    fragment.stage = Stage::Fragment;
+    fragment.info.loads.Set(IR::Attribute::Generic0X);
+    PruneUnreadGeometryOutputs(geometry, fragment, false, false);
+    Profile profile{};
+    profile.supported_spirv = 0x00010300;
+    profile.support_geometry_streams = false;
+    const auto code = Backend::SPIRV::EmitSPIRV(profile, geometry);
+    u32 stores{};
+    for (size_t offset = 5; offset < code.size();) {
+        const u32 count = code[offset] >> 16;
+        REQUIRE(count > 0);
+        REQUIRE(offset + count <= code.size());
+        if ((code[offset] & 0xffff) == 62) { // OpStore
+            REQUIRE(count == 3);
+            CHECK(code[offset + 1] != 0);
+            ++stores;
+        }
+        offset += count;
+    }
+    CHECK(stores == 1);
+}
 
 TEST_CASE("Ampere geometry program counter uses the native address", "[video_core][ampere]") {
     const Instruction nop{{0x00007918, 0, 0, 0}};

@@ -15,9 +15,15 @@
 #include <QGraphicsItem>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPushButton>
+#include <QSignalBlocker>
+#include <QRegularExpressionValidator>
+#include <QRegularExpression>
+#include <QLayout>
 #include <QSpinBox>
 
 #include "common/settings.h"
+#include "common/rtc_offset.h"
 #include "core/core.h"
 #include "qt_common/qt_compat.h"
 #include "ui_configure_system.h"
@@ -54,10 +60,17 @@ ConfigureSystem::ConfigureSystem(Core::System& system_,
     : Tab(group_, parent), ui{std::make_unique<Ui::ConfigureSystem>()}, system{system_} {
     ui->setupUi(this);
 
+    if (!Settings::IsConfiguringGlobal()) {
+        rtc_using_global = Settings::values.custom_rtc_offset.UsingGlobal() &&
+                           Settings::values.custom_rtc_enabled.UsingGlobal();
+    }
+
+    rtc_offset = Settings::values.custom_rtc_offset.GetValue();
+
     const auto posix_time = std::chrono::system_clock::now().time_since_epoch();
     const auto current_time_s =
         std::chrono::duration_cast<std::chrono::seconds>(posix_time).count();
-    previous_time = current_time_s + Settings::values.custom_rtc_offset.GetValue();
+    previous_time = static_cast<u64>(Common::ApplyRtcOffset(current_time_s, rtc_offset));
 
     Setup(builder);
 
@@ -75,22 +88,62 @@ ConfigureSystem::ConfigureSystem(Core::System& system_,
     };
 
     const auto update_date_offset = [this]() {
-        if (!checkbox_rtc->isChecked()) {
+        if (!checkbox_rtc || !checkbox_rtc->isChecked()) {
             return;
         }
-        auto offset = date_rtc_offset->value();
-        offset += date_rtc->dateTime().toSecsSinceEpoch() - previous_time;
-        previous_time = date_rtc->dateTime().toSecsSinceEpoch();
-        date_rtc_offset->setValue(offset);
+        const auto now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                               std::chrono::system_clock::now().time_since_epoch())
+                               .count();
+        const auto selected_s = date_rtc->dateTime().toSecsSinceEpoch();
+        rtc_offset = static_cast<s64>(selected_s - now_s);
+        previous_time = static_cast<u64>((std::max<s64>)(0, selected_s));
+        rtc_using_global = false;
+        MarkRtcCustom();
+        if (edit_rtc_offset) {
+            const QSignalBlocker blocker(edit_rtc_offset);
+            edit_rtc_offset->setText(QString::number(rtc_offset));
+        }
+
+        if (!Settings::IsConfiguringGlobal() && widget_rtc && widget_rtc->restore_button) {
+            widget_rtc->restore_button->setEnabled(true);
+            widget_rtc->restore_button->setVisible(true);
+        }
     };
-    const auto update_rtc_date = [this](int _) { UpdateRtcTime(); };
+    const auto update_rtc_date = [this](int _) {
+        MarkRtcCustom();
+        if (!Settings::IsConfiguringGlobal() && widget_rtc && widget_rtc->restore_button) {
+            rtc_using_global = false;
+            widget_rtc->restore_button->setEnabled(true);
+            widget_rtc->restore_button->setVisible(true);
+        }
+        UpdateRtcTime();
+    };
 
     connect(combo_language, qOverload<int>(&QComboBox::currentIndexChanged), this, locale_check);
     connect(combo_region, qOverload<int>(&QComboBox::currentIndexChanged), this, locale_check);
-    connect(checkbox_rtc, qOverload<CHECKSTATE_TYPE>(&QCheckBox::STATE_CHANGED), this,
-            update_rtc_date);
-    connect(date_rtc_offset, qOverload<int>(&QSpinBox::valueChanged), this, update_rtc_date);
-    connect(date_rtc, &QDateTimeEdit::dateTimeChanged, this, update_date_offset);
+    if (checkbox_rtc) {
+        connect(checkbox_rtc, qOverload<CHECKSTATE_TYPE>(&QCheckBox::STATE_CHANGED), this,
+                update_rtc_date);
+    }
+    if (date_rtc) {
+        connect(date_rtc, &QDateTimeEdit::dateTimeChanged, this, update_date_offset);
+    }
+    if (edit_rtc_offset) {
+        connect(edit_rtc_offset, &QLineEdit::editingFinished, this, [this] {
+            bool valid{};
+            const s64 value = edit_rtc_offset->text().toLongLong(&valid);
+            if (valid && value != rtc_offset) {
+                rtc_offset = value;
+                MarkRtcCustom();
+            }
+            UpdateRtcTime();
+        });
+    }
+
+    if (!Settings::IsConfiguringGlobal() && widget_rtc && widget_rtc->restore_button) {
+        connect(widget_rtc->restore_button, &QAbstractButton::clicked, this,
+                &ConfigureSystem::RestoreRtcGlobal);
+    }
 
     ui->label_warn_invalid_locale->setVisible(false);
     locale_check();
@@ -136,7 +189,11 @@ void ConfigureSystem::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 
-        ConfigurationShared::Widget* widget = builder.BuildWidget(setting, apply_funcs);
+        const bool is_rtc_offset = setting->Id() == Settings::values.custom_rtc_offset.Id();
+        ConfigurationShared::Widget* widget = is_rtc_offset
+            ? builder.BuildWidget(setting, apply_funcs, ConfigurationShared::RequestType::LineEdit,
+                                  false)
+            : builder.BuildWidget(setting, apply_funcs);
 
         if (widget == nullptr) {
             continue;
@@ -157,15 +214,25 @@ void ConfigureSystem::Setup(const ConfigurationShared::Builder& builder) {
         }
 
         if (setting->Id() == Settings::values.custom_rtc.Id()) {
+            widget_rtc = widget;
             checkbox_rtc = widget->checkbox;
-        }
-
-        if (setting->Id() == Settings::values.custom_rtc.Id()) {
             date_rtc = widget->date_time_edit;
+            checkbox_rtc->setObjectName(QStringLiteral("customRtcEnabled"));
+            date_rtc->setObjectName(QStringLiteral("customRtcDate"));
         }
-
-        if (setting->Id() == Settings::values.custom_rtc_offset.Id()) {
-            date_rtc_offset = widget->spinbox;
+        if (is_rtc_offset) {
+            widget_rtc_offset = widget;
+            edit_rtc_offset = widget->line_edit;
+            edit_rtc_offset->setObjectName(QStringLiteral("customRtcOffsetSeconds"));
+            edit_rtc_offset->setValidator(new QRegularExpressionValidator(
+                QRegularExpression(QStringLiteral("-?[0-9]{0,19}")), edit_rtc_offset));
+            if (!Settings::IsConfiguringGlobal()) {
+                widget->restore_button = ConfigurationShared::Widget::CreateRestoreGlobalButton(
+                    rtc_using_global, widget);
+                widget->layout()->addWidget(widget->restore_button);
+                connect(widget->restore_button, &QAbstractButton::clicked, this,
+                        &ConfigureSystem::RestoreRtcGlobal);
+            }
         }
 
         switch (setting->GetCategory()) {
@@ -188,16 +255,55 @@ void ConfigureSystem::Setup(const ConfigurationShared::Builder& builder) {
 }
 
 void ConfigureSystem::UpdateRtcTime() {
-    const auto posix_time = std::chrono::system_clock::now().time_since_epoch();
-    previous_time = std::chrono::duration_cast<std::chrono::seconds>(posix_time).count();
-    date_rtc_offset->setEnabled(checkbox_rtc->isChecked());
-
-    if (checkbox_rtc->isChecked()) {
-        previous_time += date_rtc_offset->value();
+    if (!checkbox_rtc || !date_rtc) {
+        return;
     }
 
-    const auto date = QDateTime::fromSecsSinceEpoch(previous_time);
-    date_rtc->setDateTime(date);
+    const auto posix_time = std::chrono::system_clock::now().time_since_epoch();
+    const auto current_time_s =
+        std::chrono::duration_cast<std::chrono::seconds>(posix_time).count();
+
+    previous_time = static_cast<u64>(Common::ApplyRtcOffset(
+        current_time_s, checkbox_rtc->isChecked() ? rtc_offset : 0));
+
+    const auto date = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(previous_time));
+    const QSignalBlocker blocker(date_rtc);
+    if (date.isValid()) {
+        date_rtc->setDateTime(date);
+    }
+    if (edit_rtc_offset) {
+        const QSignalBlocker offset_blocker(edit_rtc_offset);
+        edit_rtc_offset->setText(QString::number(rtc_offset));
+        edit_rtc_offset->setEnabled(checkbox_rtc->isChecked());
+    }
+}
+
+void ConfigureSystem::MarkRtcCustom() {
+    rtc_using_global = false;
+    if (!Settings::IsConfiguringGlobal()) {
+        for (auto* widget : {widget_rtc, widget_rtc_offset}) {
+            if (widget && widget->restore_button) {
+                widget->restore_button->setEnabled(true);
+                widget->restore_button->setVisible(true);
+            }
+        }
+    }
+}
+
+void ConfigureSystem::RestoreRtcGlobal() {
+    rtc_using_global = true;
+    rtc_offset = Settings::values.custom_rtc_offset.GetValue(true);
+    if (checkbox_rtc) {
+        const QSignalBlocker blocker(checkbox_rtc);
+        checkbox_rtc->setChecked(Settings::values.custom_rtc_enabled.GetValue(true));
+    }
+    UpdateRtcTime();
+    for (auto* widget : {widget_rtc, widget_rtc_offset}) {
+        if (widget && widget->restore_button) {
+            widget->restore_button->setEnabled(false);
+            widget->restore_button->setVisible(false);
+        }
+    }
 }
 
 void ConfigureSystem::SetConfiguration() {}
@@ -207,5 +313,17 @@ void ConfigureSystem::ApplyConfiguration() {
     for (const auto& func : apply_funcs) {
         func(powered_on);
     }
+
+    if (Settings::IsConfiguringGlobal()) {
+        Settings::values.custom_rtc_offset.SetValue(rtc_offset);
+    } else {
+        Settings::values.custom_rtc_enabled.SetGlobal(rtc_using_global);
+        Settings::values.custom_rtc.SetGlobal(rtc_using_global);
+        Settings::values.custom_rtc_offset.SetGlobal(rtc_using_global);
+        if (!rtc_using_global) {
+            Settings::values.custom_rtc_offset.SetValue(rtc_offset);
+        }
+    }
+
     UpdateRtcTime();
 }

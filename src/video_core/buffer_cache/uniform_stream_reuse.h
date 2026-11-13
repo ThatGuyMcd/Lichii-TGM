@@ -141,12 +141,9 @@ template <class Runtime, class DeviceMemory>
     return true;
 }
 
-/// Uniform keeps: binds the slot's last allocation again without reading guest memory,
-/// when that bind read the same range in this command buffer. The caller guarantees that nothing
-/// ordered before this draw wrote the range since that bind (the previous draw's). Returns false
-/// (nothing bound) otherwise.
+/// Whether the slot was streamed from this range in the current command buffer.
 template <class Runtime>
-[[nodiscard]] bool RebindKeptUniform(Runtime& runtime, size_t stage, u32 index, u64 device_addr,
+[[nodiscard]] bool KeptUniformMatches(Runtime& runtime, size_t stage, u32 index, u64 device_addr,
                                      u32 size) {
     using Reuse = UniformStreamReuse<typename Runtime::StreamUniformRef>;
     if (size == 0 || size > Reuse::MaxBytes || stage >= Reuse::NumStages ||
@@ -155,10 +152,23 @@ template <class Runtime>
     }
     const typename Reuse::Slot& slot =
         UniformStreamReuseState<typename Runtime::StreamUniformRef>().slots[stage][index];
-    if (slot.size != size || slot.device_addr != device_addr ||
-        slot.tick != runtime.CurrentTick()) {
+    return slot.size == size && slot.device_addr == device_addr &&
+           slot.tick == runtime.CurrentTick();
+}
+
+/// Uniform keeps: binds the slot's last allocation again without reading guest memory,
+/// when that bind read the same range in this command buffer. The caller guarantees that nothing
+/// ordered before this draw wrote the range since that bind (the previous draw's). Returns false
+/// (nothing bound) otherwise.
+template <class Runtime>
+[[nodiscard]] bool RebindKeptUniform(Runtime& runtime, size_t stage, u32 index, u64 device_addr,
+                                     u32 size) {
+    if (!KeptUniformMatches(runtime, stage, index, device_addr, size)) {
         return false;
     }
+    using Reuse = UniformStreamReuse<typename Runtime::StreamUniformRef>;
+    const typename Reuse::Slot& slot =
+        UniformStreamReuseState<typename Runtime::StreamUniformRef>().slots[stage][index];
     runtime.RebindStreamUniform(slot.ref, size);
     return true;
 }

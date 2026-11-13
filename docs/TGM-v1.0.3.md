@@ -1,122 +1,66 @@
 # Lichii-tgm-v1.0.3
 
-This revision brings in the reviewed changes from Lichii and useful OOT-related
-fixes from Fritchii, while keeping the Forest Lantern UI, handheld layout, all
-settings, aspect profiles and explicit shader preparation option.
+I've brought our fork up to speed with the useful commits and PRs from Lichii and
+Fritchii, keeping OOT Remake as the priority. Our Forest Lantern UI, handheld layout
+and every existing setting are still here. I've left the experimental changes for
+later.
 
-## Updates
+This release includes Windows x86_64 and Linux x86_64 AppImage builds from the same
+source commit. The accompanying manifest records the exact source and validation.
 
-- Reviews 38 Lichii commits through `d5bb40ad4ca16b66e9c0961f823aff5f2a8c5c08`.
-  Protected dependency sources are retained, so their CPU optimizations and the
-  external FidelityFX shader change are not applied. The fork also retains its
-  existing overlay, data paths and release packaging.
-- Adds focused warm-up shader validation, pipeline-library capability checks and
-  automatic precompile memory-pressure safeguards from the older shader PR series.
-  The latest two main UI/LAN commits remain reviewed exclusions.
-- Links nxformat 1.0.3 into the executable and adds the reviewed external NX
-  update/DLC, patched RomFS dump, metadata editing and whole-gamecard fixes.
-  The late upstream theme redesign is reviewed; Forest Lantern stays in use.
-- Adds the reviewed read-only compute-buffer size bound, empty-submit handling,
-  shader compiler changes, native HDR output and retained SPIR-V for rebuilding
-  evicted graphics pipelines. Fork-specific GPL, optimized compilation, native
-  preparation and OOT motion information remain in place.
-- Adds focused fixes for emergency texture collection, preserving collected CPU
-  writes, optional memory trimming under allocation failure, and shader operands
-  that use high register numbers.
-- Integrates Fritchii's native/UTF-8 mod paths, self-install protection and safe
-  folder naming. Missing sources, overlapping install folders, occupied siblings
-  and dangling links are checked before destructive operations.
-- Retains all OOT aspect profiles and their Photo Mode compatibility. Texture
-  Pool x2 was already present and is retained.
-- Reuses compatible dynamic vertex-input draws while rejecting changed shader
-  input types. A full change list retains every written range and restreams
-  uniforms conservatively. This is a focused adaptation of
-  [Lichii #1161](https://github.com/zortos293/Lichii/pull/1161), preserving this
-  fork's native pipeline keys and motion handling.
-- Tracks all 64 storage-buffer bases when reading texture-handle tables, so
-  bindings above 31 cannot collide with lower slots. This is the narrow mask
-  correction from [Lichii #1485](https://github.com/zortos293/Lichii/pull/1485).
-- Clears deleted-buffer references from every active channel before a slot can
-  be reused, preserving each channel's dirty state and the fork's uniform/memory
-  handling. Adapted from [Lichii #1459](https://github.com/zortos293/Lichii/pull/1459).
+## Changes
 
-## Settings and data
+- Shutdown fixes address stop-time guest PANIC ordering and the Windows closing
+  deadlock. Windows also gains local crash context and minidump capture.
+- Device-memory cleanup releases contained mappings correctly. Freed SMMU blocks
+  can be reused, with pressure handling that returns retained blocks when needed.
+- Self-contained NUP and tree-NX games keep their executable and game-data versions
+  together. Installed NCA updates and user mods retain their existing behavior.
+- Renderer fixes cover mesh-emulation buffer lifetime, combined task/mesh descriptor
+  limits, uniform-write notifications, pointer-word recapture, query cleanup and
+  fence wake/retirement handling. Existing motion, report ownership and shader-cache
+  safeguards remain.
+- Shader translation gains lazy SSA phis and unused-identity cleanup. Geometry
+  output, sparse-image and same-image blit checks improve portable Vulkan behavior.
+- Interrupted shader-cache boot loading can recover without repeating the same
+  failed boot prebuild. Existing cache contents and explicit preparation remain.
+- More Actions > Prepare game shaders retains its separate worker, pinned OOT
+  recipe, version/build checks, cache locks, cancellation and driver checkpoints.
+  Compressed `.zst` shader archives are recognized too. Missing information still
+  prevents incomplete preparation from being reported as complete.
+- The custom clock keeps both its date and numeric offset controls, including
+  signed 64-bit offsets and per-game restore behavior. Recommended settings can
+  back up and restore the relevant per-game overrides while retaining other choices.
+- Audio adds a no-microphone option that captures silence without opening a host
+  microphone. Audio output and existing input-device choices remain available.
+- Hardware GPUs are preferred over software renderers. Linux DLSS can discover
+  versioned runtime libraries through the existing backend and search paths.
+- Frame-dump reports use UTF-8 explicitly. Bounded driver-cache diagnostics report
+  actual file ages and identify incomplete scans.
 
-Existing Eden, portable and XDG locations stay in use. This update does not move
-saves, keys, firmware, profiles or caches into a new application folder. The safer
-staged import machinery is retained for explicit imports.
-Existing configured profiles continue without a new import prompt, including
-separate XDG config directories. Unfinished imports still require recovery;
-the current profile and its aliases cannot be selected as import sources.
+## UI, settings and data
 
-HDR Off/On/Auto replaces the old On/Off control, with its saved choice migrated and
-the old key preserved for compatibility. Existing 200/300-nit defaults are retained;
-zero is available for display-derived calibration. HDR10 and scRGB can be selected.
+Forest Lantern dark/light themes, selected-game artwork, touch spacing, full-screen
+settings and the handheld layout are retained. Saves, keys, firmware, profiles and
+Eden/portable/XDG data paths are preserved. Existing OOT aspect profiles and Photo
+Mode compatibility remain.
 
-NVIDIA DLSS gains explicit quality and model choices on Windows and Linux. Existing
-quality IDs, OOT anti-aliasing/render-scale choices, preset overrides and neural
-rendering controls remain. The existing game/default model policy is retained
-instead of silently selecting upstream's new M default. Live options are published
-as one atomic snapshot for the renderer.
+This release also includes the reviewed v1.0.3 work already prepared locally:
+nxformat 1.0.3 integration, retained SPIR-V, warm-up capability/memory guards,
+safe mod installation/naming, all-channel deleted-buffer cleanup and the 64-bit
+storage-binding correction.
 
-## Shader preparation
+## Validation
 
-More Actions > Prepare game shaders remains a separate worker. Its pinned OOT
-v131072 recipe, version/build checks, cache locks, cancellation and driver-cache
-checkpoints remain. Pipeline records are counted separately from unique programs.
-Missing facts remain rejected; preparation does not promise every possible runtime
-pipeline or eliminate all stutter. Compiler changes invalidate stale prepared
-translations through the existing source-revision stamp.
+Both packages must pass the complete applicable test suites, Linux permission
+checks without administrator privileges, settings/UI retention, protected-source
+identity, dependencies, package versions, worker execution, standalone AppImage Qt
+launcher and checksum checks. Exact results are in the release manifest.
 
-The new Build all cached shaders before game start setting concerns records saved
-by earlier play sessions. It complements the explicit game-file preparation action.
+Gameplay performance has not been benchmarked for this integration. The earlier
+native-60 investigation is deferred; these automated checks do not establish that
+GPU timeouts or every location-dependent game issue are resolved. Frame-generation
+configuration and experimental defaults are retained without forced changes.
 
-## Validation and remaining work
-
-Windows x86_64 and Linux x86_64 AppImage packages must pass the full test suites,
-settings/UI retention checks, dependencies, package identity and checksum checks.
-Detailed results are recorded in the build manifest accompanying the packages.
-
-The local native-rendering performance candidate still needs matched gameplay
-validation. Diagnostic tracing changes CPU command routing, so performance claims
-must use separate measurements with detailed profiling and frame generation off.
-Native 60 FPS and a twofold improvement have not been established.
-
-A further isolated candidate adapts the timing-only portion of Lichii PR1161
-commit `865afaa4f32f605850b0d1f8e10364b50dd38126`: fast-draw cost timing runs only
-when its diagnostic reports use it, and disabled profiling scopes retain a small
-inline check. Enabled profiling/stutter accounting is preserved, with regression
-coverage for nesting and GPU waits. Draw selection, reuse serials and memory/report
-ownership retain their existing behavior. Two 60-second Castle Town measurements
-of that timing cleanup returned 30.49 and 29.53 native game FPS with frame generation
-off. No useful boost was demonstrated. Camera, lighting and NPC differences prevent
-a causal percentage comparison with the original baseline.
-
-The next diagnostic candidate measures actual constant-buffer stores whose bytes
-already match guest memory and whether those stores block draw reuse. Every memory
-write, delta notification, header/alias check and cache invalidation remains in place.
-Equal guest bytes alone do not establish safe write elision. These counters guide
-the next optimization; they are not a performance improvement themselves.
-
-Castle Town checks exposed an inherited ordering issue in streamed uniform reuse:
-reuse ran before the current cached/streamed binding policy was evaluated. The
-candidate now checks that policy and performs any existing native-bank refresh
-before attempting reuse. Regression cases cover a changed cache preference,
-adjacent GPU writes on the same page and overlapping GPU writes whose current
-buffer data differs from guest memory, in normal and verification modes. The
-observed runtime messages reported policy changes with matching bytes; they did
-not establish visible corruption. The corrected build and timing cleanup passed
-sampled Castle Town draw, uniform-buffer and descriptor comparisons with positive
-checks and zero mismatches. Broader gameplay coverage remains separate.
-
-Recent device-loss reports still need a controlled gameplay comparison. A Windows
-GPU engine timeout means the display engine stopped responding; it does not by
-itself identify a particular emulator defect. See [Microsoft's 0x141 description](https://learn.microsoft.com/windows-hardware/drivers/debugger/bug-check-0x141---video-engine-timeout-detected).
-Test with stock GPU settings and otherwise unchanged game settings before
-attributing a stability difference to this update. Builds and automated checks do
-not establish that the GPU reset issue is fixed. No emulator or game is launched
-automatically during validation.
-
-Experimental lock-free reads, learned eviction that discards first-read data and
-replacement preparation systems that drop recipe support are not included. See the
-[integration audit](TGM-upstream-sync-2026-11-11.md) for source snapshots and dispositions.
+Source attribution, selected subsets and exclusions are documented in
+[the integration notes](TGM-upstream-sync-2026-11-13.md).

@@ -5,6 +5,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    video_core/ngx_runtime_path.cpp
+    video_core/driver_cache_stats.cpp
+    video_core/image_layout_guards.cpp
+    video_core/vulkan_device_order.cpp
+    video_core/query_stream.cpp
+    common/rtc_offset.cpp
     video_core/neural_rendering_model.cpp
     common/addon_config.cpp
     common/thread_worker.cpp
@@ -353,6 +359,17 @@ target_compile_definitions(shader_translation_tests PRIVATE
     SHADER_SWEEP_FIXTURES="${PROJECT_SOURCE_DIR}/tools/shader-sweep/fixtures")
 add_test(NAME shader_translation_tests COMMAND shader_translation_tests)
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(WIN32)
+    add_executable(crash_handler_probe EXCLUDE_FROM_ALL common/crash_handler_probe.cpp)
+    target_link_libraries(crash_handler_probe PRIVATE common)
+endif()
+add_test(NAME logging_format_oom COMMAND "${Python3_EXECUTABLE}" -I
+    "${PROJECT_SOURCE_DIR}/tests/test_logging_format_oom.py" --cxx "${CMAKE_CXX_COMPILER}")
+set_tests_properties(logging_format_oom PROPERTIES TIMEOUT 45)
+add_test(NAME frame_dump_utf8 COMMAND "${Python3_EXECUTABLE}" -I
+    "${PROJECT_SOURCE_DIR}/tools/nx2/test_frame_dump_index.py")
+
 if (NOT ANDROID)
     target_sources(tests PRIVATE input_common/joycon_subcommand_response.cpp)
     target_link_libraries(tests PRIVATE SDL3::SDL3)
@@ -361,7 +378,8 @@ if (NOT ANDROID)
         common/first_run_config.cpp
         common/recommended_settings.cpp
         ../frontend_common/profile_import.cpp
-        ../frontend_common/config.cpp)
+        ../frontend_common/config.cpp
+        ../frontend_common/recommended_settings.cpp)
     target_link_libraries(config_tests PRIVATE common SimpleIni::SimpleIni Catch2::Catch2WithMain
         ${PLATFORM_LIBRARIES})
     add_test(NAME config_tests COMMAND config_tests)

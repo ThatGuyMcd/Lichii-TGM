@@ -86,6 +86,34 @@ private:
 
 using MemoryTracker = VideoCommon::MemoryTrackerBase<RasterizerInterface>;
 
+TEST_CASE("MemoryTracker: engine writes preserve protection across tracked and untracked pages",
+          "[video_core][memory_tracker][engine_write]") {
+    RasterizerInterface rasterizer;
+    MemoryTracker tracker{rasterizer};
+    tracker.UnmarkRegionAsCpuModified(c, PAGE);
+    REQUIRE(rasterizer.Count(c) == 1);
+    REQUIRE(rasterizer.Count(c + PAGE) == 0);
+    const auto calls = rasterizer.UpdateCalls();
+    tracker.MarkRegionAsWrittenTracked(c + PAGE - 4, 8);
+    CHECK(tracker.IsRegionCpuModified(c, PAGE));
+    CHECK(tracker.IsRegionCpuModified(c + PAGE, PAGE));
+    CHECK(rasterizer.UpdateCalls() == calls);
+    CHECK(rasterizer.Count(c) == 1);
+    CHECK(rasterizer.Count(c + PAGE) == 0);
+    std::vector<Range> uploads;
+    tracker.ForEachUploadRange(c, 2 * PAGE, [&](u64 address, u64 size) {
+        uploads.emplace_back(address, size);
+    });
+    REQUIRE(uploads == std::vector<Range>{{c, 2 * PAGE}});
+    CHECK(rasterizer.Count(c) == 1); // Already tracked: no duplicate protection reference.
+    CHECK(rasterizer.Count(c + PAGE) == 1);
+    CHECK_FALSE(tracker.IsRegionCpuModified(c, 2 * PAGE));
+    // A later actual CPU write must still remove protection in the normal way.
+    tracker.MarkRegionAsCpuModified(c, PAGE);
+    CHECK(rasterizer.Count(c) == 0);
+    CHECK(rasterizer.Count(c + PAGE) == 1);
+}
+
 TEST_CASE("MemoryTracker: Small region", "[video_core]") {
     RasterizerInterface rasterizer;
     std::optional<MemoryTracker> memory_track(rasterizer);

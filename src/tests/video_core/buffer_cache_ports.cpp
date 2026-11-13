@@ -280,7 +280,12 @@ struct Tracker : VideoCommon::MemoryTrackerBase<Tegra::MaxwellDeviceMemoryManage
         ++cpu_marks;
         MemoryTrackerBase::MarkRegionAsCpuModified(address, size);
     }
+    void MarkRegionAsWrittenTracked(DAddr address, u64 size) {
+        ++engine_marks;
+        MemoryTrackerBase::MarkRegionAsWrittenTracked(address, size);
+    }
     u32 cpu_marks{};
+    u32 engine_marks{};
 };
 
 struct Policy {
@@ -500,6 +505,9 @@ struct BufferCacheTestAccess {
     }
     static u32 CpuMarks(Cache& cache) {
         return cache.memory_tracker.cpu_marks;
+    }
+    static u32 EngineMarks(Cache& cache) {
+        return cache.memory_tracker.engine_marks;
     }
     static void MarkWritten(Cache& cache, BufferId id, DAddr address, u32 size) {
         cache.MarkWrittenBuffer(id, address, size);
@@ -1344,6 +1352,24 @@ TEST_CASE("Constant buffer data skips WriteMemory only on pages no other buffer 
     Access::MarkWritten(*f.cache, id, 0x24010, 0x10);
     REQUIRE(f.cache->ConstantDataReachesBuffers(0x24ff0, 4));
     REQUIRE_FALSE(f.cache->ConstantDataReachesBuffers(0x25000, 4));
+}
+
+TEST_CASE("Constant engine writes retain protection only on pages without GPU-written bytes",
+          "[buffer_ports][engine_write]") {
+    Fixture f;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x2000);
+    const auto cpu_before = Access::CpuMarks(*f.cache);
+    f.cache->WriteMemory(0x20020, 4, true, true);
+    REQUIRE(Access::EngineMarks(*f.cache) == 1);
+    REQUIRE(Access::CpuMarks(*f.cache) == cpu_before);
+    REQUIRE(f.cache->IsRegionCpuModified(0x20000, 0x1000));
+    // Ordinary writes still take the existing CPU invalidation path.
+    f.cache->WriteMemory(0x21020, 4);
+    REQUIRE(Access::CpuMarks(*f.cache) == cpu_before + 1);
+    // The engine shortcut must not consume the page containing unrelated GPU bytes.
+    Access::MarkWritten(*f.cache, id, 0x20100, 16);
+    f.cache->WriteMemory(0x20020, 4, true, true);
+    REQUIRE(Access::EngineMarks(*f.cache) == 1);
 }
 
 TEST_CASE("Read downloads stay GPU-modified until the reading thread writes them",

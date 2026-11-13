@@ -3284,7 +3284,7 @@ void RasterizerVulkan::InvalidateCachedWrites(
         buffer_cache.ClaimCpuWrites(sequences);
         for (const auto& range : sequences) {
             if (reaches_buffers(range)) {
-                buffer_cache.WriteMemory(range.first, range.second);
+                buffer_cache.WriteMemory(range.first, range.second, true, constant_buffer_data);
             }
         }
     }

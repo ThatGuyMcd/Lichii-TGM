@@ -80,6 +80,14 @@ public:
         });
     }
 
+    /// Mark an engine write while retaining each page's existing CPU protection state.
+    void MarkRegionAsWrittenTracked(VAddr dirty_cpu_addr, u64 query_size) {
+        ForgetSynchronized(dirty_cpu_addr, query_size);
+        IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+            manager->MarkWrittenTracked(manager->cpu_addr + offset, size);
+        });
+    }
+
     /// Unmark region as CPU modified, notifying the device_tracker about this change
     void UnmarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
         ever_synchronized_pages.Mark(dirty_cpu_addr, query_size);

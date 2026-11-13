@@ -25,6 +25,7 @@
 #include "core/hle/kernel/k_spin_lock.h"
 #include "core/hle/kernel/k_synchronization_object.h"
 #include "core/hle/kernel/k_timer_task.h"
+#include "core/hle/kernel/k_thread_context_guard.h"
 #include "core/hle/kernel/k_typed_address.h"
 #include "core/hle/kernel/k_worker_task.h"
 #include "core/hle/kernel/slab_helpers.h"
@@ -933,7 +934,7 @@ private:
     bool m_resource_limit_release_hint{};
     bool m_is_kernel_address_key{};
     StackParameters m_stack_parameters{};
-    std::mutex m_context_guard{};
+    KThreadContextGuard m_context_guard{};
 
     // For emulation
     std::shared_ptr<Common::Fiber> m_host_context{};

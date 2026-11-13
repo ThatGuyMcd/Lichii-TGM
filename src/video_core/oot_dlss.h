@@ -16,6 +16,7 @@
 
 #include "common/common_types.h"
 #include "common/settings.h"
+#include "video_core/game_dlss_status.h"
 #include "video_core/nvidia_dlss_policy.h"
 #include "video_core/surface.h"
 #include "video_core/textures/texture.h"
@@ -54,7 +55,8 @@ inline void NoteBackendFailure() {
 
 /// Recording failures stop jitter at the next frame boundary; selection still owns the copy.
 inline void BeginRuntimeFrame() {
-    Runtime().BeginFrame();
+    // Native OOT scenes can overlap presents; their hotkey state changes at the network output.
+    Runtime().BeginFrame(Requested() ? Runtime().Paused() : VideoCore::NvidiaDlssPaused());
 }
 
 inline bool Active() {
@@ -136,7 +138,7 @@ inline bool ObjectMotionRequested() {
 
 /// DLSS replaces the game's network (No sharpening is video_core/oot_network.h's).
 inline bool ReplacesNetwork() {
-    return Requested();
+    return Requested() && !Runtime().Paused();
 }
 
 /// Fragment shaders of the game's tonemap passes (outdoor log-bloom final, adaptive final): the
@@ -274,6 +276,14 @@ inline std::string TakeFallbackSummary() {
 inline std::atomic<u64>& LastDlssFrame() {
     static std::atomic<u64> frame{~u64{0}};
     return frame;
+}
+
+inline void ApplyRuntimePauseAtSceneEnd() {
+    const bool paused = VideoCore::NvidiaDlssPaused();
+    if (paused != Runtime().Paused()) {
+        LastDlssFrame().store(~u64{0}, std::memory_order_relaxed);
+    }
+    Runtime().BeginFrame(paused);
 }
 
 inline SceneTargets& Targets() {

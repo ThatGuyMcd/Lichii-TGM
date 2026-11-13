@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <QFile>
 #include <QImage>
+#include <QJSEngine>
 #include <QTemporaryDir>
 #include <QtTest>
 #include "common/fs/path_util.h"
@@ -22,6 +23,7 @@
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/configuration/shared_widget.h"
 #include "yuzu/configuration/settings_share.h"
+#include "yuzu/render/adventure_script.h"
 
 class SystemSettingsTests : public QObject {
     Q_OBJECT
@@ -51,6 +53,86 @@ class SystemSettingsTests : public QObject {
     }
 
 private slots:
+    void adventureScriptBoundsNativeReportLoops() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QFile module(directory.filePath(QStringLiteral("0400486024DEC000.js")));
+        QVERIFY(module.open(QIODevice::WriteOnly));
+        const QByteArray code = QByteArrayLiteral(R"(
+            var game={folder:'0400486024DEC000',file:'save.bin'};
+            function read() {
+                let rows={length:1000000000};
+                let views={length:1000000000};
+                for(let i=0;i<64;i++) views[i]={name:'view',rows:rows};
+                return {keys:rows,tabs:{length:1000000000,0:{name:'tab',views:views}}};
+            }
+        )");
+        QCOMPARE(module.write(code), qint64{code.size()});
+        module.close();
+        QFile save(directory.filePath(QStringLiteral("save.bin")));
+        QVERIFY(save.open(QIODevice::WriteOnly));
+        QCOMPARE(save.write("x"), qint64{1});
+        save.close();
+        NotesScript script;
+        QString error;
+        QVERIFY2(script.Load(module.fileName(), {}, error), qPrintable(error));
+        const auto report = script.Read(save.fileName(), error);
+        QVERIFY2(report.has_value(), qPrintable(error));
+        QCOMPARE(report->keys.size(), size_t{4096});
+        QCOMPARE(report->tabs.size(), size_t{64});
+        QCOMPARE(report->tabs[0].views.size(), size_t{64});
+        size_t total = report->keys.size();
+        for (const auto& tab : report->tabs)
+            for (const auto& view : tab.views) total += view.rows.size();
+        QCOMPARE(total, size_t{20000});
+    }
+    void adventureHostUsesItsStateFolderAndRejectsAnUnassignedSave() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto current = QDir::currentPath();
+        SCOPE_EXIT { QDir::setCurrent(current); };
+        QVERIFY(QDir::setCurrent(directory.path()));
+        QFile unrelated(QStringLiteral("save.bin"));
+        QVERIFY(unrelated.open(QIODevice::WriteOnly));
+        QCOMPARE(unrelated.write("unrelated working-directory file"), qint64{32});
+        unrelated.close();
+        QJSEngine engine;
+        NotesHost host(&engine, {directory.filePath(QStringLiteral("notes/lib"))});
+        QVERIFY(host.file(QStringLiteral("save.bin")).isEmpty());
+        QVERIFY(engine.hasError());
+        host.store(QStringLiteral("notes.txt"), QStringLiteral("retained state"));
+        QFile state(directory.filePath(QStringLiteral("notes/state/notes.txt")));
+        QVERIFY(state.open(QIODevice::ReadOnly));
+        QCOMPARE(state.readAll(), QByteArrayLiteral("retained state"));
+        QCOMPARE(host.load(QStringLiteral("notes.txt")), QStringLiteral("retained state"));
+        QVERIFY(!QFile::exists(directory.filePath(QStringLiteral("notes/lib/state/notes.txt"))));
+    }
+    void adventureTickTimeoutStopsUntilReloaded() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QFile module(directory.filePath(QStringLiteral("0400486024DEC000.js")));
+        const auto write = [&](const QByteArray& tick) {
+            if (!module.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+            const QByteArray code = QByteArrayLiteral(
+                "var game={folder:'0400486024DEC000',file:'save.bin'};function read(){return {}};") + tick;
+            const bool good = module.write(code) == code.size();
+            module.close();
+            return good;
+        };
+        QVERIFY(write(QByteArrayLiteral("function tick(){while(true){}}")));
+        NotesScript script;
+        QString error;
+        QVERIFY2(script.Load(module.fileName(), {}, error), qPrintable(error));
+        QVERIFY(!script.Tick(error));
+        QVERIFY(error.contains(QStringLiteral("over 5 seconds")));
+        QElapsedTimer elapsed;
+        elapsed.start();
+        QVERIFY(!script.Tick(error));
+        QVERIFY(elapsed.elapsed() < 1000);
+        QVERIFY(write(QByteArrayLiteral("function tick(){return true}")));
+        QVERIFY2(script.Load(module.fileName(), {}, error), qPrintable(error));
+        QVERIFY(script.Tick(error));
+    }
     void gamePromptChoicesMigratePersistAndCanBeCleared() {
         try {
         QTemporaryDir directory;

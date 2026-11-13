@@ -57,6 +57,13 @@ constexpr size_t DynamicRoutineSize = 120;
 constexpr size_t UnlockRoutineSize = 128;
 constexpr u32 DynamicCallInstruction = 0x94D57D4F;
 constexpr u32 DynamicOriginalInstruction = 0x1E201828;
+constexpr size_t TurnSpeedHookOffset = sizeof(Loader::NSOHeader) + 0x261EB18;
+constexpr u32 TurnSpeedOriginalInstruction = 0x1E210801;
+constexpr u32 TurnSpeedHookInstruction = 0x14589FEA;
+// The second instruction the routine replaces; the hook guards it and leaves it in place.
+constexpr u32 TurnSpeedSecondInstruction = 0x1E280800;
+constexpr size_t TurnSpeedRoutineOffset = sizeof(Loader::NSOHeader) + 0x3C46AC0;
+constexpr size_t TurnSpeedRoutineSize = 40;
 
 constexpr std::array<std::pair<Common::FS::EdenPath, const char*>, 4> TestDirectories{{
     {Common::FS::EdenPath::NANDDir, "nand"},
@@ -348,6 +355,9 @@ constexpr std::array<std::pair<size_t, u32>, 3> GroundVelocityBranches{{
 }};
 
 void InitializeFpsHooks(std::vector<u8>& nso) {
+    std::memcpy(nso.data() + TurnSpeedHookOffset, &TurnSpeedOriginalInstruction, sizeof(u32));
+    std::memcpy(nso.data() + TurnSpeedHookOffset + 4, &TurnSpeedSecondInstruction, sizeof(u32));
+
     constexpr std::array<std::pair<u32, u32>, 8> originals{{
         {0x475F8, 0x1E380009}, {0x4760C, 0x1B097D08},
         {0x415300, 0xD503237F}, {0x415334, 0xBD401100},
@@ -565,6 +575,57 @@ TEST_CASE("Built-in Dynamic FPS leaves both records alone when a user mod change
     auto expected = nso;
     std::memcpy(expected.data() + offset, &mod_word, sizeof(mod_word));
     REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
+}
+
+TEST_CASE("Built-in FPS Unlock validates the turn speed records before writing", "[patch_manager]") {
+    PatchManagerTestContext context;
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution},
+                                                        std::string{DynamicFps}};
+    auto nso = MakeDynamicMain();
+    SECTION("Wrong turn speed original") {
+        nso[TurnSpeedHookOffset] ^= 1;
+    }
+    SECTION("Wrong second turn speed instruction") {
+        nso[TurnSpeedHookOffset + 4] ^= 1;
+    }
+    SECTION("Nonzero turn speed cave") {
+        nso[TurnSpeedRoutineOffset + TurnSpeedRoutineSize - 1] = 1;
+    }
+    REQUIRE(context.Manager().PatchNSO(nso, "main") == nso);
+}
+
+TEST_CASE("Built-in FPS Unlock leaves all records alone when a user mod changes the turn speed fix",
+          "[patch_manager]") {
+    size_t offset = TurnSpeedHookOffset;
+    SECTION("User turn speed hook takes precedence") {}
+    SECTION("User second turn speed instruction takes precedence") {
+        offset = TurnSpeedHookOffset + 4;
+    }
+    SECTION("User turn speed routine takes precedence") {
+        offset = TurnSpeedRoutineOffset;
+    }
+    constexpr u32 mod_word = 0x11223344;
+    PatchManagerTestContext context{mod_word, offset};
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution},
+                                                        std::string{DynamicFps}};
+    const auto nso = MakeDynamicMain();
+    auto expected = nso;
+    std::memcpy(expected.data() + offset, &mod_word, sizeof(mod_word));
+    REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
+}
+
+TEST_CASE("Relocated Gohma steering code is guarded and belongs only to FPS Unlock", "[patch_manager]") {
+    PatchManagerTestContext context;
+    const auto original = MakeDynamicMain();
+    const auto patched = context.Manager().PatchNSO(original, "main");
+    REQUIRE(WordAt(patched, TurnSpeedHookOffset) == TurnSpeedHookInstruction);
+    REQUIRE(WordAt(patched, TurnSpeedHookOffset + 4) == TurnSpeedSecondInstruction);
+    REQUIRE(Common::HexToString(std::span{patched}.subspan(TurnSpeedRoutineOffset, TurnSpeedRoutineSize)) ==
+            "01102E1E0021211E8A0000540018281E0140211E1360A717E10F40BD0108211E0008281E0F60A717");
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{FpsUnlock}};
+    const auto dynamic = context.Manager().PatchNSO(original, "main");
+    REQUIRE(WordAt(dynamic, TurnSpeedHookOffset) == TurnSpeedOriginalInstruction);
+    REQUIRE(WordAt(dynamic, TurnSpeedRoutineOffset) == 0);
 }
 
 TEST_CASE("Built-in Texture Pool x2 doubles the allocator's initial pool size",
@@ -837,6 +898,10 @@ TEST_CASE("All OOT FPS fixes, Texture Pool, Photo Mode and aspects coexist",
         REQUIRE(std::equal(Photo::Cave.begin(), Photo::Cave.end(),
                            patched.begin() + sizeof(Loader::NSOHeader) + Photo::CaveOffset));
         REQUIRE(WordAt(patched, UltrawideHookCaveOffset) == 0x2D558400);
+        REQUIRE(WordAt(patched, TurnSpeedHookOffset) == TurnSpeedHookInstruction);
+        REQUIRE(TurnSpeedRoutineOffset >= sizeof(Loader::NSOHeader) + 0x3C46A20 +
+                                            Core::OotFpsPatches::SOUND_GATE.size());
+        REQUIRE(TurnSpeedRoutineOffset + TurnSpeedRoutineSize <= sizeof(Loader::NSOHeader) + 0x3C46B00);
         REQUIRE(WordAt(patched, sizeof(Loader::NSOHeader) + 0xC2A36C) == 0x94C06FD5);
         REQUIRE(WordAt(patched, sizeof(Loader::NSOHeader) + 0x3C462C0) == 0xD37FF908);
         REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicCallInstruction);

@@ -170,6 +170,9 @@ constexpr std::array<u8, 4> GROUND_VELOCITY_NOP{
 constexpr std::array FPS_UNLOCK_RECORDS{
     BuiltinPatchRecord{0x6E6CC4, DYNAMIC_FPS_CALL, DYNAMIC_FPS_ORIGINAL},
     BuiltinPatchRecord{0x3C46200, FPS_UNLOCK_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x261EB18, Core::OotFpsPatches::TURN_SPEED_HOOK,
+                       Core::OotFpsPatches::TURN_SPEED_ORIGINAL},
+    BuiltinPatchRecord{0x3C46AC0, Core::OotFpsPatches::TURN_SPEED_ROUTINE, {}, true},
     BuiltinPatchRecord{0x13A070, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_A},
     BuiltinPatchRecord{0x13D710, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_B},
     BuiltinPatchRecord{0x389AC2C, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_C},

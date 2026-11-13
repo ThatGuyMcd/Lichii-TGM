@@ -197,6 +197,9 @@ add_executable(tests
     video_core/ssa_fixed_variables.cpp
     video_core/virtual_range_cache.cpp
     video_core/ocarina_upscale.cpp
+    video_core/ocarina_camera.cpp
+    video_core/upscaler_fallback_log.cpp
+    video_core/mesh_raster_topology.cpp
     video_core/fsr4_support.cpp
     common/bit_field.cpp
     common/bit_util.cpp
@@ -217,6 +220,8 @@ add_executable(tests
     common/page_table.cpp
     common/param_package.cpp
     common/parent_of_member.cpp
+    core/kernel_thread_context_guard.cpp
+    core/filesystem_rename.cpp
     common/range_map.cpp
     common/ring_buffer.cpp
     common/scratch_buffer.cpp

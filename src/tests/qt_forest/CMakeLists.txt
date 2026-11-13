@@ -67,6 +67,7 @@ if (BUILD_TESTING OR YUZU_TESTS)
         ENVIRONMENT_MODIFICATION "${forest_test_modification}")
     if (TARGET common)
         add_executable(system_settings_tests system_settings.cpp
+            ../../yuzu/render/adventure_script.cpp ../../yuzu/render/adventure_script.h
             ../../shader_prepare/vma.cpp
             ../../yuzu/libqt_common.cpp ../../yuzu/libqt_common.h
             ../../yuzu/configuration/settings_share.cpp ../../yuzu/configuration/settings_share.h
@@ -77,10 +78,10 @@ if (BUILD_TESTING OR YUZU_TESTS)
             ../../yuzu/configuration/configuration_shared.cpp)
         set_target_properties(system_settings_tests PROPERTIES AUTOMOC ON AUTOUIC ON
             AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../../yuzu/configuration")
-        target_include_directories(system_settings_tests PRIVATE ../..)
+        target_include_directories(system_settings_tests PRIVATE ../.. ../../yuzu)
         target_compile_features(system_settings_tests PRIVATE cxx_std_20)
         target_link_libraries(system_settings_tests PRIVATE core video_core frontend_common qt_common common input_common
-            Qt6::Widgets Qt6::Test ${PLATFORM_LIBRARIES} Threads::Threads)
+            Qt6::Widgets Qt6::Test Qt6::Qml ZLIB::ZLIB ${PLATFORM_LIBRARIES} Threads::Threads)
         if (NOT MSVC)
             target_compile_options(system_settings_tests PRIVATE -Wno-conversion
                 -Wno-unused-variable -Wno-unused-parameter -Wno-missing-field-initializers)

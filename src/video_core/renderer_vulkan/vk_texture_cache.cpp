@@ -1888,7 +1888,8 @@ bool TextureCacheRuntime::UsesNvidiaDlss() const {
         const char* const value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
         return value && std::string_view{value} == "fsr";
     }();
-    return !force_fsr && !dlss_unsupported && NvidiaDlss::IsAvailable();
+    return !force_fsr && !dlss_unsupported && !VideoCore::NvidiaDlssPaused() &&
+           NvidiaDlss::IsAvailable();
 #else
     return false;
 #endif
@@ -2040,9 +2041,11 @@ bool TextureCacheRuntime::UpscaleWithDlss(Framebuffer* dst_framebuffer, ImageVie
         const char* const value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
         return value && std::string_view{value} == "fsr";
     }();
-    if (force_fsr || dlss_unsupported) {
+    if (force_fsr || dlss_unsupported || VideoCore::NvidiaDlssPaused()) {
         return false;
     }
+    const u64 pause_generation = VideoCore::NvidiaDlssPauseGeneration();
+    reset |= pause_generation != std::exchange(dlss_pause_generation, pause_generation);
     if (!dlss_upscaler) {
         // Off in the settings, or the platform DLSS runtime did not start.
         if (!NvidiaDlss::IsAvailable()) {

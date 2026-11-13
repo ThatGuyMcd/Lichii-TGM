@@ -111,4 +111,5 @@ private:
     QString accent;
     QString folder;
     QString file;
+    bool tick_stopped = false; ///< tick() ran over its time: it is not called again until Load.
 };

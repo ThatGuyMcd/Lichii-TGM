@@ -545,5 +545,6 @@ if (ENABLE_RENHDRUM AND RENHDRUM_DOWNLOAD AND WIN32 AND ARCHITECTURE_x86_64)
         VERBATIM)
 endif()
 # Adventure Notes modules shipped next to the program (render/adventure_notes.cpp, ShippedDir).
-add_custom_command(TARGET yuzu POST_BUILD
+add_custom_target(yuzu_notes
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROJECT_SOURCE_DIR}/dist/notes $<TARGET_FILE_DIR:yuzu>/notes)
+add_dependencies(yuzu yuzu_notes)

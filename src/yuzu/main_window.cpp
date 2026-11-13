@@ -205,6 +205,8 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 
 // Video Core //
 #include "video_core/gpu.h"
+#include "video_core/game_dlss_status.h"
+#include "video_core/oot_dlss.h"
 #include "video_core/nx2_recipe.h"
 #include "video_core/pipeline_cache_files.h"
 #include "video_core/renderer_base.h"
@@ -1544,6 +1546,22 @@ void MainWindow::InitializeHotkeys() {
             Core::OcarinaPhotoMode::RequestHotsampleToggle();
         }
     });
+    connect_shortcut(QStringLiteral("Toggle NVIDIA DLSS"), [this] {
+        if (!emulation_running) {
+            return;
+        }
+        const bool oot_dlss = Settings::GetCurrentProgramID() == VideoCommon::OotDlss::ProgramId &&
+                              VideoCommon::OotDlss::Requested();
+        if (!Settings::values.nvidia_dlss.GetValue() && !oot_dlss) {
+            ShowOsdMessage(tr("NVIDIA DLSS is off in this game's graphics settings"));
+            return;
+        }
+        const bool paused = !VideoCore::NvidiaDlssPaused();
+        VideoCore::SetNvidiaDlssPaused(paused);
+        LOG_INFO(Frontend, "NVIDIA DLSS hotkey: session pause requested={}", paused);
+        ShowOsdMessage(paused ? tr("NVIDIA DLSS: OFF (the game's own image)")
+                              : tr("NVIDIA DLSS: ON"));
+    });
     connect_shortcut(QStringLiteral("Toggle Renderdoc Capture"), [] {
         if (Settings::values.enable_renderdoc_hotkey) {
             QtCommon::system->GetRenderdocAPI().ToggleCapture();
@@ -2305,6 +2323,8 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     if (close_pending) {
         return;
     }
+    // Reset the session toggle only once a new boot passes the busy/close guards.
+    VideoCore::SetNvidiaDlssPaused(false);
     LOG_INFO(Frontend, "Lichii-tgm starting...");
     report_session.reset();
     game_list->SetReportableProgramId(0);

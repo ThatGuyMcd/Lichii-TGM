@@ -2,8 +2,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "video_core/game_dlss_status.h"
+#include <atomic>
 
 namespace VideoCore {
+
+namespace {
+std::atomic<bool> nvidia_dlss_paused{};
+std::atomic<u64> nvidia_dlss_pause_generation{};
+}
+
+void SetNvidiaDlssPaused(bool paused) {
+    if (nvidia_dlss_paused.exchange(paused, std::memory_order_relaxed) != paused) {
+        nvidia_dlss_pause_generation.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+bool NvidiaDlssPaused() {
+    return nvidia_dlss_paused.load(std::memory_order_relaxed);
+}
+
+u64 NvidiaDlssPauseGeneration() {
+    return nvidia_dlss_pause_generation.load(std::memory_order_relaxed);
+}
 
 const char* GameDlssReasonText(GameDlssReason reason) {
     switch (reason) {

@@ -35,6 +35,8 @@
 #include "video_core/native_qmd.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_fast_draw.h"
+#include "video_core/oot_network.h"
+#include "video_core/oot_dlss.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_null/null_rasterizer.h"
 
@@ -286,6 +288,19 @@ class InvalidationRecorder final : public VideoCore::RasterizerInterface {
 public:
     using Ranges = std::vector<std::pair<DAddr, std::size_t>>;
 
+    VideoCommon::OotNetwork::BypassState* OotNetworkBypass() override {
+        return &network;
+    }
+    bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& source,
+                               const Tegra::Engines::Fermi2D::Surface& destination,
+                               const Tegra::Engines::Fermi2D::Config& config) override {
+        copy_source = source;
+        copy_destination = destination;
+        copy_config = config;
+        ++copies;
+        return copy_success;
+    }
+
     void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override {
         inner.insert(inner.end(), sequences.begin(), sequences.end());
     }
@@ -336,6 +351,11 @@ public:
 
     Ranges inner;
     Ranges constant_data;
+    VideoCommon::OotNetwork::BypassState network;
+    Tegra::Engines::Fermi2D::Surface copy_source{}, copy_destination{};
+    Tegra::Engines::Fermi2D::Config copy_config{};
+    u32 copies{};
+    bool copy_success{true};
 };
 
 /// A Turing MME instruction that sends the next macro parameter to `method` (as in
@@ -345,6 +365,125 @@ std::array<u32, 3> FifoInstruction(u32 method, bool end) {
 }
 
 } // Anonymous namespace
+
+TEST_CASE("Ocarina base network copies a smaller tonemap and restores fallback on failure",
+          "[video_core][oot_network][oot_base_network]") {
+    using namespace VideoCommon::OotNetwork;
+    auto fixture = std::make_unique<Fixture>();
+    auto& f = *fixture;
+    InvalidationRecorder rasterizer;
+    f.system.Initialize();
+    Kernel::KProcess process{f.system.Kernel()};
+    SCOPE_EXIT { f.system.Kernel().UnregisterKernelObject(&process); };
+    auto& table = process.GetPageTable().GetImpl();
+    table.Resize(20, 12);
+    auto* backing = f.physical.GetPointerFromRaw<u8>(0x10000);
+    std::memset(backing, 0, 0x1000);
+    table.entries.GetAndFault(4).Store(false, Common::PageType::Memory, 1,
+                                     reinterpret_cast<uintptr_t>(backing) - 0x4000);
+    process.GetMemory().SetCurrentPageTable(process);
+    const auto asid = f.device_memory.RegisterProcess(&process.GetMemory());
+    f.device_memory.BindInterface(&rasterizer);
+    f.memory.BindRasterizer(&rasterizer);
+    f.device_memory.Map(0x10000, 0x4000, 0x1000, asid);
+    SCOPE_EXIT {
+        f.device_memory.Unmap(0x10000, 0x1000);
+        f.device_memory.UnregisterProcess(asid);
+    };
+    f.memory.Map(0x100000, 0x10000, 0x1000, Tegra::PTEKind::PITCH, false);
+    Tegra::Engines::KeplerCompute compute{f.memory};
+    compute.BindRasterizer(&rasterizer);
+    compute.launch_description.const_buffer_enable_mask.Assign(1);
+    auto& cb = compute.launch_description.const_buffer_config[0];
+    cb.address_low = 0x100000;
+    cb.size.Assign(0x100);
+    compute.regs.tic.address_low = 0x100200;
+    compute.regs.tic.limit = 0;
+    Tegra::Texture::TICEntry output{};
+    output.format.Assign(Tegra::Texture::TextureFormat::B10G11R11);
+    output.header_version.Assign(Tegra::Texture::TICHeaderVersion::BlockLinear);
+    output.address_low = 0x200000;
+    output.width_minus_one.Assign(1919);
+    output.height_minus_1.Assign(1079);
+    std::memcpy(backing + 0x200, &output, sizeof(output));
+    auto& source = rasterizer.network.tonemapped;
+    source.address_low = 0x300000;
+    source.format = Tegra::RenderTargetFormat::B10G11R11_FLOAT;
+    source.width = 1280;
+    source.height = 720;
+    auto& setting = Settings::values.oot_anti_aliasing;
+    const auto previous = setting.GetValue();
+    SCOPE_EXIT { setting.SetValue(previous); };
+    setting.SetValue(Settings::OotAntiAliasing::NoSharpening);
+
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    REQUIRE(rasterizer.copies == 0);
+    for (const auto& program : BaseOutputPrograms) {
+        REQUIRE(compute.BypassOotNetwork(ProgramId, program.key));
+        REQUIRE(rasterizer.copy_source.width == 1280);
+        REQUIRE(rasterizer.copy_source.height == 720);
+        REQUIRE(rasterizer.copy_destination.width == 1920);
+        REQUIRE(rasterizer.copy_destination.height == 1080);
+        REQUIRE(rasterizer.copy_config.filter == Tegra::Engines::Fermi2D::Filter::Bilinear);
+        REQUIRE(rasterizer.copy_config.must_accelerate);
+        REQUIRE(rasterizer.copy_config.src_x1 == 1280);
+        REQUIRE(rasterizer.copy_config.dst_x1 == 1920);
+    }
+    REQUIRE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
+    rasterizer.copy_success = false;
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, BaseOutputPrograms[0].key));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
+    const u32 copies = rasterizer.copies;
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, 0));
+    REQUIRE_FALSE(compute.BypassOotNetwork(0, BaseOutputPrograms[0].key));
+    source.width = 2048;
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, BaseOutputPrograms[0].key));
+    REQUIRE(rasterizer.copies == copies);
+}
+
+TEST_CASE("Ocarina DLSS hotkey changes at network scene boundaries and resets history",
+          "[video_core][oot_network][oot_base_network]") {
+    namespace Dlss = VideoCommon::OotDlss;
+    auto fixture = std::make_unique<Fixture>();
+    InvalidationRecorder rasterizer;
+    Tegra::Engines::KeplerCompute compute{fixture->memory};
+    compute.BindRasterizer(&rasterizer);
+    const auto previous = Settings::values.oot_anti_aliasing.GetValue();
+    const bool previous_pause = VideoCore::NvidiaDlssPaused();
+    SCOPE_EXIT {
+        Settings::values.oot_anti_aliasing.SetValue(previous);
+        VideoCore::SetNvidiaDlssPaused(previous_pause);
+        Dlss::ResetRuntime(false);
+    };
+    Settings::values.oot_anti_aliasing.SetValue(Settings::OotAntiAliasing::NvidiaDlss);
+    VideoCore::SetNvidiaDlssPaused(false);
+    Dlss::ResetRuntime(true);
+    Dlss::Targets().tonemapped_gpu.store(0);
+    Dlss::LastDlssFrame().store(10);
+    VideoCore::SetNvidiaDlssPaused(true);
+    REQUIRE(Dlss::Active());
+    REQUIRE(Dlss::ReplacesNetwork());
+    Dlss::BeginRuntimeFrame(); // A present can overlap the scene's draws.
+    REQUIRE(Dlss::Active());
+    REQUIRE_FALSE(compute.ReplaceOotNetwork(Dlss::ProgramId,
+                                           VideoCommon::OotNetwork::NetworkProgramKey));
+    REQUIRE(Dlss::Active());
+    REQUIRE_FALSE(compute.ReplaceOotNetwork(Dlss::ProgramId,
+                                           VideoCommon::OotNetwork::OutputProgramKey));
+    REQUIRE_FALSE(Dlss::Active());
+    REQUIRE_FALSE(Dlss::ReplacesNetwork());
+    REQUIRE(Dlss::LastDlssFrame().load() == ~u64{0});
+    VideoCore::SetNvidiaDlssPaused(false);
+    Dlss::BeginRuntimeFrame();
+    REQUIRE_FALSE(Dlss::Active());
+    REQUIRE_FALSE(compute.ReplaceOotNetwork(Dlss::ProgramId,
+                                           VideoCommon::OotNetwork::OutputProgramKey));
+    REQUIRE(Dlss::Active());
+    REQUIRE(Dlss::ReplacesNetwork());
+    Dlss::NoteBackendFailure();
+    Dlss::ApplyRuntimePauseAtSceneEnd();
+    REQUIRE_FALSE(Dlss::Active()); // Toggling does not revive a failed backend.
+}
 
 TEST_CASE("Maxwell3D fast method dispatch matches CallMethod on random method streams",
           "[video_core][maxwell_fast_method]") {

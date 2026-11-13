@@ -152,3 +152,21 @@ Run them from a clang/Ninja test build with:
 cmake --build build --target tests --parallel 4
 build/bin/tests '[patch_manager],[addon_config]'
 ```
+
+## FPS Unlock turn speed
+
+The turn action at `0x261E8E0` (`ExecuteASApproachStickX`; Gohma steers with it while walking)
+keeps a turn speed per 60 Hz frame at `+0x24`. It ends by clamping that speed to the change it
+applied this frame times the frame step (`fmul` at `0x261EB18` and `0x261EB1C`). The change already
+carries the step, so below a step of 1 the speed decays by step² every frame. At 150 fps Gohma then
+steered at 0.045 rad/s instead of about 1 rad/s and walked into the wall of her room.
+
+`FPS Unlock (built-in)` branches at `0x261EB18` to 40 bytes at `0x3C46AC0`, in guarded zero-filled
+executable padding. Below a step of 1 the bounds become ±(applied change / step), which keeps the
+speed; at 1 and above the routine runs the game's two instructions. The hook record checks both
+replaced instructions, so a user mod at either one skips the patch. The measurements in
+[upstream PR #1645](https://github.com/zortos293/Lichii/pull/1645) belong to its author;
+they are not measurements of this TGM build.
+
+
+The TGM cave is relocated past the sound gate, before the step-counter routines.

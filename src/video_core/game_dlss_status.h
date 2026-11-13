@@ -7,6 +7,11 @@
 
 namespace VideoCore {
 
+/// Session-only hotkey state; does not change the user's saved graphics settings.
+void SetNvidiaDlssPaused(bool paused);
+[[nodiscard]] bool NvidiaDlssPaused();
+[[nodiscard]] u64 NvidiaDlssPauseGeneration();
+
 /// What draws a game's own DLSS evaluation (Fire Emblem: Fortune's Weave's network) this session.
 enum class GameDlssState : u8 {
     None,        ///< No DLSS evaluation seen yet.

@@ -15,17 +15,22 @@ public:
     void Reset(bool backend_available) noexcept {
         available = backend_available;
         failed.store(false, std::memory_order_relaxed);
+        paused.store(false, std::memory_order_relaxed);
         active.store(available, std::memory_order_relaxed);
     }
     void Fail() noexcept { failed.store(true, std::memory_order_relaxed); }
-    void BeginFrame() noexcept {
-        active.store(available && !failed.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    void BeginFrame(bool pause = false) noexcept {
+        paused.store(pause, std::memory_order_relaxed);
+        active.store(available && !pause && !failed.load(std::memory_order_relaxed),
+                     std::memory_order_relaxed);
     }
     [[nodiscard]] bool Active() const noexcept { return active.load(std::memory_order_relaxed); }
+    [[nodiscard]] bool Paused() const noexcept { return paused.load(std::memory_order_relaxed); }
 
 private:
     std::atomic<bool> failed{};
     std::atomic<bool> active{};
+    std::atomic<bool> paused{};
     bool available{};
 };
 

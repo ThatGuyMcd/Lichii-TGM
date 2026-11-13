@@ -66,8 +66,15 @@ bool PlainName(const QString& name) {
            !name.contains(QLatin1Char('\\')) && !name.contains(QLatin1Char(':'));
 }
 
-int Length(const QJSValue& array) {
-    return array.property(QStringLiteral("length")).toInt();
+// A report is read by native loops that the watchdog cannot interrupt: its size is bounded here,
+// whatever length the module claims (new Array(1e9)).
+constexpr int MaxRows = 4096;
+constexpr int MaxTabs = 64;
+constexpr int MaxViews = 64;
+constexpr int MaxTotalRows = 20000; ///< all the lines of a report together
+
+int Length(const QJSValue& array, int limit) {
+    return std::clamp(array.property(QStringLiteral("length")).toInt(), 0, limit);
 }
 
 NotesRow ParseRow(const QJSValue& object) {
@@ -92,22 +99,29 @@ NotesRow ParseRow(const QJSValue& object) {
 NotesReport ParseReport(const QJSValue& result) {
     NotesReport report;
     report.title = result.property(QStringLiteral("title")).toString();
+    int budget = MaxTotalRows;
     const QJSValue keys = result.property(QStringLiteral("keys"));
-    for (int k = 0; k < Length(keys); ++k) {
+    const int key_count = Length(keys, std::min(MaxRows, budget));
+    for (int k = 0; k < key_count; ++k) {
         report.keys.push_back(ParseRow(keys.property(static_cast<quint32>(k))));
     }
+    budget -= key_count;
     const QJSValue tabs = result.property(QStringLiteral("tabs"));
-    for (int t = 0; t < Length(tabs); ++t) {
+    const int tab_count = Length(tabs, MaxTabs);
+    for (int t = 0; t < tab_count; ++t) {
         const QJSValue tab_object = tabs.property(static_cast<quint32>(t));
         NotesTab tab{tab_object.property(QStringLiteral("name")).toString(), {}};
         const QJSValue views = tab_object.property(QStringLiteral("views"));
-        for (int v = 0; v < Length(views); ++v) {
+        const int view_count = Length(views, MaxViews);
+        for (int v = 0; v < view_count; ++v) {
             const QJSValue view_object = views.property(static_cast<quint32>(v));
             NotesView view{view_object.property(QStringLiteral("name")).toString(), {}};
             const QJSValue rows = view_object.property(QStringLiteral("rows"));
-            for (int r = 0; r < Length(rows); ++r) {
+            const int row_count = Length(rows, std::min(MaxRows, budget));
+            for (int r = 0; r < row_count; ++r) {
                 view.rows.push_back(ParseRow(rows.property(static_cast<quint32>(r))));
             }
+            budget -= row_count;
             tab.views.push_back(std::move(view));
         }
         report.tabs.push_back(std::move(tab));
@@ -250,11 +264,11 @@ QString NotesHost::StatePath(const QString& name) const {
     if (!PlainName(name) || libraries.isEmpty()) {
         return {};
     }
-    // libraries[0] is notes/lib: the state sits next to it.
-    QDir state{libraries.front()};
-    state.cdUp();
-    state.mkpath(QStringLiteral("state"));
-    return state.filePath(QStringLiteral("state/%1").arg(name));
+    // libraries[0] is notes/lib: the state sits next to it. Built from the path, not by cdUp():
+    // notes/ may not exist yet, and cdUp() would then stay in notes/lib.
+    const QString state = QDir::cleanPath(libraries.front() + QStringLiteral("/../state"));
+    QDir{}.mkpath(state);
+    return QDir{state}.filePath(name);
 }
 
 QString NotesHost::load(const QString& name) {
@@ -336,8 +350,13 @@ QString NotesHost::utf8(const QByteArray& data, int offset, int size) {
 }
 
 QByteArray NotesHost::file(const QString& name) {
+    // Until a save is assigned, slot is empty and QDir{slot} would be the working directory.
+    if (slot.isEmpty() || !PlainName(name)) {
+        engine->throwError(QStringLiteral("file: no %1 in this save").arg(name));
+        return {};
+    }
     QFile input{QDir{slot}.filePath(name)};
-    if (!PlainName(name) || !input.open(QIODevice::ReadOnly)) {
+    if (!input.open(QIODevice::ReadOnly)) {
         engine->throwError(QStringLiteral("file: no %1 in this save").arg(name));
         return {};
     }
@@ -368,6 +387,7 @@ bool NotesScript::Load(const QString& path, const QStringList& library_dirs, QSt
         return false;
     }
     host.reset();
+    tick_stopped = false;
     engine = std::make_unique<QJSEngine>();
     host = std::make_unique<NotesHost>(engine.get(), library_dirs);
     QJSEngine::setObjectOwnership(host.get(), QJSEngine::CppOwnership);
@@ -456,7 +476,7 @@ std::optional<NotesReport> NotesScript::Read(const QString& path, QString& error
 }
 
 bool NotesScript::Tick(QString& error) {
-    if (!engine) {
+    if (!engine || tick_stopped) {
         return false;
     }
     // The lookup too: tick may be a getter.
@@ -476,6 +496,9 @@ bool NotesScript::Tick(QString& error) {
     const bool interrupted = engine->isInterrupted();
     engine->setInterrupted(false);
     if (interrupted) {
+        // Not called again until the module is loaded again: a tick that never ends would
+        // otherwise block the interface for five seconds, ten times a second.
+        tick_stopped = true;
         error = QStringLiteral("The module was stopped: tick() took over 5 seconds");
         return false;
     }

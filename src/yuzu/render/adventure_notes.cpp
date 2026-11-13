@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <utility>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -82,6 +83,45 @@ fs::path FavoritesFile(u64 program_id) {
 }
 
 constexpr QStringView FavoritesTab = u"★ Favorites";
+
+/// One component of a favorite's key: '\\' and '/' are escaped, so a name that contains a '/' cannot
+/// be mistaken for two components.
+QString EscapeKeyPart(const QString& part) {
+    QString out;
+    out.reserve(part.size());
+    for (const QChar c : part) {
+        if (c == QLatin1Char('/') || c == QLatin1Char('\\')) {
+            out.append(QLatin1Char('\\'));
+        }
+        out.append(c);
+    }
+    return out;
+}
+
+QString FavoriteKey(const QString& tab, const QString& view, const QString& title) {
+    return QStringLiteral("%1/%2/%3").arg(EscapeKeyPart(tab), EscapeKeyPart(view),
+                                          EscapeKeyPart(title));
+}
+
+/// The components of a key, split at the '/' that are not escaped. A key saved before the
+/// escaping existed has no escapes: whatever follows the second '/' is then the title.
+QStringList SplitFavoriteKey(const QString& key) {
+    QStringList parts;
+    QString current;
+    for (qsizetype i = 0; i < key.size(); ++i) {
+        const QChar c = key[i];
+        if (c == QLatin1Char('\\') && i + 1 < key.size() &&
+            (key[i + 1] == QLatin1Char('/') || key[i + 1] == QLatin1Char('\\'))) {
+            current.append(key[++i]);
+        } else if (c == QLatin1Char('/') && parts.size() < 2) {
+            parts.append(std::exchange(current, QString{}));
+        } else {
+            current.append(c);
+        }
+    }
+    parts.append(current);
+    return parts;
+}
 
 fs::path SaveRoot() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) / "user" / "save" /
@@ -521,11 +561,11 @@ void AdventureNotes::AddFavoritesTab() {
     NotesView view{QStringLiteral("Favorites"), {}};
     favorite_rows.clear();
     for (const QString& key : favorites) {
-        const QStringList parts = key.split(QLatin1Char('/'));
-        if (parts.size() < 3) {
+        const QStringList parts = SplitFavoriteKey(key);
+        if (parts.size() != 3) {
             continue;
         }
-        const QString title = parts.mid(2).join(QLatin1Char('/'));
+        const QString& title = parts[2];
         for (const NotesTab& tab : report.tabs) {
             if (tab.name != parts[0]) {
                 continue;
@@ -791,7 +831,7 @@ void AdventureNotes::Refresh() {
         // A line is known by its tab, view and title; the Favorites tab keeps its source's key.
         const QString key =
             favorite_tab ? favorite_rows.value(count)
-                         : QStringLiteral("%1/%2/%3").arg(tab.name, view_name, line.title);
+                         : FavoriteKey(tab.name, view_name, line.title);
         rows->addWidget(MakeRow(line, values, key), count / columns, count % columns,
                         Qt::AlignTop);
         ++count;

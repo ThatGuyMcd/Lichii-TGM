@@ -350,7 +350,7 @@ TEST_CASE("NUP zstd spilled members resume after their decoder is freed", "[nup]
     }
 }
 
-TEST_CASE("NUP serves a sound sibling in place of a .zs member with no zstd header",
+TEST_CASE("NUP preserves damaged member bytes instead of substituting a sibling",
           "[nup][nup-read]") {
     const auto zstd_file = [](u64 seed) { return Zstd(Content(200 * 1024, seed)); };
     auto damaged = zstd_file(1);
@@ -390,8 +390,7 @@ TEST_CASE("NUP serves a sound sibling in place of a .zs member with no zstd head
         return file->ReadAllBytes();
     };
 
-    // Same last name token, then the longest common prefix.
-    REQUIRE(read("Rock_WaterTemple_Gate_M_01_Nrm.bntx.zs") == stand_in);
+    REQUIRE(read("Rock_WaterTemple_Gate_M_01_Nrm.bntx.zs") == damaged);
     REQUIRE(read("Rock_WaterTemple_Gate_P_01_Nrm.bntx.zs") == stand_in);
     REQUIRE(read("Rock_WaterTemple_Wall_A_01_Nrm.bntx.zs") == other_prefix);
     REQUIRE(read("Rock_WaterTemple_Gate_M_01_Alb.bntx.zs") == other_kind);

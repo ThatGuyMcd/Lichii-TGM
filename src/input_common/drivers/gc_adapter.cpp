@@ -159,7 +159,7 @@ void GCAdapter::UpdatePadType(std::size_t port, ControllerTypes pad_type) {
     pads[port].axis_origin = {};
     pads[port].reset_origin_counter = {};
     pads[port].enable_vibration = {};
-    pads[port].rumble_amplitude = {};
+    pads[port].rumble_on = false;
     pads[port].type = pad_type;
 }
 
@@ -332,25 +332,17 @@ bool GCAdapter::GetGCEndpoint(libusb_device* device) {
 
 Common::Input::DriverResult GCAdapter::SetVibration(
     const PadIdentifier& identifier, const Common::Input::VibrationStatus& vibration) {
-    // EDEN_GC_RUMBLE_BOOST=<factor> scales the requested strength before it becomes on/off
-    // pulses. GameCube motors are on/off only: HD rumble that Switch 2 titles send at 0.02-0.06
-    // (Ocarina of Time) otherwise maps to 1/8 duty, which a GC motor can't spin up on. A large
-    // factor (e.g. 1000) turns any non-zero rumble into full power. Unset or 1 keeps the
-    // original behaviour.
-    static const float rumble_boost = [] {
-        const char* value = std::getenv("EDEN_GC_RUMBLE_BOOST");
-        const float boost = value != nullptr ? std::strtof(value, nullptr) : 1.0f;
-        if (value != nullptr) {
-            LOG_INFO(Input, "EDEN_GC_RUMBLE_BOOST: {}", boost);
-        }
-        return std::isfinite(boost) && boost > 0.0f ? boost : 1.0f;
-    }();
-    const auto mean_amplitude = (std::min)(
-        (vibration.low_amplitude + vibration.high_amplitude) * 0.5f * rumble_boost, 1.0f);
-    const auto processed_amplitude =
-        static_cast<u8>((mean_amplitude + std::pow(mean_amplitude, 0.3f)) * 0.5f * 0x8);
+    // A GameCube controller's motor is either on or off, and it has to stay on for a while to spin
+    // up, so pulsing it at part duty to fake a weaker rumble is not felt. Ocarina of Time's HD
+    // rumble shows why: a wall bump reaches this driver as mean amplitudes of 0.042 decaying to
+    // 0.0014 over 0.2 s, then a 0.0002 tail. The old duty mapping gave it 0-1 of 8, and a 0.01
+    // cut-off ran the motor for only about 0.1 s in pieces; neither was felt on a Wii U adapter.
+    // Running it fully for the whole bump was. So rumble from 0.001 up runs the motor fully, as a
+    // GameCube game would, and the tail below that stops it.
+    constexpr f32 MinRumbleAmplitude = 0.001f;
+    const auto mean_amplitude = (vibration.low_amplitude + vibration.high_amplitude) * 0.5f;
 
-    pads[identifier.port].rumble_amplitude = processed_amplitude;
+    pads[identifier.port].rumble_on = mean_amplitude >= MinRumbleAmplitude;
 
     if (!rumble_enabled) {
         return Common::Input::DriverResult::Disabled;
@@ -363,15 +355,8 @@ bool GCAdapter::IsVibrationEnabled([[maybe_unused]] const PadIdentifier& identif
 }
 
 void GCAdapter::UpdateVibrations() {
-    // Use 8 states to keep the switching between on/off fast enough for
-    // a human to feel different vibration strength
-    // More states == more rumble strengths == slower update time
-    constexpr u8 vibration_states = 8;
-
-    vibration_counter = (vibration_counter + 1) % vibration_states;
-
     for (GCController& pad : pads) {
-        const bool vibrate = pad.rumble_amplitude > vibration_counter;
+        const bool vibrate = pad.rumble_on;
         vibration_changed |= vibrate != pad.enable_vibration;
         pad.enable_vibration = vibrate;
     }

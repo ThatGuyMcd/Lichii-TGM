@@ -17,6 +17,7 @@
 #include "qt_common/util/game.h"
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/configuration/shared_widget.h"
+#include "yuzu/configuration/settings_share.h"
 
 class SystemSettingsTests : public QObject {
     Q_OBJECT
@@ -46,6 +47,36 @@ class SystemSettingsTests : public QObject {
     }
 
 private slots:
+    void sharingCodesPreserveValuesAndRejectDamagedPayloads() {
+        const std::vector<SettingsShare::Entry> entries{
+            {"volume", "42"}, {"label", "space ; equal= and Unicode: \xc3\xa9"}};
+        QString error;
+        const auto code = SettingsShare::Encode(QStringLiteral("aud"), entries);
+        const auto decoded = SettingsShare::Decode(code, error);
+        QVERIFY(decoded);
+        QCOMPARE(decoded->section, QStringLiteral("aud"));
+        QCOMPARE(decoded->entries.size(), entries.size());
+        for (size_t i = 0; i < entries.size(); ++i) {
+            QCOMPARE(decoded->entries[i].key, entries[i].key);
+            QCOMPARE(decoded->entries[i].value, entries[i].value);
+        }
+        const auto original = Settings::values.volume.ToString();
+        for (const auto& invalid : {
+                 QStringLiteral("LX99.aud.volume=1"), QStringLiteral("LX1.aud.broken"),
+                 QStringLiteral("LX1z.aud.////"),
+                 QStringLiteral("LX1z.aud.") + QString::fromLatin1(QByteArray::fromHex("7fffffff").toBase64()),
+                 QString(300000, QLatin1Char('x'))}) {
+            QVERIFY(!SettingsShare::Decode(invalid, error));
+        }
+        QCOMPARE(Settings::values.volume.ToString(), original);
+        std::vector<SettingsShare::Entry> repeated;
+        for (int i = 0; i < 100; ++i) repeated.push_back({"option_" + std::to_string(i), "repeated-value"});
+        const auto packed = SettingsShare::Encode(QStringLiteral("gfx"), repeated);
+        QVERIFY(packed.startsWith(QStringLiteral("LX1z.")));
+        const auto unpacked = SettingsShare::Decode(packed, error);
+        QVERIFY(unpacked);
+        QCOMPARE(unpacked->entries.size(), repeated.size());
+    }
     void customLibraryMetadataDoesNotRewriteTheGame() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());

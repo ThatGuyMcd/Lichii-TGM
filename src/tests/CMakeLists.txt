@@ -74,6 +74,7 @@ add_executable(tests
     core/gpu_dirty_memory.cpp
     core/memory_acquire.cpp
     core/device_kept_memory.cpp
+    core/nx2_movie_vsync.cpp
     core/builtin_patches.cpp
     core/oot_ultrawide.cpp
     video_core/oot_ultrawide.cpp

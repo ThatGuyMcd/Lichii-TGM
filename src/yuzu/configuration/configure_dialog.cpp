@@ -33,6 +33,7 @@
 #include "yuzu/configuration/configure_ui.h"
 #include "yuzu/configuration/configure_web.h"
 #include "yuzu/configuration/settings_navigation.h"
+#include "yuzu/configuration/settings_share.h"
 #include "yuzu/hotkeys.h"
 
 ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
@@ -97,6 +98,27 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
     QPushButton* apply_button = ui->buttonBox->addButton(QDialogButtonBox::Apply);
     connect(apply_button, &QAbstractButton::clicked, this,
             &ConfigureDialog::HandleApplyButtonClicked);
+
+    SettingsShare::AddShareButton(
+        this, ui->buttonBox,
+        {
+            .current_section =
+                [this] {
+                    const std::map<const QWidget*, QString> sections{
+                        {general_tab.get(), QStringLiteral("gen")},
+                        {system_tab.get(), QStringLiteral("sys")},
+                        {applets_tab.get(), QStringLiteral("app")},
+                        {cpu_tab.get(), QStringLiteral("cpu")},
+                        {graphics_tab.get(), QStringLiteral("gfx")},
+                        {graphics_advanced_tab.get(), QStringLiteral("gfxa")},
+                        {graphics_extensions_tab.get(), QStringLiteral("gfxx")},
+                        {audio_tab.get(), QStringLiteral("aud")},
+                    };
+                    const auto it = sections.find(ui->tabWidget->currentWidget());
+                    return it == sections.end() ? QString{} : it->second;
+                },
+            .builder = builder.get(),
+        });
 
     setSizeGripEnabled(true);
     const QSize available = screen()->availableGeometry().size() - QSize(48, 64);

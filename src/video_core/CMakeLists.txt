@@ -145,7 +145,6 @@ add_library(video_core STATIC
     nx2_stutter_trace.cpp
     nx2_stutter_trace.h
     nx2_perf.h
-    nx2_async_readback.h
     nx2_backx.h
     nx2_download_trace.h
     nx2_read_trace.h

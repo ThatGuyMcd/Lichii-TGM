@@ -15,7 +15,6 @@
 #include "core/gpu_dirty_memory_manager.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
-#include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_backx.h"
 #include "video_core/nx2_cmdpage_diag.h"
 #include "video_core/nx2_download_trace.h"

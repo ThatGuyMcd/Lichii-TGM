@@ -634,7 +634,7 @@ void MemoryManager::WriteConstantBufferData(DAddr device_addr, const void* data,
         if (u8* const physical = memory.GetPointer<u8>(address)) {
             std::memcpy(physical, src, amount);
         } else {
-            memory.WriteKept(address, src, amount);
+            memory.WriteBlockUnsafe(address, src, amount);
         }
         address += amount;
         src += amount;

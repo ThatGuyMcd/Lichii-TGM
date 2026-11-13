@@ -46,7 +46,6 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_read_trace.h"
-#include "video_core/nx2_async_readback.h"
 #include "video_core/nx2_backx.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/renderer_base.h"

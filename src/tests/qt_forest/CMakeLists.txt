@@ -67,6 +67,7 @@ if (BUILD_TESTING OR YUZU_TESTS)
         ENVIRONMENT_MODIFICATION "${forest_test_modification}")
     if (TARGET common)
         add_executable(system_settings_tests system_settings.cpp
+            ../../shader_prepare/vma.cpp
             ../../yuzu/configuration/configure_system.cpp
             ../../yuzu/configuration/configure_system.h
             ../../yuzu/configuration/shared_widget.cpp
@@ -77,7 +78,11 @@ if (BUILD_TESTING OR YUZU_TESTS)
         target_include_directories(system_settings_tests PRIVATE ../..)
         target_compile_features(system_settings_tests PRIVATE cxx_std_20)
         target_link_libraries(system_settings_tests PRIVATE core frontend_common qt_common common
-            Qt6::Widgets Qt6::Test)
+            Qt6::Widgets Qt6::Test ${PLATFORM_LIBRARIES} Threads::Threads)
+        if (NOT MSVC)
+            target_compile_options(system_settings_tests PRIVATE -Wno-conversion
+                -Wno-unused-variable -Wno-unused-parameter -Wno-missing-field-initializers)
+        endif()
         add_test(NAME system_settings COMMAND system_settings_tests)
         set_tests_properties(system_settings PROPERTIES TIMEOUT 45
             ENVIRONMENT "${forest_test_environment}"

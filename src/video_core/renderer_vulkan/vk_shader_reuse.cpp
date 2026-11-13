@@ -137,8 +137,8 @@ bool RecordingEnvironment::IsCbufIndirectStorageBufferPointer(u32 index, u32 off
                         indirect) != 0;
 }
 
-std::vector<std::pair<u32, u32>> RecordingEnvironment::NullStoragePointerSlots() const {
-    return inner->NullStoragePointerSlots();
+std::vector<Shader::StoragePointerSlot> RecordingEnvironment::UnboundStoragePointerSlots() const {
+    return inner->UnboundStoragePointerSlots();
 }
 
 std::vector<u64> RecordingEnvironment::MappedStoragePointerKeys() const {

@@ -22,6 +22,7 @@
 #include "video_core/nx2_profile.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/command_fetch_order.h"
+#include "video_core/command_read_scope.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/engine_upload.h"
 #include "video_core/engines/kepler_compute.h"
@@ -155,6 +156,7 @@ void DmaPusher::DispatchCalls() {
         split.Publish();
         return;
     }
+    VideoCommon::Nx2FastDraw::BreakUnsplit(VideoCommon::Nx2FastDraw::Reason::Call);
     system.GPU().FlushCommands();
     system.GPU().OnCommandListEnd();
 }
@@ -425,7 +427,12 @@ bool DmaPusher::Step() {
             Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Submitted);
             command_resume_offset += ProcessCommands(commands, 0);
         } else if (use_safe) {
-            Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
+            auto headers = [&] {
+                const VideoCommon::CommandReadScope command_read;
+                return Tegra::Memory::GpuGuestMemory<
+                    Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>{
+                    memory_manager, dma_state.dma_get, header.size, &command_headers};
+            }();
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
             RecordParsedEntry(header, commands);
             if (submitted_copy != nullptr) {
@@ -542,6 +549,10 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                         ++batch_count;
                     }
                     if (batch_count > 1) {
+                        if (!subchannel->reports_fast_draw_breaks) {
+                            VideoCommon::Nx2FastDraw::BreakUnsplit(
+                                VideoCommon::Nx2FastDraw::Reason::OtherEngine);
+                        }
                         for (u32 i = 0; i < batch_count; ++i) {
                             subchannel->method_sink.emplace_back(dma_state.method + i, commands[index + i].argument);
                         }
@@ -723,6 +734,9 @@ void DmaPusher::CallMethod(u32 argument) {
             NoteEngineWrites(engine_type, dma_state.method);
             return;
         }
+        if (!subchannel->reports_fast_draw_breaks) {
+            VideoCommon::Nx2FastDraw::BreakUnsplit(VideoCommon::Nx2FastDraw::Reason::OtherEngine);
+        }
         if (!subchannel->execution_mask[dma_state.method]) {
             subchannel->method_sink.emplace_back(dma_state.method, argument);
         } else {
@@ -800,6 +814,9 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         }
         for (u32 i = 0; i < num_methods; ++i) {
             ShadowEngineMethod(engine_type, dma_state.method, base_start[i]);
+        }
+        if (!subchannel->reports_fast_draw_breaks) {
+            VideoCommon::Nx2FastDraw::BreakUnsplit(VideoCommon::Nx2FastDraw::Reason::OtherEngine);
         }
         VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
         subchannel->ConsumeSink(system);

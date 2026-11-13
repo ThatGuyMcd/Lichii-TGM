@@ -38,7 +38,7 @@ constexpr u32 LSFG_RECURRENCE_FRAMES = 2;
 constexpr auto ACTIVITY_LOG_INTERVAL = std::chrono::seconds(10);
 
 [[nodiscard]] std::string ModeText(Settings::FrameGenType active) {
-    const char* type = active == Settings::FrameGenType::Fsr3 ? "FSR3" : "LSFG";
+    const char* type = active == Settings::FrameGenType::Fsr3 ? "Optical Flow" : "LSFG";
     const u32 target_rate = Settings::values.frame_gen_target_rate.GetValue();
     if (target_rate != 0) {
         return fmt::format("{} up to {}x towards {} FPS", type, Settings::MAX_FRAME_GEN_MULTIPLIER,
@@ -394,12 +394,12 @@ void FrameGen::SetState(VideoCore::FrameGenState new_state, VkFormat format) {
     case VideoCore::FrameGenState::MissingLosslessDll:
         LOG_WARNING(Render_Vulkan,
                     "Frame generation is on but not running: LSFG needs Lossless.dll in the "
-                    "lossless folder of the user directory. FSR3 needs nothing");
+                    "lossless folder of the user directory. Optical Flow needs nothing");
         break;
     case VideoCore::FrameGenState::UnsupportedGpu:
         LOG_WARNING(Render_Vulkan,
                     "Frame generation is on but not running: this GPU lacks Vulkan features LSFG "
-                    "needs. FSR3 may still work");
+                    "needs. Optical Flow may still work");
         break;
     default:
         break;

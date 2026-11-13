@@ -6,6 +6,7 @@
 
 add_executable(tests
     video_core/draw_template.cpp
+    video_core/command_read_snapshots.cpp
     video_core/frame_gen_choice.cpp
     video_core/lsfg_model.cpp
     video_core/nx2_backx.cpp

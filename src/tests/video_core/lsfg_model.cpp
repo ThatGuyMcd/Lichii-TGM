@@ -25,5 +25,5 @@ TEST_CASE("LSFG 3.1 standard quality selects its own DLL network", "[lsfg]") {
     }
     REQUIRE(LsfgFeaturePlanes(false) == 4);
     REQUIRE(LsfgFeaturePlanes(true) == 2);
-    REQUIRE_FALSE(Settings::values.frame_gen_performance_mode.GetDefault());
+    REQUIRE(Settings::values.frame_gen_performance_mode.GetDefault());
 }

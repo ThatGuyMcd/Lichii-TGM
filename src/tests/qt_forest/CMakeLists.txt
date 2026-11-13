@@ -68,6 +68,7 @@ if (BUILD_TESTING OR YUZU_TESTS)
     if (TARGET common)
         add_executable(system_settings_tests system_settings.cpp
             ../../shader_prepare/vma.cpp
+            ../../yuzu/libqt_common.cpp ../../yuzu/libqt_common.h
             ../../yuzu/configuration/configure_system.cpp
             ../../yuzu/configuration/configure_system.h
             ../../yuzu/configuration/shared_widget.cpp

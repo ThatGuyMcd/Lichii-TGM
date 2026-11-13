@@ -19,6 +19,7 @@
 #include "common/common_types.h"
 #include "common/math_util.h"
 #include "video_core/nvidia_dlss_inputs.h"
+#include "video_core/present_frame_budget.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
@@ -65,7 +66,8 @@ public:
 
     /// For the frame being composited: how many frames to generate in front of it (0 for none).
     /// `screen` is where the game image is in the frame.
-    u32 BeginFrame(Frame* real, VkFormat view_format, const Common::Rectangle<u32>& screen);
+    u32 BeginFrame(Frame* real, VkFormat view_format, const Common::Rectangle<u32>& screen,
+                   double display_refresh_hz = 0.0);
     /// Records generated frame `index` (1..count) of this frame into `destination`.
     void GenerateInto(Frame* destination, u32 index);
     std::chrono::nanoseconds Spacing() const { return spacing; }
@@ -81,6 +83,7 @@ private:
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
     std::unique_ptr<Ngx::FrameGenFeature> feature;
+    VideoCommon::PresentFrameBudget display_budget;
 
     Capture capture;
     // This frame's DLSS inputs, as the upscaler saw them (GPU thread).

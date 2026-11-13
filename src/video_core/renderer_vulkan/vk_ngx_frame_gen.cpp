@@ -284,11 +284,14 @@ void NgxFrameGen::CreateOutput(VkExtent2D extent, VkFormat format) {
 }
 
 u32 NgxFrameGen::BeginFrame(Frame* real, VkFormat view_format,
-                            const Common::Rectangle<u32>& screen) {
+                            const Common::Rectangle<u32>& screen, double display_refresh_hz) {
     generations = 0;
     ++frame_id;
     multiplier = Ngx::FrameGenMultiplier();
     const auto now = std::chrono::steady_clock::now();
+    const auto interval = last_frame == std::chrono::steady_clock::time_point{}
+                              ? std::chrono::steady_clock::duration{}
+                              : now - last_frame;
     spacing = last_frame == std::chrono::steady_clock::time_point{} ? std::chrono::nanoseconds{} :
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::min(now - last_frame, std::chrono::steady_clock::duration{std::chrono::milliseconds{100}}) /
@@ -336,6 +339,12 @@ u32 NgxFrameGen::BeginFrame(Frame* real, VkFormat view_format,
     if (!real->width || !real->height) {
         return 0;
     }
+    const auto planned_generations = static_cast<u32>(display_budget.Limit(
+        multiplier - 1, std::chrono::duration<double>(interval).count(), display_refresh_hz));
+    if (planned_generations == 0) {
+        need_reset = true;
+        return 0;
+    }
     const VkExtent2D extent{real->width, real->height};
     if (!output_image || output_extent.width != extent.width ||
         output_extent.height != extent.height || output_format != view_format) {
@@ -356,7 +365,10 @@ u32 NgxFrameGen::BeginFrame(Frame* real, VkFormat view_format,
     frame_reset = need_reset || captured.reset;
     need_reset = false;
     ++groups;
-    generations = multiplier - 1;
+    generations = planned_generations;
+    spacing = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::min(interval, std::chrono::steady_clock::duration{std::chrono::milliseconds{100}}) /
+        (generations + 1));
     if (groups % 600 == 1) {
         LOG_INFO(Render_Vulkan,
                  "DLSS-G: {} rendered frames with generation so far, {} generated frames, {} "

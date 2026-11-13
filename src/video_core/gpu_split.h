@@ -155,6 +155,16 @@ public:
     [[nodiscard]] bool BackRunning() const {
         return back_running.load(std::memory_order_acquire);
     }
+
+    /// Front thread: no buffered state, ring work or requested hooks remain. back_waiting is
+    /// published only after the idle hook ran, unlike the earlier back_idle_at hint.
+    [[nodiscard]] bool BackIdle() const {
+        return !active ||
+               (state_count == 0 && consumed.load(std::memory_order_acquire) == write_position &&
+                !hook_requested.load(std::memory_order_acquire) &&
+                !tick_requested.load(std::memory_order_acquire) &&
+                back_waiting.load(std::memory_order_acquire));
+    }
     /// Any thread: has the back call the idle hook soon, between entries or at once if it sleeps.
     void RequestIdleHook() {
         hook_requested.store(true, std::memory_order_seq_cst);

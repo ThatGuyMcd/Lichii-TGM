@@ -531,7 +531,13 @@ private:
         LOG_DEBUG(Service, "nx2:gpu sub 101 start={:#x} last={:#x} [6]={:#x} [7]={:#x}", start,
                     last, b[6], b[7]);
         if (last > start) {
-            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Register(start, last - start + 1);
+            auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+            registry.Register(start, last - start + 1);
+            // The memory may be heap a destroyed handle had (see 102): what the caches still hold
+            // for it belongs to that memory, so the guest's bytes count from here.
+            for (const auto& [device, size] : registry.DeviceRangesOf(start, last - start + 1)) {
+                system.GPU().InvalidateRegion(device, size);
+            }
             // Two-page regions hold queue semaphores: GPU releases go to the second page, waits
             // read the first (see video_core/nx2.h).
             if (last - start + 1 == 0x2000) {
@@ -606,7 +612,7 @@ private:
         const u64 last = u64{w[5]} | (u64{w[6]} << 32);
         LOG_DEBUG(Service, "nx2:gpu 213 unmap [{:#x}, {:#x}] slot={}", first, last, w[8]);
         if (last > first) {
-            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1);
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1, 213);
         }
         SignalAfterGpu(w[8]);
         IPC::ResponseBuilder rb{ctx, 2};
@@ -646,11 +652,33 @@ private:
                     DropGpuOnlyTiles(tile_address, tile_size, false);
                 }
                 auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+                // The heap reuse keeps the memory's device range, so drop the caches' copies once
+                // the GPU thread is past the work queued on it. GPU-written buffer data there is
+                // never downloaded on Switch 2 titles; a later flush would write it over the
+                // heap's new contents.
+                system.GPU().RunInOrder([this, handle, address, size,
+                                         devices = registry.DeviceRangesOf(address, size)] {
+                    auto* const rasterizer = system.GPU().Renderer().ReadRasterizer();
+                    bool gpu_written = false;
+                    for (const auto& [device, device_size] : devices) {
+                        gpu_written |= rasterizer->MustFlushRegion(
+                            device, device_size, VideoCommon::CacheType::BufferCache);
+                        system.GPU().InvalidateRegion(device, device_size);
+                    }
+                    // The first 32, then every 1000th.
+                    if (gpu_written && (++m_destroy_invalidations <= 32 ||
+                                        m_destroy_invalidations % 1000 == 0)) {
+                        LOG_INFO(Service,
+                                 "nx2:gpu 102 destroy of memory {} [{:#x}, +{:#x}] dropped "
+                                 "GPU-written buffer data before the heap reuses it ({} so far)",
+                                 handle, address, size, m_destroy_invalidations);
+                    }
+                });
                 const auto leftovers = registry.UnmapMemory(address, size);
                 for (const auto& [gpu_address, range_size] : leftovers) {
                     // Only what still reached this memory: a later map of the range is kept.
                     if (const auto backing = OwnBackingOf(gpu_address, range_size)) {
-                        registry.MapAt(gpu_address, *backing, range_size);
+                        registry.MapAt(gpu_address, *backing, range_size, 102);
                     }
                     // The first 32, then every 1000th.
                     if (++m_destroy_leftovers <= 32 || m_destroy_leftovers % 1000 == 0) {
@@ -728,7 +756,7 @@ private:
                 if (backing) {
                     const u64 address = backing->address;
                     RegisterGpuOnlyBacking(start, std::move(*backing));
-                    Nvidia::Devices::Nx2GpuMemoryRegistry::Get().MapAt(start, address, size);
+                    Nvidia::Devices::Nx2GpuMemoryRegistry::Get().MapAt(start, address, size, 214);
                     LOG_INFO(Service, "nx2:gpu 214 GPU-only region [{:#x}, {:#x}] backed at {:#x} "
                                       "({} MiB of GPU-only memory in use, peak {} MiB)",
                              start, last, address, m_gpu_only_bytes >> 20, m_gpu_only_peak >> 20);
@@ -811,7 +839,7 @@ private:
                 Tegra::Nx2SparseRegionDestroyed(first);
                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DestroySparse(first, last - first + 1);
             } else {
-                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1);
+                Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(first, last - first + 1, 215);
             }
             // The region's backing: all of it, or the blocks a sparse region got as it was written.
             std::shared_ptr<std::atomic<bool>> done;
@@ -1006,7 +1034,7 @@ private:
         // total grew without bound (250 MiB -> 6.5 GiB in one session) until the process died.
         // Release the old backing the same way 215 does, i.e. only once the GPU thread is past it.
         if (const auto it = m_gpu_only_regions.find(gpu_address); it != m_gpu_only_regions.end()) {
-            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(gpu_address, it->second.size);
+            Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unmap(gpu_address, it->second.size, 214);
             Nvidia::Devices::Nx2GpuMemoryRegistry::Get().ReleaseBacking(it->second.cpu_address,
                                                                         it->second.size);
             auto done = std::make_shared<std::atomic<bool>>(false);
@@ -1304,6 +1332,7 @@ private:
     u64 m_tile_unmaps{};
     u64 m_tile_kept{}; ///< Maps into GPU-only regions that keep their own memory, left out
     u64 m_destroy_leftovers{}; ///< GPU ranges 102 unmapped besides the memory's own address
+    u64 m_destroy_invalidations{}; ///< 102s that dropped GPU-written buffer data (GPU thread)
     u64 m_tile_bytes{}; ///< Sparse region pages a tile maps right now
 
     void ApplySparseMapRequest(const SparseMapRequest& request) {
@@ -1341,7 +1370,7 @@ private:
                 registry.MapSparseTile(gpu_address, 0, size);
                 MarkTiles(*region, gpu_address - start, size, false);
             } else {
-                registry.Unmap(gpu_address, size);
+                registry.Unmap(gpu_address, size, 216);
             }
             return;
         }
@@ -1356,7 +1385,7 @@ private:
         LOG_DEBUG(Service, "nx2:gpu 216 map [{:#x}, +{:#x}] -> memory {} offset {:#x} kind {:#x}",
                   gpu_address, size, request.memory_handle, request.offset, request.kind);
         if (region == nullptr) {
-            registry.MapAt(gpu_address, cpu_address, size);
+            registry.MapAt(gpu_address, cpu_address, size, 216);
             return;
         }
         if (!region->tiles) {
@@ -1446,7 +1475,7 @@ private:
             return;
         }
         DropGpuOnlyTiles(gpu_address, size, false);
-        registry.MapAt(gpu_address, memory->second.address + request.offset, size);
+        registry.MapAt(gpu_address, memory->second.address + request.offset, size, 216);
         m_gpu_only_tiles[gpu_address] = {size, region, request.memory_handle, request.offset};
         m_gpu_only_memory[{request.memory_handle, request.offset}] = {request.offset + size, region};
         m_gpu_only_tile_max = (std::max)(m_gpu_only_tile_max, size);
@@ -1503,7 +1532,7 @@ private:
             const auto& [tile_address, tile] = *it;
             if (restore) {
                 if (const auto backing = OwnBackingOf(tile_address, tile.size)) {
-                    registry.MapAt(tile_address, *backing, tile.size);
+                    registry.MapAt(tile_address, *backing, tile.size, 216);
                 } else {
                     registry.Unmap(tile_address, tile.size);
                 }
@@ -2599,6 +2628,9 @@ private:
                 while (!wake->done && system.IsPoweredOn() &&
                        std::chrono::steady_clock::now() < deadline) {
                     if (unless_gpu_waits) {
+                        if (system.GPU().IsWaitingForGuest()) {
+                            break;
+                        }
                         gpu_waited |= system.GPU().HasSuspendedChannels();
                         if (gpu_waited &&
                             std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
@@ -4174,6 +4206,9 @@ public:
     }
 
     ~INx2GraphicsSystemSession() override {
+        if (m_syncpt_memory != nullptr) {
+            system.Host1x().GetSyncpointManager().ClearGuestMirror(this);
+        }
         if (m_syncpt_poll) {
             system.CoreTiming().UnscheduleEvent(m_syncpt_poll);
         }
@@ -4341,6 +4376,20 @@ private:
             memory.Write32(m_syncpt_ro + 0x18, SyncptRwBitsOffset);
             memory.Write32(m_syncpt_ro + 0x1c, SyncptRoBitsOffset);
             UpdateSyncptValues();
+            // Mirror each guest increment as it happens, before the waits it meets are answered:
+            // the client's TryWaitNativeSync reads this page, and a client woken by an answered
+            // wait (nx2:syncpt 201) before the next poll read the old value. Yoshi and the
+            // Mysterious Book's movie player then aborted on purpose (2162-0001) a few minutes in.
+            system.Host1x().GetSyncpointManager().SetGuestMirror(
+                [owner = std::make_shared<Kernel::KScopedAutoObject<Kernel::KProcess>>(
+                     system.Kernel(), ro->GetOwner()),
+                 memory = m_syncpt_memory, values = m_syncpt_ro + SyncptValuesOffset,
+                 count = std::min(m_syncpt_count, HostSyncpoints)](u32 id, u32 value) {
+                    (void)owner;
+                    if (id < count) {
+                        memory->Write64(values + u64{id} * 8, value);
+                    }
+                }, this);
             if (!m_syncpt_poll) {
                 m_syncpt_poll = Core::Timing::CreateEvent(
                     "nx2:gsv:SyncptPoll",
@@ -4369,14 +4418,16 @@ private:
     bool UpdateSyncptValues() {
         auto& manager = system.Host1x().GetSyncpointManager();
         bool changed = false;
-        for (u32 id = 0; id < std::min(m_syncpt_count, HostSyncpoints); ++id) {
-            const u64 value = manager.GetGuestSyncpointValue(id);
-            const u64 address = m_syncpt_ro + SyncptValuesOffset + id * 8;
-            if (m_syncpt_memory->Read64(address) != value) {
-                m_syncpt_memory->Write64(address, value);
-                changed = true;
+        manager.WithGuestValuesStable([&] {
+            for (u32 id = 0; id < std::min(m_syncpt_count, HostSyncpoints); ++id) {
+                const u64 value = manager.GetGuestSyncpointValue(id);
+                const u64 address = m_syncpt_ro + SyncptValuesOffset + id * 8;
+                if (m_syncpt_memory->Read64(address) != value) {
+                    m_syncpt_memory->Write64(address, value);
+                    changed = true;
+                }
             }
-        }
+        });
         return changed;
     }
 

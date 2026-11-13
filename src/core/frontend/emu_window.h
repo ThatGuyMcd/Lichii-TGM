@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <cmath>
 #include <memory>
 #include <utility>
 
@@ -83,6 +85,15 @@ public:
 
     /// Returns if window is shown (not minimized)
     virtual bool IsShown() const = 0;
+
+    void SetHostRefreshRate(double hz) noexcept {
+        host_refresh_rate.store(std::isfinite(hz) && hz >= 20.0 && hz <= 1000.0 ? hz : 0.0,
+                                std::memory_order_relaxed);
+    }
+
+    double GetHostRefreshRate() const noexcept {
+        return host_refresh_rate.load(std::memory_order_relaxed);
+    }
 
     /**
      * Returns currently active configuration.
@@ -181,6 +192,7 @@ protected:
     bool strict_context_required = false;
 
 private:
+    std::atomic<double> host_refresh_rate{};
     /**
      * Handler called when the minimal client area was requested to be changed via SetConfig.
      * For the request to be honored, EmuWindow implementations will usually reimplement this

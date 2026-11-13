@@ -79,16 +79,28 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
         CommandDataContainer next;
         // When a pending channel last moved or a command arrived (see the polling below).
         auto last_progress = std::chrono::steady_clock::now();
+        bool waiting_for_guest = false;
+        const auto set_waiting_for_guest = [&](bool waiting) {
+            if (waiting != waiting_for_guest) {
+                waiting_for_guest = waiting;
+                state.waiting_for_guest.store(waiting, std::memory_order_release);
+            }
+        };
+        SCOPE_EXIT { state.waiting_for_guest.store(false, std::memory_order_release); };
         namespace Profile = VideoCommon::Nx2Profile;
         auto& split = VideoCommon::GpuSplit::Get();
         namespace WaitStats = VideoCommon::GpuWaitStats;
         while (!stop_token.stop_requested()) {
+            set_waiting_for_guest(false);
             Profile::Report();
             split.MaybeStart(system);
             WaitStats::MaybeReport(split.Active());
             VideoCommon::Nx2DrainCheck::MaybeReport();
             VideoCommon::Nx2AcquireStats::MaybeReport();
             if (scheduler.HasPendingChannels()) {
+                // Snapshot before polling: a GPU write landing during the poll may satisfy a
+                // channel the poll missed, so only a previously idle back is conclusive.
+                const bool gpu_done = split.BackIdle() && scheduler.OnlyGuestCanResume();
                 // Suspended channels wait on semaphores the CPU releases: poll them meanwhile.
                 bool resumed = false;
                 {
@@ -119,6 +131,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
                     // still waiting after 2 s (menus, loading) goes back to 1 ms sleeps.
                     Profile::Scope scope{Profile::Zone::PendingSleep};
                     const WaitStats::IdleScope idle{WaitStats::g_front_poll_ns};
+                    set_waiting_for_guest(gpu_done && !resumed);
                     const auto waited = std::chrono::steady_clock::now() - last_progress;
                     if (waited < std::chrono::microseconds{500}) {
                         std::this_thread::yield();
@@ -284,6 +297,15 @@ void ThreadManager::NotifyShutdown() {
         thread.join();
     }
     VideoCommon::GpuSplit::Get().Stop();
+}
+
+bool ThreadManager::IsWaitingForGuest() {
+    if (!state.waiting_for_guest.load(std::memory_order_acquire)) {
+        return false;
+    }
+    std::scoped_lock lk{state.write_lock};
+    return state.waiting_for_guest.load(std::memory_order_acquire) &&
+           state.signaled_fence.load(std::memory_order_acquire) >= state.last_fence;
 }
 
 } // namespace VideoCommon::GPUThread

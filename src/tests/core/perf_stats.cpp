@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <cmath>
+#include <memory>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -25,6 +27,19 @@ TEST_CASE("Frame time summary has min, median and max", "[core][perf_stats]") {
 
     const std::array<float, 4> even{20.0f, 10.0f, 40.0f, 30.0f};
     REQUIRE(Core::Summarize(even)->median_ms == 25.0f);
+}
+
+TEST_CASE("An empty performance window has finite zero frame costs", "[core][perf_stats]") {
+    auto stats = std::make_unique<Core::PerfStats>(0);
+    for (int i = 0; i < 4; ++i) {
+        const auto result = stats->GetAndResetStats(0us);
+        REQUIRE(std::isfinite(result.system_fps));
+        REQUIRE(std::isfinite(result.average_game_fps));
+        REQUIRE(std::isfinite(result.emulation_speed));
+        REQUIRE(result.frametime == 0.0);
+        REQUIRE(result.min_frametime == 0.0);
+        REQUIRE(result.max_frametime == 0.0);
+    }
 }
 
 TEST_CASE("Frame time history keeps the newest window in order", "[core][perf_stats]") {

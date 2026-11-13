@@ -24,6 +24,13 @@ struct PerfStatsResults {
     double frametime;
     /// Ratio of walltime / emulated time elapsed
     double emulation_speed;
+    /// Length of this sample window, in seconds
+    double interval{};
+    /// Game frames in this window
+    u32 game_frames{};
+    /// Shortest and longest system-frame times in this window, in seconds (0 if none)
+    double min_frametime{};
+    double max_frametime{};
 };
 
 struct FrameTimeSummary {
@@ -126,6 +133,22 @@ private:
     Clock::duration previous_frame_length = Clock::duration::zero();
     /// Previously computed fps
     double previous_fps = 0;
+
+    /// Shortest and longest system-frame times since the last GetAndResetStats
+    Clock::duration interval_min = Clock::duration::max();
+    Clock::duration interval_max = Clock::duration::zero();
+
+    // Accumulates ~1 s of GetAndResetStats windows into one Perf: log line.
+    void MaybeLogWindow(const PerfStatsResults& results);
+    void LogRunStart();
+    void LogRunEnd() const;
+    Clock::time_point run_start = reset_point;
+    bool logged_run_start{};
+    double log_interval{};
+    double log_game_frames{};
+    double log_min_ft{};
+    double log_max_ft{};
+    u32 log_frames{};
 };
 
 class SpeedLimiter {

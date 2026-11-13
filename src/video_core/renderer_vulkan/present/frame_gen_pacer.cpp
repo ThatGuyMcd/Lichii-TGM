@@ -88,7 +88,8 @@ void FrameGenPacer::LogPlans(f32 interval_seconds, f32 blocked_seconds, size_t g
     plan_log = {};
 }
 
-FrameGenPlan FrameGenPacer::Plan(size_t capacity, Clock::duration blocked) {
+FrameGenPlan FrameGenPacer::Plan(size_t capacity, Clock::duration blocked,
+                                double display_refresh_hz) {
     const size_t ceiling = std::min(capacity, Settings::FrameGenMaxGenerations());
     if (ceiling == 0) {
         Reset();
@@ -111,7 +112,11 @@ FrameGenPlan FrameGenPacer::Plan(size_t capacity, Clock::duration blocked) {
         return {};
     }
 
-    const f32 target_rate = static_cast<f32>(Settings::values.frame_gen_target_rate.GetValue());
+    const f32 configured_target = static_cast<f32>(Settings::values.frame_gen_target_rate.GetValue());
+    const f32 target_rate = display_refresh_hz >= 20.0 && display_refresh_hz <= 1000.0 &&
+                                   configured_target > 0.0f
+                               ? std::min(configured_target, static_cast<f32>(display_refresh_hz))
+                               : configured_target;
 
     if (smoothed_interval > 0.0f) {
         f32 burst_threshold = BURST_CADENCE_RATIO / smoothed_interval;
@@ -159,10 +164,12 @@ FrameGenPlan FrameGenPacer::Plan(size_t capacity, Clock::duration blocked) {
     if (target_rate == 0.0f) {
         limit = std::min(Settings::FrameGenGenerations(), ceiling);
         output_credit = 0.0f;
-        issued_generations = limit;
-        return {.generations = limit, .warm = limit > 0};
+        issued_generations = display_budget.Limit(limit, planning_interval, display_refresh_hz);
+        return {.generations = issued_generations, .warm = limit > 0};
     }
 
+    // Target mode already accumulates fractional outputs against the capped target rate.
+    display_budget.Reset();
     UpdateLimit(now, 1.0f / planning_interval, target_rate, ceiling);
 
     const size_t allowed = std::min(limit, ceiling);
@@ -186,8 +193,8 @@ FrameGenPlan FrameGenPacer::Plan(size_t capacity, Clock::duration blocked) {
     }
 
     issued_generations = generations;
-    LogPlans(interval_seconds, blocked_seconds, generations);
-    return {.generations = generations, .warm = true};
+    LogPlans(interval_seconds, blocked_seconds, issued_generations);
+    return {.generations = issued_generations, .warm = true};
 }
 
 void FrameGenPacer::UpdateLimit(Clock::time_point now, f32 base_rate, f32 target_rate,
@@ -273,6 +280,7 @@ void FrameGenPacer::Stabilize(Clock::time_point now) {
 }
 
 void FrameGenPacer::Reset() {
+    display_budget.Reset();
     last_frame.reset();
     stable_until.reset();
     probe_until.reset();

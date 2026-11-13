@@ -2243,3 +2243,55 @@ TEST_CASE("Draw reuse remains eligible on the actual split worker",
     REQUIRE(on_back);
     REQUIRE(allowed);
 }
+
+TEST_CASE("Guest-only wait classification excludes idle hooks, ticks and buffered state",
+          "[video_core][gpu_guest_wait]") {
+    auto fixture = std::make_unique<Fixture>();
+    auto& f = *fixture;
+    f.system.Initialize();
+    auto split_storage = std::make_unique<VideoCommon::GpuSplit>();
+    auto& split = *split_storage;
+    struct Gate {
+        std::atomic<bool> entered{}, released{};
+        static void Run(void* pointer) {
+            auto& gate = *static_cast<Gate*>(pointer);
+            gate.entered.store(true, std::memory_order_release);
+            gate.entered.notify_all();
+            while (!gate.released.load(std::memory_order_acquire)) {
+                gate.released.wait(false);
+            }
+        }
+        void Release() {
+            released.store(true, std::memory_order_release);
+            released.notify_all();
+        }
+    } idle, tick;
+    const auto wait_until = [](auto&& predicate) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        return predicate();
+    };
+    split.SetIdleHook(&Gate::Run, &idle);
+    split.SetTickHook(&Gate::Run, &tick);
+    VideoCommon::GpuSplitTestAccess::Start(split, f.system);
+    SCOPE_EXIT {
+        idle.Release();
+        tick.Release();
+        split.Stop();
+    };
+    REQUIRE(wait_until([&] { return idle.entered.load(); }));
+    CHECK_FALSE(split.BackIdle());
+    idle.Release();
+    REQUIRE(wait_until([&] { return split.BackIdle(); }));
+    split.StateWrite(&f.fast, 0x200, 0x1234, {0, 0}, false, false);
+    CHECK_FALSE(split.BackIdle());
+    split.Publish();
+    REQUIRE(wait_until([&] { return split.BackIdle(); }));
+    split.RequestTick();
+    REQUIRE(wait_until([&] { return tick.entered.load(); }));
+    CHECK_FALSE(split.BackIdle());
+    tick.Release();
+    REQUIRE(wait_until([&] { return split.BackIdle(); }));
+}

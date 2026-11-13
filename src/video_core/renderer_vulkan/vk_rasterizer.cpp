@@ -3160,8 +3160,43 @@ void RasterizerVulkan::InvalidateCachedWrites(
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     DEBUG_ASSERT(addr != 0 || size != 0);
     {
-        std::scoped_lock lock{buffer_cache.mutex};
-        if (buffer_cache.OnCPUWrite(addr, size)) {
+        static thread_local VideoCommon::DeferredPageCaching deferred;
+        const bool defer = VideoCommon::t_deferred_page_caching == nullptr &&
+                           !VideoCommon::GpuSplit::OwnsScheduler();
+        bool gpu_modified;
+        bool held_updates = false;
+        SCOPE_EXIT {
+            if (held_updates) {
+                device_memory.EndDeferredCachedUpdates();
+            }
+        };
+        {
+            std::scoped_lock lock{buffer_cache.mutex};
+            if (defer) {
+                VideoCommon::t_deferred_page_caching = &deferred;
+            }
+            SCOPE_EXIT {
+                if (defer) {
+                    VideoCommon::t_deferred_page_caching = nullptr;
+                    if (!held_updates && !deferred.Empty()) {
+                        // An exception before pinning must not strand updates past Unmap.
+                        // The cache lock still protects their backing here.
+                        deferred.ApplyAll();
+                    }
+                }
+            };
+            gpu_modified = buffer_cache.OnCPUWrite(addr, size);
+            if (defer && !deferred.Empty()) {
+                // Start under the cache lock: Unmap invalidates through that same lock before
+                // waiting for deferred protection changes, then removes the backing.
+                device_memory.BeginDeferredCachedUpdates();
+                held_updates = true;
+            }
+        }
+        if (held_updates) {
+            deferred.ApplyAll();
+        }
+        if (gpu_modified) {
             return true;
         }
     }

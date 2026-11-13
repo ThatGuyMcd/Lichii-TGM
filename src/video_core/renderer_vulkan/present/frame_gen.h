@@ -31,7 +31,8 @@ public:
 
     /// blocked: the time the renderer waited for the present thread since the last call.
     [[nodiscard]] size_t WantedGenerations(size_t capacity,
-                                           std::chrono::steady_clock::duration blocked = {});
+                                           std::chrono::steady_clock::duration blocked = {},
+                                           double display_refresh_hz = 0.0);
 
     [[nodiscard]] size_t GeneratedFrameCount() const;
 

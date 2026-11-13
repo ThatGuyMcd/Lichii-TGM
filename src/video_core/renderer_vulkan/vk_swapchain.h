@@ -82,6 +82,11 @@ public:
         return extent;
     }
 
+    /// Published after creation, callable from the rendering thread while present recreates.
+    bool UsesFifoPacing() const noexcept {
+        return uses_fifo_pacing.load(std::memory_order_relaxed);
+    }
+
     std::size_t GetImageCount() const {
         return image_count;
     }
@@ -177,6 +182,7 @@ private:
     VkFormat image_view_format{};
     VkExtent2D extent{};
     VkPresentModeKHR present_mode{};
+    std::atomic<bool> uses_fifo_pacing{};
     VkSurfaceFormatKHR surface_format{};
     std::atomic<VkFormat> sdr_image_format{VK_FORMAT_B8G8R8A8_UNORM};
     VkFormat requested_format{VK_FORMAT_B8G8R8A8_UNORM};

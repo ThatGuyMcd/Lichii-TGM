@@ -14,6 +14,7 @@
 #include <QImage>
 #include <QObject>
 #include <QPoint>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QThread>
@@ -22,6 +23,8 @@
 #include <qglobal.h>
 #include <qnamespace.h>
 #include <qobjectdefs.h>
+
+class QScreen;
 
 #include "common/common_types.h"
 #include "core/frontend/emu_window.h"
@@ -145,6 +148,9 @@ private:
     void TouchEndEvent();
     void ConstrainMouse();
     void UpdateMouse();
+    void UpdateHostRefreshRate();
+    QPointer<QScreen> host_refresh_screen;
+    QMetaObject::Connection host_refresh_connection;
 
     void RequestCameraCapture();
     void OnCameraCapture(int requestId, const QImage& img);

@@ -5,8 +5,8 @@
 #include <utility>
 
 #include "common/logging.h"
-#include "video_core/renderer_vulkan/nx2_list_slots.h"
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
+#include "video_core/renderer_vulkan/nx2_list_slots.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 

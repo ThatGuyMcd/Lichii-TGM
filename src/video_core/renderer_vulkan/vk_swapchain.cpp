@@ -511,6 +511,9 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
         swapchain = device.GetLogical().CreateSwapchainKHR(swapchain_ci);
     }
 
+    uses_fifo_pacing.store(present_mode == VK_PRESENT_MODE_FIFO_KHR ||
+                              present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR,
+                          std::memory_order_relaxed);
     extent = swapchain_ci.imageExtent;
 
     images = swapchain.GetImages();

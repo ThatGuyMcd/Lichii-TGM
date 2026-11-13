@@ -7,10 +7,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cmath>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 #include <fmt/chrono.h>
@@ -36,6 +39,12 @@ namespace Core {
 PerfStats::PerfStats(u64 title_id_) : title_id(title_id_) {}
 
 PerfStats::~PerfStats() {
+    try {
+        LogRunEnd();
+    } catch (...) {
+        // Optional diagnostic allocation must not terminate a shutting-down emulator.
+    }
+
     if (!Settings::values.record_frame_times || title_id == 0) {
         return;
     }
@@ -81,6 +90,12 @@ void PerfStats::EndSystemFrame() {
     }
     accumulated_frametime += frame_time;
     system_frames += 1;
+    if (frame_time < interval_min) {
+        interval_min = frame_time;
+    }
+    if (frame_time > interval_max) {
+        interval_max = frame_time;
+    }
 
     previous_frame_length = frame_end - previous_frame_end;
     if (frame_time_history_enabled) {
@@ -160,17 +175,30 @@ PerfStatsResults PerfStats::GetAndResetStats(microseconds current_system_time_us
 
     const auto now = Clock::now();
     // Walltime elapsed since stats were reset
-    const auto interval = duration_cast<DoubleSecs>(now - reset_point).count();
+    const auto interval = (std::max)(duration_cast<DoubleSecs>(now - reset_point).count(),
+                                     std::numeric_limits<double>::epsilon());
 
     const auto system_us_per_second = (current_system_time_us - reset_point_system_us) / interval;
     const auto current_frames = static_cast<double>(game_frames.load(std::memory_order_relaxed));
     const auto current_fps = current_frames / interval;
+    const double mean_frametime =
+        system_frames == 0
+            ? 0.0
+            : duration_cast<DoubleSecs>(accumulated_frametime).count() /
+                  static_cast<double>(system_frames);
+    const double min_frametime =
+        system_frames == 0 ? 0.0 : duration_cast<DoubleSecs>(interval_min).count();
+    const double max_frametime =
+        system_frames == 0 ? 0.0 : duration_cast<DoubleSecs>(interval_max).count();
     const PerfStatsResults results{
         .system_fps = static_cast<double>(system_frames) / interval,
         .average_game_fps = (current_fps + previous_fps) / 2.0,
-        .frametime = duration_cast<DoubleSecs>(accumulated_frametime).count() /
-                     static_cast<double>(system_frames),
+        .frametime = mean_frametime,
         .emulation_speed = system_us_per_second.count() / 1'000'000.0,
+        .interval = interval,
+        .game_frames = game_frames.load(std::memory_order_relaxed),
+        .min_frametime = min_frametime,
+        .max_frametime = max_frametime,
     };
 
     // Reset counters
@@ -180,6 +208,10 @@ PerfStatsResults PerfStats::GetAndResetStats(microseconds current_system_time_us
     system_frames = 0;
     game_frames.store(0, std::memory_order_relaxed);
     previous_fps = current_fps;
+    interval_min = Clock::duration::max();
+    interval_max = Clock::duration::zero();
+
+    MaybeLogWindow(results);
 
     return results;
 }
@@ -245,6 +277,70 @@ std::vector<FrameTimeHistory::Entry> FrameTimeHistory::Recent(Clock::duration wi
         }
     }
     return result;
+}
+
+void PerfStats::LogRunStart() {
+    run_start = Clock::now();
+    logged_run_start = true;
+    LOG_INFO(Frontend, "Perf: run start (one line a second, a summary when the game stops)");
+}
+
+void PerfStats::MaybeLogWindow(const PerfStatsResults& results) {
+    if (results.interval <= 0.0 || results.game_frames == 0) {
+        return;
+    }
+    if (!logged_run_start) {
+        LogRunStart();
+    }
+    if (log_interval <= 0.0) {
+        log_min_ft = results.min_frametime;
+        log_max_ft = results.max_frametime;
+    } else {
+        log_min_ft = std::min(log_min_ft, results.min_frametime);
+        log_max_ft = std::max(log_max_ft, results.max_frametime);
+    }
+    log_interval += results.interval;
+    log_game_frames += results.game_frames;
+    log_frames += results.game_frames;
+    if (log_interval < 1.0) {
+        return;
+    }
+    const double rendered_fps = log_game_frames / log_interval;
+    const double avg_ms = rendered_fps > 0.0 ? 1000.0 / rendered_fps : 0.0;
+    const double t = duration_cast<DoubleSecs>(Clock::now() - run_start).count();
+    LOG_INFO(Frontend,
+             "Perf: t={:.1f}s game_fps={:.2f} present_mean={:.2f} ms work_min={:.2f} ms "
+             "work_max={:.2f} ms frames={}",
+             t, rendered_fps, avg_ms, log_min_ft * 1000.0, log_max_ft * 1000.0, log_frames);
+    log_interval = 0.0;
+    log_game_frames = 0.0;
+    log_min_ft = 0.0;
+    log_max_ft = 0.0;
+    log_frames = 0;
+}
+
+void PerfStats::LogRunEnd() const {
+    if (title_id == 0 || current_index <= IgnoreFrames) {
+        return;
+    }
+    std::vector<double> times(perf_history.begin() + IgnoreFrames,
+                              perf_history.begin() + current_index);
+    std::sort(times.begin(), times.end());
+    const double sum = std::accumulate(times.begin(), times.end(), 0.0);
+    const double mean_ms = sum / static_cast<double>(times.size());
+    const auto at = [&](double p) {
+        const auto i = static_cast<std::size_t>(
+            std::clamp(p * static_cast<double>(times.size() - 1), 0.0,
+                       static_cast<double>(times.size() - 1)));
+        return times[i];
+    };
+    const double p99_ms = at(0.99);
+    const double p999_ms = at(0.999);
+    const double max_ms = times.back();
+    LOG_INFO(Frontend,
+             "Perf: run work summary frames={} mean={:.2f} ms p99={:.2f} ms p999={:.2f} ms "
+             "max={:.2f} ms (excludes pacing; native present intervals are recorded separately)",
+             times.size(), mean_ms, p99_ms, p999_ms, max_ms);
 }
 
 void SpeedLimiter::DoSpeedLimiting(microseconds current_system_time_us) {

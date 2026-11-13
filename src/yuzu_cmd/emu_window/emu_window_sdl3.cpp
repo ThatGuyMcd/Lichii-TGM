@@ -175,6 +175,8 @@ bool EmuWindow_SDL3::IsShown() const {
 }
 
 void EmuWindow_SDL3::OnResize() {
+    const auto* mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(render_window));
+    SetHostRefreshRate(mode != nullptr ? mode->refresh_rate : 0.0);
     int width = 0, height = 0;
     const bool size_available = SDL_GetWindowSizeInPixels(render_window, &width, &height);
     const auto extent =
@@ -230,6 +232,10 @@ void EmuWindow_SDL3::Fullscreen() {
 }
 
 void EmuWindow_SDL3::OnEvent(SDL_Event& event) {
+    if (event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED ||
+        event.type == SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED) {
+        return OnResize();
+    }
     if (SdlWindowState::NeedsUpdate(event.type)) {
         return OnResize();
     }

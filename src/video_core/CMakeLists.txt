@@ -109,6 +109,7 @@ add_library(video_core STATIC
     fence_manager.h
     front_qmd.h
     frame_gen_choice.h
+    present_frame_budget.h
     gpu.cpp
     gpu.h
     gpu_timestamp.h

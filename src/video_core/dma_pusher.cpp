@@ -130,6 +130,10 @@ DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Cont
 
 DmaPusher::~DmaPusher() = default;
 
+bool DmaPusher::OnlyGuestCanResume() {
+    return !pending_list_tick && puller.OnlyGuestCanRelease(*this);
+}
+
 bool DmaPusher::CanResumeAcquire() {
     if (pending_list_tick) {
         return rasterizer->IsGpuTickDone(*pending_list_tick);

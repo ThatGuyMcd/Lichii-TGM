@@ -103,6 +103,12 @@ bool Scheduler::ResumePending(GPU& gpu) {
     return any_progress;
 }
 
+bool Scheduler::OnlyGuestCanResume() {
+    return !pending_channels.empty() && std::ranges::all_of(pending_channels, [](const auto& state) {
+        return state->payload->dma_pusher.OnlyGuestCanResume();
+    });
+}
+
 void Scheduler::DeclareChannel(std::shared_ptr<ChannelState> new_channel) {
     s32 channel = new_channel->bind_id;
     std::unique_lock lk(scheduling_guard);

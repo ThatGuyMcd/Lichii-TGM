@@ -359,10 +359,13 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
                               present_manager.SwapchainImageCount(), output_format.format, output);
 
     VkSemaphore flow_wait = VK_NULL_HANDLE;
+    [[maybe_unused]] const double display_refresh_hz =
+        swapchain.UsesFifoPacing() ? render_window.GetHostRefreshRate() : 0.0;
 #ifdef EGLANTINE_NGX
     if (ngx_frame_gen) {
         const auto count = ngx_frame_gen->BeginFrame(frame, frame->image_format,
-                                                    render_window.GetFramebufferLayout().screen);
+                                                    render_window.GetFramebufferLayout().screen,
+                                                    display_refresh_hz);
         for (u32 index = 1; index <= count; ++index) {
             Frame* generated = present_manager.GetRenderFrame();
             generated->color_space = output.color_space;
@@ -376,7 +379,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 #endif
 #ifdef HAS_LSFG
     void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames(),
-                                     present_manager.TakeBlockedTime()));
+                                     present_manager.TakeBlockedTime(), display_refresh_hz));
 
     frame_gen.Process(device, frame, frame->image_format, GuestExtent(framebuffers));
 

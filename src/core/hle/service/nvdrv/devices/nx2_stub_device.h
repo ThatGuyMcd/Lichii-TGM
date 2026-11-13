@@ -4,11 +4,14 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <compare>
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <cstdlib>
 #include <functional>
 #include <iterator>
 #include <map>
@@ -16,8 +19,11 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#include <fmt/format.h>
 
 #include "common/logging.h"
 #include "core/hle/service/nvdrv/devices/nvdevice.h"
@@ -62,6 +68,16 @@ void Nx2EraseContainedRanges(Ranges& ranges, u64 cpu_address, u64 size, Release&
     }
 }
 
+// EDEN_NX2_INDEX_CHECK=1: indexed draws check their indices against their vertex buffers, and the
+// registry keeps a history of unmaps to say where a bad buffer came from.
+inline bool Nx2IndexCheckEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_INDEX_CHECK");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+
 // GPU mappings a Switch 2 process made through nx2:gpu: CreateGpuAccessibleMemory (sub 101) maps
 // the memory at GPU address == CPU address, and NormalMapGpuMemory4K (211) maps a memory handle at
 // a chosen GPU address (also in sparse regions). Every nvhost-as-gpu address space applies each
@@ -91,25 +107,30 @@ public:
     /// (cpu_address 0).
     using TileListener = std::function<void(u64 gpu_address, u64 cpu_address, u64 size)>;
 
+    explicit Nx2GpuMemoryRegistry(bool record_history_ = Nx2IndexCheckEnabled())
+        : record_history{record_history_} {}
+
     static Nx2GpuMemoryRegistry& Get() {
         static Nx2GpuMemoryRegistry registry;
         return registry;
     }
 
     void Register(u64 address, u64 size) {
-        MapAt(address, address, size);
+        MapAt(0, 0, address, address, size, 101);
     }
 
-    void MapAt(u64 gpu_address, u64 cpu_address, u64 size) {
-        MapAt(0, 0, gpu_address, cpu_address, size);
+    /// \p sub is the nx2:gpu command that maps the range; the index check reports it.
+    void MapAt(u64 gpu_address, u64 cpu_address, u64 size, u16 sub = 0) {
+        MapAt(0, 0, gpu_address, cpu_address, size, sub);
     }
 
-    void MapAt(u32 handle, u64 offset, u64 gpu_address, u64 cpu_address, u64 size) {
+    void MapAt(u32 handle, u64 offset, u64 gpu_address, u64 cpu_address, u64 size, u16 sub = 211) {
         Notification notification;
         {
             std::scoped_lock lk{mutex};
-            TrimMappings(gpu_address, size);
-            mappings.push_back({gpu_address, cpu_address, size, handle, offset});
+            TrimMappings(gpu_address, size, Event::Remapped, sub);
+            mappings.push_back({gpu_address, cpu_address, size, handle, offset, sub,
+                                record_history ? Clock::now() : Clock::time_point{}});
             Collect(notification, &Listeners::map, gpu_address, cpu_address, size);
             Seal(notification);
         }
@@ -117,11 +138,11 @@ public:
     }
 
     // NormalUnmapGpuMemory4K, or destroying the memory: the GPU range stops reaching it.
-    void Unmap(u64 gpu_address, u64 size) {
+    void Unmap(u64 gpu_address, u64 size, u16 sub = 0) {
         Notification notification;
         {
             std::scoped_lock lk{mutex};
-            TrimMappings(gpu_address, size);
+            TrimMappings(gpu_address, size, Event::Unmapped, sub);
             Collect(notification, &Listeners::unmap, gpu_address, size);
             Seal(notification);
         }
@@ -151,7 +172,7 @@ public:
                 }
             }
             for (const auto& range : unmapped) {
-                TrimMappings(range.gpu_address, range.size);
+                TrimMappings(range.gpu_address, range.size, Event::Destroyed, 102);
                 Collect(notification, &Listeners::unmap, range.gpu_address, range.size);
             }
             Seal(notification);
@@ -270,7 +291,17 @@ public:
     // cpu_address 0 it is unmapped and reads zero. The GPU mapping stays as it is; only the
     // region's device pages change, in GPU-thread order.
     void MapSparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
-        NotifyListeners(&Listeners::tile, gpu_address, cpu_address, size);
+        Notification notification;
+        {
+            std::scoped_lock lk{mutex};
+            if (record_history) {
+                Record({gpu_address, size, cpu_address, 0, 216, 216,
+                        cpu_address != 0 ? Event::TileMapped : Event::TileUnmapped, Clock::now()});
+            }
+            Collect(notification, &Listeners::tile, gpu_address, cpu_address, size);
+            Seal(notification);
+        }
+        Deliver(std::move(notification));
     }
 
     void AddListener(const void* owner, Listener listener, UnmapListener unmap_listener,
@@ -335,6 +366,7 @@ public:
         std::scoped_lock lk{mutex};
         mappings.clear();
         sparse_regions.clear();
+        history.clear();
     }
 
     // Device (SMMU) range of a mapping outside the heap, shared by every address space of one
@@ -394,6 +426,27 @@ public:
         return range.second + (cpu_address - start);
     }
 
+    /// The device ranges [cpu_address, +size) maps to, as (device address, size); parts no
+    /// address space mapped are left out.
+    std::vector<std::pair<u64, u64>> DeviceRangesOf(u64 cpu_address, u64 size) {
+        std::scoped_lock lk{device_mutex};
+        std::vector<std::pair<u64, u64>> result;
+        const u64 end = cpu_address + size;
+        auto it = device_ranges.upper_bound(cpu_address);
+        if (it != device_ranges.begin()) {
+            --it;
+        }
+        for (; it != device_ranges.end() && it->first < end; ++it) {
+            const auto& [start, range] = *it;
+            const u64 first = (std::max)(start, cpu_address);
+            const u64 last = (std::min)(start + range.first, end);
+            if (first < last) {
+                result.emplace_back(range.second + (first - start), last - first);
+            }
+        }
+        return result;
+    }
+
     std::optional<u64> GpuAddressOf(u32 handle, u64 offset) {
         std::scoped_lock lk{mutex};
         for (auto it = mappings.rbegin(); it != mappings.rend(); ++it) {
@@ -420,7 +473,74 @@ public:
         return cpu_address ? DeviceAddressOf(*cpu_address) : std::nullopt;
     }
 
+    // EDEN_NX2_INDEX_CHECK: the mappings over [gpu_address, +size) and the newest history entries
+    // that overlap it. Called from the GPU thread, which some map listeners wait for, so it
+    // gives up rather than wait long for the lock.
+    std::string Describe(u64 gpu_address, u64 size) {
+        std::unique_lock lk{mutex, std::defer_lock};
+        for (int attempt = 0; !lk.try_lock(); ++attempt) {
+            if (attempt == 100) {
+                return "registry busy";
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds{100});
+        }
+        const auto now = Clock::now();
+        const auto age = [now](Clock::time_point time) {
+            return std::chrono::duration<double>(now - time).count();
+        };
+        const u64 end = gpu_address + size;
+        std::string out;
+        for (const auto& m : mappings) {
+            if (m.gpu_address < end && gpu_address < m.gpu_address + m.size) {
+                out += fmt::format("[{:#x}, +{:#x}] mapped by sub {} handle {} offset {:#x} cpu "
+                                   "{:#x} {:.1f} s ago; ",
+                                   m.gpu_address, m.size, m.sub, m.handle, m.offset,
+                                   m.cpu_address, age(m.created));
+            }
+        }
+        if (out.empty()) {
+            out = "not mapped; ";
+        }
+        static constexpr std::array<const char*, 5> EventNames{
+            "remapped", "unmapped", "destroyed", "tile mapped", "tile unmapped"};
+        u32 shown = 0;
+        for (auto it = history.rbegin(); it != history.rend() && shown < 4; ++it) {
+            if (it->gpu_address < end && gpu_address < it->gpu_address + it->size) {
+                out += fmt::format("[{:#x}, +{:#x}] {} by sub {} {:.1f} s ago (was sub {} "
+                                   "handle {} cpu {:#x}); ",
+                                   it->gpu_address, it->size,
+                                   EventNames[static_cast<size_t>(it->event)], it->by,
+                                   age(it->time), it->sub, it->handle, it->cpu_address);
+                ++shown;
+            }
+        }
+        out.resize(out.size() - 2);
+        return out;
+    }
+
 private:
+    using Clock = std::chrono::steady_clock;
+
+    enum class Event : u8 { Remapped, Unmapped, Destroyed, TileMapped, TileUnmapped };
+
+    struct HistoryEntry {
+        u64 gpu_address;
+        u64 size;
+        u64 cpu_address;
+        u32 handle;
+        u16 sub; ///< Command that made the mapping
+        u16 by;  ///< Command that changed it
+        Event event;
+        Clock::time_point time;
+    };
+
+    void Record(const HistoryEntry& entry) {
+        if (history.size() == 4096) {
+            history.pop_front();
+        }
+        history.push_back(entry);
+    }
+
     // Separate lock: ranges are recorded from listeners that run under `mutex`.
     std::mutex device_mutex;
     std::map<u64, std::pair<u64, u64>> device_ranges; // cpu start -> (size, device address)
@@ -443,6 +563,8 @@ private:
         u64 size;
         u32 handle;
         u64 offset;
+        u16 sub;
+        Clock::time_point created;
     };
 
     struct Listeners {
@@ -455,7 +577,7 @@ private:
     };
 
     // Drops [gpu_address, +size) from the recorded mappings, keeping the parts outside it.
-    void TrimMappings(u64 gpu_address, u64 size) {
+    void TrimMappings(u64 gpu_address, u64 size, Event event, u16 by) {
         const u64 end = gpu_address + size;
         std::vector<Mapping> kept;
         kept.reserve(mappings.size() + 1);
@@ -465,20 +587,28 @@ private:
                 kept.push_back(m);
                 continue;
             }
+            if (record_history) {
+                const u64 first = (std::max)(m.gpu_address, gpu_address);
+                const u64 last = (std::min)(m_end, end);
+                Record({first, last - first, m.cpu_address + (first - m.gpu_address), m.handle,
+                        m.sub, by, event, Clock::now()});
+            }
             if (m.gpu_address < gpu_address) {
                 kept.push_back({m.gpu_address, m.cpu_address, gpu_address - m.gpu_address,
-                                m.handle, m.offset});
+                                m.handle, m.offset, m.sub, m.created});
             }
             if (m_end > end) {
                 kept.push_back({end, m.cpu_address + (end - m.gpu_address), m_end - end,
-                                m.handle, m.offset + (end - m.gpu_address)});
+                                m.handle, m.offset + (end - m.gpu_address), m.sub, m.created});
             }
         }
         mappings = std::move(kept);
     }
 
+    const bool record_history;
     std::mutex mutex;
     std::vector<Mapping> mappings;
+    std::deque<HistoryEntry> history;
     std::map<u64, u64> sparse_regions; ///< GPU address -> size
     std::map<const void*, Listeners> listeners;
 

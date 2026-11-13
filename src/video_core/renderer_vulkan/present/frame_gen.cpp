@@ -443,12 +443,13 @@ void FrameGen::LogActivity() {
 }
 
 size_t FrameGen::WantedGenerations(size_t capacity,
-                                   std::chrono::steady_clock::duration blocked) {
+                                   std::chrono::steady_clock::duration blocked,
+                                   double display_refresh_hz) {
     if (unavailable) {
         plan = {};
         return 0;
     }
-    plan = pacer.Plan(capacity, blocked);
+    plan = pacer.Plan(capacity, blocked, display_refresh_hz);
     return plan.generations;
 }
 

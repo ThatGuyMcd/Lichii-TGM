@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "common/common_types.h"
+#include "video_core/present_frame_budget.h"
 
 namespace Vulkan {
 
@@ -20,7 +21,8 @@ public:
     /// blocked: of the time since the last call, how long the renderer waited for the present
     /// thread to free a frame.
     [[nodiscard]] FrameGenPlan Plan(size_t capacity,
-                                    std::chrono::steady_clock::duration blocked = {});
+                                    std::chrono::steady_clock::duration blocked = {},
+                                    double display_refresh_hz = 0.0);
 
     void Reset();
 
@@ -59,6 +61,7 @@ private:
     size_t probe_previous_limit{};
     size_t limit{};
     u32 probe_failures{};
+    VideoCommon::PresentFrameBudget display_budget;
 };
 
 } // namespace Vulkan

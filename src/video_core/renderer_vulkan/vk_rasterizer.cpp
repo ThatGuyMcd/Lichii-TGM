@@ -3143,6 +3143,9 @@ void RasterizerVulkan::TraceRead(VideoCommon::ReadTrace::Read& read,
 }
 
 bool RasterizerVulkan::NoteReportPending(DAddr addr, u64 size) {
+    if (!buffer_cache.MayBeReadBackRange(addr, size)) {
+        return false;
+    }
     std::scoped_lock lock{buffer_cache.mutex};
     return buffer_cache.NoteReportPending(addr, size);
 }

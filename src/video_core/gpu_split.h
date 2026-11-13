@@ -162,7 +162,7 @@ public:
         return !active ||
                (state_count == 0 && consumed.load(std::memory_order_acquire) == write_position &&
                 !hook_requested.load(std::memory_order_acquire) &&
-                !tick_requested.load(std::memory_order_acquire) &&
+                (tick_state.load(std::memory_order_acquire) & TickRequested) == 0 &&
                 back_waiting.load(std::memory_order_acquire));
     }
     /// Any thread: has the back call the idle hook soon, between entries or at once if it sleeps.
@@ -179,17 +179,7 @@ public:
     /// Any thread, after queueing a sync operation it waits for: has the back run the tick hook
     /// after the entry it is running, or at once if it waits for work. Otherwise the operation runs
     /// after the back's next draw, or after the front sent everything it had queued before it.
-    void RequestTick() {
-        if (!back_running.load(std::memory_order_acquire)) {
-            return;
-        }
-        // The back checks tick_requested after setting back_waiting: one of the two sees the other.
-        tick_requested.store(true, std::memory_order_seq_cst);
-        if (back_waiting.load(std::memory_order_seq_cst)) {
-            wake.fetch_add(1, std::memory_order_seq_cst);
-            wake.notify_one();
-        }
-    }
+    void RequestTick();
 
     /// Starts the back thread once the split is wanted (EDEN_NX2_SPLIT=1, a Switch 2 title,
     /// commands read without cache flushes). Called by the front between commands.
@@ -700,13 +690,16 @@ private:
     }
 
     void BackLoop(std::stop_token stop_token);
+    void RequestTick(u64 observed_state);
     /// Runs the entry at `entry` (of the `words` published before the ring's end), returns its size.
     size_t Execute(const u64* entry, size_t words);
     /// The back, between entries: runs the tick hook if a thread asked for it.
     void MaybeTick() {
-        if (tick_requested.load(std::memory_order_relaxed) &&
-            tick_requested.exchange(false, std::memory_order_acq_rel) && tick_hook != nullptr)
-            [[unlikely]] {
+        if ((tick_state.load(std::memory_order_relaxed) & TickRequested) == 0) {
+            return;
+        }
+        const u64 state = tick_state.fetch_and(~TickRequested, std::memory_order_acquire);
+        if ((state & TickRequested) != 0 && tick_hook != nullptr) {
             tick_hook(tick_argument);
         }
     }
@@ -795,7 +788,11 @@ private:
     void (*tick_hook)(void*){};
     void* tick_argument{};
     alignas(64) std::atomic<bool> hook_requested{};
-    std::atomic<bool> tick_requested{};
+    // Generation and accepting state arbitrate delayed requests against Stop/Start.
+    static constexpr u64 TickAccepting = 1;
+    static constexpr u64 TickRequested = 2;
+    static constexpr u64 TickGeneration = 4;
+    std::atomic<u64> tick_state{};
     std::atomic<bool> back_running{};
 
     // 128 bytes: x86 spatial prefetchers pull 64-byte lines in pairs. back_waiting and wake are

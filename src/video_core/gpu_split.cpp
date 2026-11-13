@@ -115,6 +115,25 @@ void GpuSplit::CheckOwner(const char* where) {
 
 GpuSplit GpuSplit::instance;
 
+void GpuSplit::RequestTick() {
+    RequestTick(tick_state.load(std::memory_order_relaxed));
+}
+
+void GpuSplit::RequestTick(u64 state) {
+    const u64 generation = state & ~(TickAccepting | TickRequested);
+    do {
+        if ((state & TickAccepting) == 0 ||
+            (state & ~(TickAccepting | TickRequested)) != generation) {
+            return;
+        }
+    } while (!tick_state.compare_exchange_weak(
+        state, state | TickRequested, std::memory_order_seq_cst, std::memory_order_relaxed));
+    if (back_waiting.load(std::memory_order_seq_cst)) {
+        wake.fetch_add(1, std::memory_order_seq_cst);
+        wake.notify_one();
+    }
+}
+
 void GpuSplit::MaybeStart(Core::System& system_) {
     static const char mode = [] {
         const char* value = std::getenv("EDEN_NX2_SPLIT");
@@ -208,7 +227,7 @@ void GpuSplit::Stop() {
     back_idle_at.store(~u64{0}, std::memory_order_relaxed);
     back_waiting.store(false, std::memory_order_relaxed);
     front_waiting.store(false, std::memory_order_relaxed);
-    tick_requested.store(false, std::memory_order_relaxed);
+    tick_state.fetch_and(~(TickAccepting | TickRequested), std::memory_order_relaxed);
 }
 
 u64* GpuSplit::ReserveSlow(size_t words) {
@@ -784,6 +803,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     const StutterTrace::ThreadScope stutter_thread{StutterTrace::Thread::Back};
     Common::SetCurrentThreadName("GPUBack");
     on_back_thread = true;
+    tick_state.store(tick_state.load(std::memory_order_relaxed) + TickGeneration + TickAccepting,
+                     std::memory_order_release);
     back_running.store(true, std::memory_order_release);
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
@@ -817,7 +838,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             // The front usually sends more within microseconds: spin briefly before sleeping.
             for (u32 spins = 0; spins < 8192 && available == read_position &&
                                 !hook_requested.load(std::memory_order_relaxed) &&
-                                !tick_requested.load(std::memory_order_relaxed);
+                                (tick_state.load(std::memory_order_relaxed) & TickRequested) == 0;
                  ++spins) {
                 Pause();
                 available = published.load(std::memory_order_acquire);
@@ -837,7 +858,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 // a requested tick runs at the top of the loop.
                 if (available == read_position && !stop_token.stop_requested() &&
                     !hook_requested.load(std::memory_order_seq_cst) &&
-                    !tick_requested.load(std::memory_order_seq_cst)) {
+                    (tick_state.load(std::memory_order_seq_cst) & TickRequested) == 0) {
                     wake.wait(seen, std::memory_order_seq_cst);
                 }
                 back_waiting.store(false, std::memory_order_relaxed);
@@ -873,6 +894,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         consumed.store(read_position, std::memory_order_seq_cst);
         NotifyFront();
     }
+    tick_state.fetch_and(~(TickAccepting | TickRequested), std::memory_order_seq_cst);
     back_running.store(false, std::memory_order_seq_cst);
     front_wake.fetch_add(1, std::memory_order_seq_cst);
     front_wake.notify_all();

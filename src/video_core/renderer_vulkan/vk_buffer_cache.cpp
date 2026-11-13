@@ -963,6 +963,7 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, VkBuffer buffer, u32 offset
     if (index >= device.GetMaxVertexInputBindings()) {
         return;
     }
+    bound_vertex_buffers.Invalidate(index);
     NoteCheckUse(buffer, offset, size, UploadReorderCheck::Source::Vertex);
     if (buffer != VK_NULL_HANDLE && size != 0 && IsVertexRepacked(index)) {
         const auto repacked =
@@ -1036,6 +1037,21 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
     if (binding_count == 0) {
         return;
     }
+    // Compare the final handles after repacking, within this recording epoch only.
+    if (!VideoCommon::Nx2Perf::Verify()) {
+        const u64 epoch = scheduler.RecordingEpoch();
+        bool unchanged = true;
+        for (u32 i = 0; i < binding_count; ++i) {
+            unchanged &= bound_vertex_buffers.Matches(min_binding + i, buffer_handles[i],
+                bindings.offsets[i], bindings.sizes[i], bindings.strides[i], epoch);
+        }
+        if (unchanged) {
+            return;
+        }
+    }
+    // Retain the values until Record succeeds; allocation failure must not publish an unbound state.
+    const auto emitted_bindings = bindings;
+    const auto emitted_handles = buffer_handles;
     if (device.IsExtExtendedDynamicStateSupported()) {
         scheduler.Record([bindings_ = std::move(bindings), buffer_handles_ = std::move(buffer_handles), binding_count](vk::CommandBuffer cmdbuf) {
             cmdbuf.BindVertexBuffers2EXT(bindings_.min_index, binding_count, buffer_handles_.data(), bindings_.offsets.data(), bindings_.sizes.data(), bindings_.strides.data());
@@ -1044,6 +1060,12 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
         scheduler.Record([bindings_ = std::move(bindings), buffer_handles_ = std::move(buffer_handles), binding_count](vk::CommandBuffer cmdbuf) {
             cmdbuf.BindVertexBuffers(bindings_.min_index, binding_count, buffer_handles_.data(), bindings_.offsets.data());
         });
+    }
+    const u64 recorded_epoch = scheduler.RecordingEpoch();
+    for (u32 i = 0; i < binding_count; ++i) {
+        (void)bound_vertex_buffers.Update(min_binding + i, emitted_handles[i],
+            emitted_bindings.offsets[i], emitted_bindings.sizes[i], emitted_bindings.strides[i],
+            recorded_epoch);
     }
 }
 

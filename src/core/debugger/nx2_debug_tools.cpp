@@ -24,6 +24,7 @@
 #include "common/settings.h"
 #include "common/stb.h"
 #include "core/core.h"
+#include "core/debugger/nx2_present_fence_history.h"
 #include "core/core_timing.h"
 #include "core/debugger/nx2_debug_server.h"
 #include "core/debugger/nx2_debug_tools.h"
@@ -286,6 +287,8 @@ json ReadFrameTimes(u64 before, u64 after, u64 begin_ns, u64 end_ns, double refr
     const u64 first = (std::max)(before < after ? before + 1 : after,
                                after > capacity ? after - capacity + 1 : u64{1});
     std::vector<double> intervals;
+    size_t fence_samples{};
+    double fence_total{}, fence_max{};
     u64 previous = 0;
     for (u64 frame = after; frame >= first; --frame) {
         const u64 timestamp =
@@ -295,6 +298,12 @@ json ReadFrameTimes(u64 before, u64 after, u64 begin_ns, u64 end_ns, double refr
             truncated |= timestamp > end_ns;
             previous = 0;
             continue;
+        }
+        if (const auto wait = g_nx2_present_fences.Read(frame, timestamp)) {
+            ++fence_samples;
+            const double wait_ms = static_cast<double>(*wait) / 1'000'000.0;
+            fence_total += wait_ms;
+            fence_max = (std::max)(fence_max, wait_ms);
         }
         if (previous != 0 && timestamp > previous) {
             intervals.clear();
@@ -345,6 +354,9 @@ json ReadFrameTimes(u64 before, u64 after, u64 begin_ns, u64 end_ns, double refr
     };
     return {{"frames", frames},
             {"before_present", before},
+            {"fence_samples", fence_samples},
+            {"fence_mean", fence_samples == 0 ? 0.0 : fence_total / static_cast<double>(fence_samples)},
+            {"fence_max", fence_max},
             {"after_present", after},
             {"mean_ms", mean},
             {"fps", mean > 0.0 ? 1000.0 / mean : 0.0},

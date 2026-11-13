@@ -50,6 +50,7 @@ add_library(core STATIC
     debugger/nx2_debug_server.h
     debugger/nx2_debug_tools.cpp
     debugger/nx2_debug_tools.h
+    debugger/nx2_present_fence_history.h
     device_memory.cpp
     device_memory.h
     zero_page_trim.h

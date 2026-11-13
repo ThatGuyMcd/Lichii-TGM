@@ -629,7 +629,7 @@ private:
     void UntrackImage(ImageBase& image, ImageId image_id);
 
     /// Delete image from the cache
-    void DeleteImage(ImageId image, bool immediate_delete = false);
+    void DeleteImage(ImageId image, bool immediate_delete = false, const char* reason = "other");
 
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);

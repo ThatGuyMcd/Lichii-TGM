@@ -211,14 +211,15 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
     const auto used_memory = [&] {
         return total_used_memory - (std::min)(total_used_memory, pending_freed);
     };
-    const auto Evict = [this](ImageId image_id) {
+    const auto Evict = [&](ImageId image_id) {
         auto& image = slot_images[image_id];
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
         }
         ++(True(image.flags & ImageFlagBits::CostlyLoad) ? gc_costly_deletes : gc_deletes);
         UnregisterImage(image_id);
-        DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+        DeleteImage(image_id, image.scale_tick > frame_tick + 5,
+                    aggressive_mode ? "gc-aggressive" : high_priority_mode ? "gc-high-priority" : "gc");
     };
     const auto FlushPending = [&] {
         if (pending.empty()) {
@@ -384,7 +385,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             }
             ++gc_deletes;
             UnregisterImage(image_id);
-            DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+            DeleteImage(image_id, image.scale_tick > frame_tick + 5, "gc-overlap-pressure");
             return false;
         });
     }
@@ -913,7 +914,7 @@ void TextureCache<P>::TickFrame() {
                 UntrackImage(image, entry.id);
             }
             UnregisterImage(entry.id);
-            DeleteImage(entry.id, false);
+            DeleteImage(entry.id, false, "rt-pressure");
             ++transient_evictions;
         }
     } else if (transient_targets.size() > 8192) {
@@ -1836,7 +1837,7 @@ void TextureCache<P>::UnmapMemory(DAddr cpu_addr, size_t size) {
             UntrackImage(image, id);
         }
         UnregisterImage(id);
-        DeleteImage(id);
+        DeleteImage(id, false, "unmap");
     }
     ClearStale(cpu_addr, size);
 }
@@ -3910,7 +3911,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             UntrackImage(overlap, overlap_id);
         }
         UnregisterImage(overlap_id);
-        DeleteImage(overlap_id);
+        DeleteImage(overlap_id, false, "join-ignored");
     }
 
     // A new render target that the clear binding it overwrites whole (every channel, the whole
@@ -4126,7 +4127,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             UntrackImage(overlap, copy_object.id);
         }
         UnregisterImage(copy_object.id);
-        DeleteImage(copy_object.id);
+        DeleteImage(copy_object.id, false, "join");
     }
 
     RegisterImage(new_image_id);
@@ -4807,7 +4808,7 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 }
 
 template <class P>
-void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
+void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete, const char* reason) {
     const StutterTrace::SiteScope site{StutterTrace::Site::ImageDelete};
     ImageBase& image = slot_images[image_id];
     ++images_deleted;
@@ -4817,10 +4818,10 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
             return v != nullptr && v[0] == '1';
         }();
         if (tc_trace) {
-            LOG_WARNING(HW_GPU, "TCTRACE delete id={} gpu={:#x} fmt={} {}x{}x{} guest={}KiB immediate={} frame={}",
+            LOG_WARNING(HW_GPU, "TCTRACE delete id={} gpu={:#x} fmt={} {}x{}x{} guest={}KiB immediate={} reason={} frame={}",
                         image_id.index, image.gpu_addr, static_cast<u32>(image.info.format),
                         image.info.size.width, image.info.size.height, image.info.size.depth,
-                        image.guest_size_bytes / 1024, immediate_delete, frame_tick);
+                        image.guest_size_bytes / 1024, immediate_delete, reason, frame_tick);
         }
     }
     VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);

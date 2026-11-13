@@ -37,6 +37,7 @@
 #include "common/thread.h"
 #include "core/ocarina_photo_mode.h"
 #include "core/core.h"
+#include "core/debugger/nx2_present_fence_history.h"
 #include "core/arm/dynarmic/window_trace.h"
 #include "core/device_memory.h"
 #include "video_core/rasterizer_interface.h"
@@ -2078,8 +2079,9 @@ private:
         }
         const u64 present = Core::g_nx2_present_count.fetch_add(1, std::memory_order_relaxed) + 1;
         VideoCommon::GpuWaitStats::NotePresent();
+        u64 present_ns{};
         if (Core::g_nx2_present_time_services.load(std::memory_order_relaxed) != 0) {
-            const u64 present_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            present_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                        std::chrono::steady_clock::now().time_since_epoch())
                                        .count();
             Core::g_nx2_present_times_ns[present % Core::g_nx2_present_times_ns.size()].store(
@@ -2143,6 +2145,11 @@ private:
         m_previous_fence_id = ~w[22];
         m_previous_fence_value = w[24];
         const auto waited = std::chrono::steady_clock::now();
+        if (present_ns != 0) {
+            Core::g_nx2_present_fences.Record(
+                present, present_ns,
+                static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(waited - entered).count()));
+        }
         if (ui_snapshot) {
             TakeUiSnapshot(~w[22], w[24]);
             m_stats.snapshot_us += std::chrono::duration_cast<std::chrono::microseconds>(

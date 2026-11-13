@@ -1766,6 +1766,27 @@ TEST_CASE("An older query result leaves overlapping GPU writes to be read again"
     REQUIRE(f.bytes[0x10043] == 3);
 }
 
+TEST_CASE("Report readback filtering includes the page crossed by a wide result",
+          "[buffer_ports]") {
+    Fixture f;
+    const Nx2TitleScope nx2_title;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x10000);
+    REQUIRE_FALSE(f.cache->MayBeReadBackRange(0x20040, 4));
+    ReportOnReadBackPage(f, id);
+    f.cache->FinishReport(0x20040, 4);
+    REQUIRE(f.cache->MayBeReadBackRange(0x20040, 4));
+    REQUIRE_FALSE(f.cache->MayBeReadBackRange(0x1fff8, 8));
+    REQUIRE(f.cache->MayBeReadBackRange(0x1fff8, 16));
+    REQUIRE_FALSE(f.cache->NoteReportPending(0x1fff8, 8));
+    REQUIRE(f.cache->NoteReportPending(0x1fff8, 16));
+    f.cache->FinishReport(0x1fff8, 16);
+    REQUIRE_FALSE(f.cache->MayBeReadBackRange(0x21000, 4));
+    REQUIRE_FALSE(f.cache->MayBeReadBackRange(0x20000, 0));
+    REQUIRE_FALSE(f.cache->NoteReportPending(0x20000, 0));
+    REQUIRE(f.cache->MayBeReadBackRange(~DAddr{0} - 7, 16));
+    REQUIRE_FALSE(f.cache->NoteReportPending(~DAddr{0} - 7, 16));
+}
+
 TEST_CASE("A synced payload does not end an older deferred report's tracking",
           "[buffer_ports]") {
     Fixture f;
@@ -3196,6 +3217,29 @@ TEST_CASE("Uniform keep verify checks only the ranges a keep would bind", "[buff
     f.Draw(&unchanged);
     CHECK(f.Counts().verified == 1);
     CHECK(f.Counts().mismatches == 0);
+}
+
+TEST_CASE("Uniform keep ends when another GPU memory has the same serial", "[buffer_ports]") {
+    KeepFixture f{nullptr};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    Tegra::MemoryManager other{f.system, f.device, 32, 1ULL << 31, 16};
+    other.BindRasterizer(&f.rasterizer);
+    other.Map(0x100000, 0x10000, 0x10000, Tegra::PTEKind::PITCH, true);
+    REQUIRE(other.HostPointerSerial() == f.memory->HostPointerSerial());
+    Tegra::Control::ChannelState state{1};
+    state.memory_manager = &other;
+    state.payload.emplace(f.system, other, state);
+    VideoCommon::BufferCacheChannelInfo channel{state};
+    channel.uniform_buffer_sizes = &f.sizes;
+
+    f.Draw(nullptr);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    f.UboBytes()[0x30] = 11;
+    Access::KeepDraw(*f.cache, channel, &unchanged, f.id, KeepFixture::Ubo, KeepFixture::UboSize);
+    REQUIRE(f.Counts().kept == 1);
+    const auto& data = f.runtime.allocations.at(f.runtime.bound.allocation);
+    REQUIRE(std::memcmp(data.data(), f.UboBytes(), KeepFixture::UboSize) == 0);
 }
 
 TEST_CASE("Uniform keep ends at DMA copies, DMA clears and inline uploads over the range",

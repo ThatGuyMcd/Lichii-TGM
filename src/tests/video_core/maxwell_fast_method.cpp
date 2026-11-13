@@ -70,6 +70,14 @@ struct GpuSplitTestAccess {
         split.back_running.store(running, std::memory_order_release);
     }
 
+    static u64 TickState(const GpuSplit& split) {
+        return split.tick_state.load(std::memory_order_acquire);
+    }
+
+    static void ResumeTickRequest(GpuSplit& split, u64 observed_state) {
+        split.RequestTick(observed_state);
+    }
+
     static u64 NearWrap() {
         return GpuSplit::RingWords - 1;
     }
@@ -1122,15 +1130,24 @@ TEST_CASE("Split consumption does not complete deferred downstream callbacks",
 TEST_CASE("Split back runs a requested tick while it waits for work and between entries",
           "[video_core][gpu_split_dependencies]") {
     using Access = VideoCommon::GpuSplitTestAccess;
-    Fixture f;
+    auto fixture = std::make_unique<Fixture>();
+    auto& f = *fixture;
     f.system.Initialize();
     VideoCommon::GpuSplit split;
     std::atomic<u32> ticks{};
+    std::atomic<u32> submitted{};
     std::atomic<bool> entered{};
     std::atomic<bool> release{};
     u32 ticks_at_second{~0U};
     split.SetTickHook([](void* counter) { static_cast<std::atomic<u32>*>(counter)->fetch_add(1); },
                       &ticks);
+    std::pair submission{&ticks, &submitted};
+    split.SetIdleHook(
+        [](void* pointer) {
+            auto& counters = *static_cast<decltype(submission)*>(pointer);
+            counters.second->store(counters.first->load());
+        },
+        &submission);
     // Before the back runs, a request does nothing, nor is it kept for later.
     split.RequestTick();
     Access::Start(split, f.system);
@@ -1154,6 +1171,7 @@ TEST_CASE("Split back runs a requested tick while it waits for work and between 
     REQUIRE(ticks.load() == 0);
     split.RequestTick();
     REQUIRE(wait_until([&] { return ticks.load() == 1; }));
+    REQUIRE(wait_until([&] { return submitted.load() == 1; }));
     // The back runs an entry: the request runs once it ends, before the next entry.
     split.Defer([&] {
         entered = true;
@@ -1171,6 +1189,18 @@ TEST_CASE("Split back runs a requested tick while it waits for work and between 
     split.Drain(VideoCommon::DrainSite::Other);
     REQUIRE(ticks_at_second == 2);
     REQUIRE(ticks.load() == 2);
+    const u64 old_request = Access::TickState(split);
+    split.Stop();
+    split.RequestTick();
+    Access::Start(split, f.system);
+    REQUIRE(wait_until([&] { return split.BackRunning(); }));
+    // Resume a requester that sampled the old generation before Stop/Start.
+    Access::ResumeTickRequest(split, old_request);
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    REQUIRE(ticks.load() == 2);
+    split.RequestTick();
+    REQUIRE(wait_until([&] { return ticks.load() == 3; }));
+    REQUIRE(wait_until([&] { return submitted.load() == 3; }));
 }
 
 TEST_CASE("Split command list fetches wait only for the writers before the last host sync",

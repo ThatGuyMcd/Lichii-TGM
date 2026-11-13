@@ -125,6 +125,45 @@ TEST_CASE("Device space freed and mapped again every frame stays in place", "[me
     REQUIRE(device_memory.Allocate(size) == previous);
 }
 
+TEST_CASE("GPU page translations follow remaps and remain local to their address space",
+          "[memory_manager]") {
+    const u64 big_page_bits = GENERATE(16ULL, 17ULL);
+    ScopedSystemTestContext context;
+    auto system = std::make_unique<Core::System>();
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device_memory{physical};
+    NullRasterizer rasterizer;
+    Tegra::MemoryManager first{*system, device_memory, 32, 1ULL << 31, big_page_bits};
+    Tegra::MemoryManager second{*system, device_memory, 32, 1ULL << 31, big_page_bits};
+    first.BindRasterizer(&rasterizer);
+    second.BindRasterizer(&rasterizer);
+    constexpr GPUVAddr gpu = 0x4000'0000;
+    constexpr DAddr device_a = 0x1000'0000;
+    constexpr DAddr device_b = 0x2000'0000;
+    const u64 big_page = 1ULL << big_page_bits;
+    first.Map(gpu, device_a, big_page, Tegra::PTEKind::PITCH, true);
+    second.Map(gpu, device_b, big_page, Tegra::PTEKind::PITCH, true);
+    for (u64 offset = 0; offset < big_page; offset += 0x1000) {
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            REQUIRE(first.GpuToCpuAddress(gpu + offset + 7) == device_a + offset + 7);
+            REQUIRE(second.GpuToCpuAddress(gpu + offset + 9) == device_b + offset + 9);
+        }
+    }
+    first.Map(gpu, device_b, big_page, Tegra::PTEKind::PITCH, true);
+    REQUIRE(first.GpuToCpuAddress(gpu + 7) == device_b + 7);
+    first.MapSparse(gpu, big_page, true);
+    REQUIRE_FALSE(first.GpuToCpuAddress(gpu + 7));
+    first.Unmap(gpu, big_page);
+    first.Map(gpu, device_a, 0x1000, Tegra::PTEKind::PITCH, false);
+    REQUIRE(first.GpuToCpuAddress(gpu + 0xfff) == device_a + 0xfff);
+    REQUIRE_FALSE(first.GpuToCpuAddress(gpu + 0x1000));
+    first.Map(gpu, device_b, 0x1000, Tegra::PTEKind::PITCH, false);
+    REQUIRE(first.GpuToCpuAddress(gpu + 0xfff) == device_b + 0xfff);
+    first.Unmap(gpu, 0x1000);
+    REQUIRE_FALSE(first.GpuToCpuAddress(gpu + 7));
+    REQUIRE(second.GpuToCpuAddress(gpu + 7) == device_b + 7);
+}
+
 TEST_CASE("Kept device blocks go back to the allocator when it runs out", "[memory_manager]") {
     Core::DeviceMemory physical;
     Tegra::MaxwellDeviceMemoryManager device_memory{physical};

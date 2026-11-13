@@ -24,6 +24,7 @@
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/renderer_vulkan/vk_upload_reorder_check.h"
 #include "video_core/surface.h"
+#include "video_core/vertex_input_cache.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -423,6 +424,9 @@ private:
     VkIndexType bound_index_type = VK_INDEX_TYPE_UINT32;
     u64 bound_index_epoch = 0;
     bool bound_index_valid = false;
+
+    VideoCommon::VertexBufferBindingCache<VkBuffer, VideoCommon::NUM_VERTEX_BUFFERS>
+        bound_vertex_buffers;
 
     Nx2ListSlots nx2_list_slots;
 };

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <array>
 #include <bit>
@@ -321,6 +322,20 @@ public:
 
     /// Track deferred query results on early-download pages until their callback lands.
     [[nodiscard]] bool NoteReportPending(DAddr device_addr, u64 size);
+
+    /// Lock-free rejection only: every page touched by a report must be outside these bounds.
+    [[nodiscard]] bool MayBeReadBackRange(DAddr device_addr, u64 size) const noexcept {
+        if (size == 0) {
+            return false;
+        }
+        if (size - 1 > ~DAddr{0} - device_addr) {
+            return true;
+        }
+        const DAddr first = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
+        const DAddr last = Common::AlignDown(device_addr + size - 1, Core::DEVICE_PAGESIZE);
+        return last >= read_back_first.load(std::memory_order_acquire) &&
+               first <= read_back_last.load(std::memory_order_acquire);
+    }
     void FinishReport(DAddr device_addr, u64 size);
 
     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
@@ -850,6 +865,7 @@ private:
         u64 draw_deletions{}; ///< buffer_deletions when the previous draw began
         u64 sync_serial{};    ///< Nx2FastDraw::SyncSerial then
         u64 host_serial{};    ///< MemoryManager::HostPointerSerial then
+        const Tegra::MemoryManager* gpu_memory{};
         u64 kept{};
         u64 streamed_binds{};
         u64 verified{};
@@ -1204,6 +1220,8 @@ private:
         return enabled;
     }
     std::vector<ReadBackPage> read_back_pages; ///< Sorted by page
+    std::atomic<DAddr> read_back_first{~DAddr{0}};
+    std::atomic<DAddr> read_back_last{0};
     struct PendingReport {
         DAddr addr;
         u64 size;

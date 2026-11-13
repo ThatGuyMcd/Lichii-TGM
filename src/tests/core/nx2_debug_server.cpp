@@ -15,6 +15,7 @@
 #include "core/core.h"
 #include "core/debugger/nx2_debug_server.h"
 #include "core/debugger/nx2_debug_tools.h"
+#include "core/debugger/nx2_present_fence_history.h"
 #include "core/device_memory.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/kernel.h"
@@ -89,6 +90,75 @@ TEST_CASE("Debug server endpoints are loopback only", "[core][nx2_debug_server]"
     REQUIRE_FALSE(Core::Nx2Debug::ParseEndpoint("127.0.0.1:", error));
     REQUIRE_FALSE(Core::Nx2Debug::ParseEndpoint("127.0.0.1:70000", error));
     REQUIRE_FALSE(Core::Nx2Debug::ParseEndpoint("12ab", error));
+}
+
+TEST_CASE("Fence history rejects stale identities and timestamps", "[core][nx2_debug_server][fence_history]") {
+    Core::PresentFenceHistory<1> history;
+    CHECK_FALSE(history.Read(0, 0));
+    CHECK_FALSE(history.Read(1, 100));
+    history.Record(1, 100, 45);
+    CHECK(history.Read(1, 100) == 45);
+    CHECK_FALSE(history.Read(1, 101));
+    history.Record(2, 200, 90);
+    CHECK_FALSE(history.Read(1, 100));
+    CHECK(history.Read(2, 200) == 90);
+}
+
+TEST_CASE("Concurrent fence history overwrites cannot mix two presents", "[core][nx2_debug_server][fence_history]") {
+    Core::PresentFenceHistory<1> history;
+    std::atomic<u64> published{};
+    std::atomic<bool> done{}, correct{true};
+    constexpr u64 Last = 20000;
+    constexpr u64 Mask = 0xA5A5A5A5;
+    std::jthread writer([&] {
+        for (u64 frame = 1; frame <= Last; ++frame) {
+            history.Record(frame, frame * 1000, frame ^ Mask);
+            published.store(frame, std::memory_order_release);
+        }
+        done.store(true, std::memory_order_release);
+    });
+    std::jthread reader([&] {
+        do {
+            const auto frame = published.load(std::memory_order_acquire);
+            if (const auto sample = history.Read(frame, frame * 1000); sample && *sample != (frame ^ Mask)) {
+                correct.store(false, std::memory_order_relaxed);
+            }
+        } while (!done.load(std::memory_order_acquire));
+    });
+    writer.join();
+    reader.join();
+    CHECK(correct.load());
+    CHECK(history.Read(Last, Last * 1000) == (Last ^ Mask));
+}
+
+TEST_CASE("Frame-time fence metrics count only completed matching presents", "[core][nx2_debug_server][fence_history]") {
+    auto& ring = Core::g_nx2_present_times_ns;
+    constexpr u64 First = 2 * 4096 + 1000;
+    std::array<u64, 3> original{};
+    for (size_t i = 0; i < original.size(); ++i) original[i] = ring[(First + i) % ring.size()].load();
+    SCOPE_EXIT {
+        for (size_t i = 0; i < original.size(); ++i) ring[(First + i) % ring.size()].store(original[i]);
+    };
+    ring[First % ring.size()] = 10'000'000;
+    ring[(First + 1) % ring.size()] = 20'000'000;
+    ring[(First + 2) % ring.size()] = 30'000'000;
+    Core::g_nx2_present_fences.Record(First, 10'000'000, 1'000'000);
+    Core::g_nx2_present_fences.Record(First + 1, 20'000'000, 3'000'000);
+    const auto read = [] {
+        return Core::Nx2Debug::ReadFrameTimes(First - 1, First + 2, 1, 30'000'000, 60.0);
+    };
+    const auto valid = read();
+    CHECK(valid["frames"] == 2);
+    CHECK(valid["fence_samples"] == 2);
+    CHECK(valid["fence_mean"] == 2.0);
+    CHECK(valid["fence_max"] == 3.0);
+    // A pending present has no completed fence sample; an overwritten sample must not count.
+    Core::g_nx2_present_fences.Record(First + 1 + ring.size(), 99'000'000, 99'000'000);
+    const auto overwritten = read();
+    CHECK(overwritten["frames"] == 2);
+    CHECK(overwritten["fence_samples"] == 1);
+    CHECK(overwritten["fence_mean"] == 1.0);
+    CHECK(overwritten["fence_max"] == 1.0);
 }
 
 TEST_CASE("Debug frame times measure intervals and retain the ring tail", "[core][nx2_debug_server]") {

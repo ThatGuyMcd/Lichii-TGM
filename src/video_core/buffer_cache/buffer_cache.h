@@ -1128,6 +1128,8 @@ void BufferCache<P>::NoteReadBack(DAddr begin, DAddr end, bool gpu_modified) {
                     it = std::ranges::lower_bound(read_back_pages, page, {}, &ReadBackPage::page);
                 }
                 it = read_back_pages.insert(it, ReadBackPage{.page = page, .written = true});
+                read_back_first.store(read_back_pages.front().page, std::memory_order_release);
+                read_back_last.store(read_back_pages.back().page, std::memory_order_release);
             }
             if (!it->written) {
                 // Nothing new since its last read.
@@ -1149,8 +1151,13 @@ void BufferCache<P>::NoteReadBack(DAddr begin, DAddr end, bool gpu_modified) {
 template <class P>
 bool BufferCache<P>::NoteReportPending(DAddr device_addr, u64 size) {
     if constexpr (!IS_OPENGL && USE_MEMORY_MAPS) {
+        if (size == 0 || size - 1 > ~DAddr{0} - device_addr) {
+            return false;
+        }
         const DAddr page = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
-        if (std::ranges::binary_search(read_back_pages, page, {}, &ReadBackPage::page)) {
+        const DAddr last = Common::AlignDown(device_addr + size - 1, DEVICE_PAGESIZE);
+        const auto found = std::ranges::lower_bound(read_back_pages, page, {}, &ReadBackPage::page);
+        if (found != read_back_pages.end() && found->page <= last) {
             pending_reports.push_back({device_addr, size, false});
             return true;
         }
@@ -2225,10 +2232,12 @@ void BufferCache<P>::BeginGraphicsUniforms(const Nx2FastDraw::Delta* delta) {
     const u64 host_serial = gpu_memory != nullptr ? gpu_memory->HostPointerSerial() : 0;
     const bool known = delta != nullptr && !delta->no_uniform_keeps && !keep.memory_writes_lost &&
                        keep.draw_deletions == buffer_deletions &&
-                       keep.sync_serial == sync_serial && keep.host_serial == host_serial;
+                       keep.sync_serial == sync_serial && keep.host_serial == host_serial &&
+                       keep.gpu_memory == gpu_memory;
     keep.draw_deletions = buffer_deletions;
     keep.sync_serial = sync_serial;
     keep.host_serial = host_serial;
+    keep.gpu_memory = gpu_memory;
     if (!known) {
         keep.clean = {};
     }

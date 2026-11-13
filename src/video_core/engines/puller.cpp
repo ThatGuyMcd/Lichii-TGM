@@ -311,7 +311,12 @@ void MaybeReleaseFences(DmaPusher& dma_pusher, Puller::PendingAcquire& acquire) 
         return;
     }
     acquire.fences_released = true;
-    OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->ReleaseFences(); }, FenceWrites);
+    OnBack(
+        [rasterizer = dma_pusher.rasterizer] {
+            rasterizer->FlushCommands();
+            rasterizer->ReleaseFences();
+        },
+        FenceWrites);
 }
 
 // Logs once an acquire that waits for more than 2 s. `current`: the word as read after a drain,

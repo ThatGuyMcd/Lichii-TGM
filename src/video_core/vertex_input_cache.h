@@ -12,6 +12,50 @@
 
 namespace VideoCommon {
 
+/// Vertex buffers still bound in the current command buffer. Single-binding commands invalidate
+/// their slot; submission and external state changes are represented by the recording epoch.
+template <typename Handle, size_t MaxBindings>
+class VertexBufferBindingCache {
+public:
+    [[nodiscard]] bool Matches(size_t index, Handle buffer, u64 offset, u64 size, u64 stride,
+                               u64 epoch) const {
+        if (index >= slots.size()) {
+            return false;
+        }
+        const Slot& slot = slots[index];
+        return slot.valid && slot.epoch == epoch && slot.buffer == buffer &&
+               slot.offset == offset && slot.size == size && slot.stride == stride;
+    }
+
+    [[nodiscard]] bool Update(size_t index, Handle buffer, u64 offset, u64 size, u64 stride,
+                              u64 epoch) {
+        if (index >= slots.size()) {
+            return false;
+        }
+        Slot& slot = slots[index];
+        const bool unchanged = Matches(index, buffer, offset, size, stride, epoch);
+        slot = {buffer, offset, size, stride, epoch, true};
+        return unchanged;
+    }
+
+    void Invalidate(size_t index) {
+        if (index < slots.size()) {
+            slots[index].valid = false;
+        }
+    }
+
+private:
+    struct Slot {
+        Handle buffer{};
+        u64 offset{};
+        u64 size{};
+        u64 stride{};
+        u64 epoch{};
+        bool valid{};
+    };
+    std::array<Slot, MaxBindings> slots{};
+};
+
 /// The registers RasterizerVulkan::UpdateVertexInput builds a dynamic vertex input state from:
 /// every attribute's format word, every binding's stride, divisor and instancing, the bindings the
 /// buffer cache repacks, and how many of each the device takes. The build reads nothing else, so

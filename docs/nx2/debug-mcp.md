@@ -158,11 +158,14 @@ server is on but idle, its thread sleeps in `epoll`/IOCP.
 interruptible on shutdown like `status`. It measures intervals between guest presents inside
 that window, not display scanout or GPU execution time. `frames` counts those intervals;
 `mean_ms`, `fps` (1000 / mean), `p50_ms`, `p90_ms`, `p99_ms`, `min_ms`, `max_ms` describe them.
+`fence_samples` counts completed presents with a matching fence-wait record; `fence_mean`
+and `fence_max` measure that present's fence-wait phase in milliseconds. Pending or
+overwritten records are omitted. These are CPU wait durations, not GPU hardware counters.
 Percentiles interpolate between sorted samples. `vsync_buckets` gives fractions (0 to 1) under
 keys `1`, `2`, `3`, `4+`, using boundaries 1.5, 2.5 and 3.5 refresh intervals (`refresh_hz`
 defaults to 60 and must be positive). `stutters` counts intervals strictly above twice the
 median. `intervals_ms` contains the last up to 120 intervals in chronological order, rounded
-to 0.1 ms. With fewer than two presents, statistics are zero and the interval list is empty.
+to 0.1 ms. With fewer than two presents, interval statistics are zero and the interval list is empty.
 Only available samples from the 4096-timestamp ring are used; overflow sets `truncated: true`.
 For example: `{"method":"frame_times","params":{"seconds":5,"refresh_hz":60}}`.
 

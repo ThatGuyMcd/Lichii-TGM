@@ -9,6 +9,35 @@
 
 // Ported from jpkto/Lichii e7581fa9f6 (src/tests/video_core/draw_reuse.cpp).
 
+TEST_CASE("Vertex buffer bind reuse requires every field and the recording epoch",
+          "[video_core][vertex_input_cache]") {
+    VideoCommon::VertexBufferBindingCache<u64, 32> cache;
+    CHECK_FALSE(cache.Matches(7, 10, 32, 128, 16, 4));
+    // Comparison alone cannot publish a binding if the subsequent command enqueue fails.
+    CHECK_FALSE(cache.Matches(7, 10, 32, 128, 16, 4));
+    CHECK_FALSE(cache.Update(7, 10, 32, 128, 16, 4));
+    CHECK(cache.Matches(7, 10, 32, 128, 16, 4));
+    CHECK(cache.Update(7, 10, 32, 128, 16, 4));
+    CHECK_FALSE(cache.Update(7, 11, 32, 128, 16, 4));
+    CHECK_FALSE(cache.Update(7, 11, 64, 128, 16, 4));
+    CHECK_FALSE(cache.Update(7, 11, 64, 256, 16, 4));
+    CHECK_FALSE(cache.Update(7, 11, 64, 256, 32, 4));
+    CHECK(cache.Update(7, 11, 64, 256, 32, 4));
+    CHECK_FALSE(cache.Update(7, 11, 64, 256, 32, 5));
+    CHECK(cache.Update(7, 11, 64, 256, 32, 5));
+    CHECK_FALSE(cache.Update(8, 11, 64, 256, 32, 5));
+    cache.Invalidate(7);
+    CHECK_FALSE(cache.Update(7, 11, 64, 256, 32, 5));
+    CHECK(cache.Update(8, 11, 64, 256, 32, 5));
+    CHECK(cache.Update(7, 11, 64, 256, 32, 5));
+    // An initially null binding still needs its first command, including at epoch zero.
+    CHECK_FALSE(cache.Update(0, 0, 0, 0, 0, 0));
+    CHECK(cache.Update(0, 0, 0, 0, 0, 0));
+    CHECK_FALSE(cache.Update(32, 11, 64, 256, 32, 5));
+    cache.Invalidate(32);
+    CHECK(cache.Update(7, 11, 64, 256, 32, 5));
+}
+
 TEST_CASE("Vertex input states are found by every register they are built from",
           "[video_core][vertex_input_cache]") {
     struct State {

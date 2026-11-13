@@ -1043,10 +1043,10 @@ TEST_CASE("Background prebuilds hold their driver stages to the budget by the re
     // for a budget of 100: only one driver stage may run at a time.
     ShaderJobScheduler scheduler{Config(4, 4, 100)};
     HeavyPipeline::Counters counters;
-    HeavyPrebuild prebuild{scheduler, 1 << 20};
+    HeavyPrebuild prebuild{scheduler};
     for (int key = 0; key < 8; ++key) {
         REQUIRE(prebuild.Add(
-            key, 1, 0, 1, [&counters] { return std::make_unique<HeavyPipeline>(counters, 80); }));
+            key, 0, 1, [&counters] { return std::make_unique<HeavyPipeline>(counters, 80); }));
     }
     prebuild.Batch().Wait();
     REQUIRE(counters.built == 8);
@@ -1057,9 +1057,9 @@ TEST_CASE("Light driver stages still run side by side", "[video_core][shader_job
     ShaderJobScheduler scheduler{Config(4, 4, 100)};
     HeavyPipeline::Counters counters;
     Gate gate;
-    HeavyPrebuild prebuild{scheduler, 1 << 20};
+    HeavyPrebuild prebuild{scheduler};
     for (int key = 0; key < 4; ++key) {
-        REQUIRE(prebuild.Add(key, 1, 0, 1, [&counters, &gate] {
+        REQUIRE(prebuild.Add(key, 0, 1, [&counters, &gate] {
             return std::make_unique<HeavyPipeline>(counters, 10, &gate);
         }));
     }
@@ -1076,15 +1076,15 @@ TEST_CASE("A draw waiting for a heavy prebuild builds it past the budget",
     ShaderJobScheduler scheduler{Config(2, 2, 100)};
     HeavyPipeline::Counters counters;
     Gate gate;
-    HeavyPrebuild prebuild{scheduler, 1 << 20};
-    REQUIRE(prebuild.Add(0, 1, 0, 1,
+    HeavyPrebuild prebuild{scheduler};
+    REQUIRE(prebuild.Add(0, 0, 1,
                          [&] { return std::make_unique<HeavyPipeline>(counters, 80, &gate); }));
     while (counters.active != 1) {
         std::this_thread::sleep_for(1ms);
     }
     // The second one is held back by the first: 80 + 80 > 100.
     REQUIRE(
-        prebuild.Add(1, 1, 0, 1, [&] { return std::make_unique<HeavyPipeline>(counters, 80); }));
+        prebuild.Add(1, 0, 1, [&] { return std::make_unique<HeavyPipeline>(counters, 80); }));
     std::this_thread::sleep_for(50ms);
     REQUIRE(counters.active == 1);
     // A draw needs it now: it builds at once, with the first still running.
@@ -1136,9 +1136,9 @@ TEST_CASE("A prebuild records its driver stage in the journal",
     {
         ShaderJobScheduler scheduler{Config(1, 1)};
         Vulkan::DriverBuildJournal journal{base, "driver 1", 2, "pipeline"};
-        Vulkan::ScheduledPrebuild<int, JournalProbePipeline> prebuild{scheduler, 100};
+        Vulkan::ScheduledPrebuild<int, JournalProbePipeline> prebuild{scheduler};
         REQUIRE(prebuild.Add(
-            1, 1, 0, 0,
+            1, 0, 0,
             [&] {
                 return std::make_unique<JournalProbePipeline>(base.string() + ".inflight", seen);
             },

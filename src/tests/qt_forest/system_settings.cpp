@@ -61,7 +61,7 @@ private slots:
             QCOMPARE(decoded->entries[i].value, entries[i].value);
         }
         const auto original = Settings::values.volume.ToString();
-        for (const auto& invalid : {
+        for (const auto& invalid : std::vector<QString>{
                  QStringLiteral("LX99.aud.volume=1"), QStringLiteral("LX1.aud.broken"),
                  QStringLiteral("LX1z.aud.////"),
                  QStringLiteral("LX1z.aud.") + QString::fromLatin1(QByteArray::fromHex("7fffffff").toBase64()),

@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <optional>
+#include <set>
 
 #include <filesystem>
 #include <QElapsedTimer>
@@ -294,10 +295,13 @@ private:
 
     bool LoadROM(const QString& filename, Service::AM::FrontendAppletParameters params);
     void BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
-                  StartGameType with_config = StartGameType::Normal);
+                  StartGameType with_config = StartGameType::Normal,
+                  bool allow_recommended_settings_prompt = true);
     void BootGameFromList(const QString& filename, StartGameType with_config);
     void ShutdownGame();
-    void TerminateEmulationThread();
+    /// Ends the process when the emulation thread is still running: called once its teardown can
+    /// no longer be waited for. Does not return in that case.
+    void AbandonEmulationThread();
 
     void SetDiscordEnabled(bool state);
     void LoadAmiibo(const QString& filename);
@@ -473,8 +477,7 @@ private slots:
     void OnEmulationStopped();
     void OnEmulationStopTimeExpired();
     void OnEmulationStopTimeout();
-    /// True while the emulation thread's teardown still makes progress (Common::ShutdownProgress
-    /// moved since the last call), for at most MaxEmuThreadShutdownMs after it was asked to stop.
+    /// True while teardown has been silent for less than 60 seconds and is under 180 seconds total.
     bool EmulationShutdownProgressing();
 
 #ifdef ENABLE_UPDATE_CHECKER
@@ -549,6 +552,7 @@ private:
 #endif
 
     MultiplayerState* multiplayer_state = nullptr;
+    std::set<u64> asked_recommended_settings;
 
     GRenderWindow* render_window = nullptr;
     GameList* game_list = nullptr;
@@ -556,6 +560,7 @@ private:
     QTimer shutdown_timer;
     QTimer emu_terminate_timer;
     QElapsedTimer emu_force_stop_clock;
+    QElapsedTimer emu_progress_clock;
     u64 shutdown_progress_seen{};
     OverlayDialog* shutdown_dialog{};
     PerformanceOverlay* perf_overlay = nullptr;

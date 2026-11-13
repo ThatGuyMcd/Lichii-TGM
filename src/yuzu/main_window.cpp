@@ -16,6 +16,7 @@
 #include <boost/algorithm/string/split.hpp>
 #include "common/fs/path_util.h"
 #include "common/settings.h"
+#include "common/game_presets.h"
 #include "common/settings_enums.h"
 #include "common/shutdown_progress.h"
 #include "frontend_common/settings_generator.h"
@@ -87,7 +88,11 @@
 #include <QStyleHints>
 #endif
 
+#include <QAbstractButton>
 #include <QActionGroup>
+#include <QDialogButtonBox>
+#include <QLabel>
+#include <QVBoxLayout>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QDesktopServices>
@@ -357,9 +362,7 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 constexpr int default_mouse_hide_timeout = 2500;
 constexpr int default_input_update_timeout = 1;
 constexpr int EmuThreadStopTimeoutMs = 10'000;
-// A teardown that keeps making progress (Common::ShutdownProgress) is waited for this long at
-// most before its thread is terminated.
-constexpr qint64 MaxEmuThreadShutdownMs = 180'000;
+// Allow long teardown steps, with a fixed overall deadline.
 
 constexpr size_t CopyBufferSize = 1_MiB;
 
@@ -383,6 +386,50 @@ constexpr std::array<std::pair<u32, const char*>, 5> default_game_icon_sizes{
     std::make_pair(128, QT_TRANSLATE_NOOP("MainWindow", "Large (128x128)")),
     std::make_pair(256, QT_TRANSLATE_NOOP("MainWindow", "Full Size (256x256)")),
 };
+
+QString DescribeRecommendedSettings(const Settings::GamePreset& preset) {
+    const auto labels = ConfigurationShared::InitializeTranslations(nullptr);
+    const auto enums = ConfigurationShared::ComboboxEnumeration(nullptr);
+    // The graphics configuration populates VSync choices separately from the shared translations.
+    enums->emplace(Settings::EnumMetadata<Settings::VSyncMode>::Index(),
+                   ConfigurationShared::ComboboxTranslations{
+                       {static_cast<u32>(Settings::VSyncMode::Immediate),
+                        QCoreApplication::translate("MainWindow", "Immediate")},
+                       {static_cast<u32>(Settings::VSyncMode::Mailbox), QStringLiteral("Mailbox")},
+                       {static_cast<u32>(Settings::VSyncMode::Fifo), QStringLiteral("FIFO")},
+                       {static_cast<u32>(Settings::VSyncMode::FifoRelaxed),
+                        QStringLiteral("FIFO Relaxed")}});
+    QStringList descriptions;
+    for (const auto& recommendation : preset.settings) {
+        const auto* setting = Settings::values.linkage.by_key.at(recommendation.key);
+        QString label = QString::fromStdString(recommendation.key);
+        if (const auto it = labels->find(setting->Id()); it != labels->end() &&
+            !it->second.first.isEmpty()) {
+            label = it->second.first;
+        }
+        if (label.endsWith(QLatin1Char(':'))) {
+            label.chop(1);
+        }
+        QString value = QString::fromStdString(recommendation.value);
+        if (setting->IsEnum()) {
+            if (const auto it = enums->find(setting->EnumIndex()); it != enums->end()) {
+                const auto enum_value = static_cast<u32>(std::stoul(recommendation.value));
+                for (const auto& [id, text] : it->second) {
+                    if (id == enum_value) {
+                        value = text;
+                        break;
+                    }
+                }
+            }
+        } else if (setting->TypeId() == "bool") {
+            value = recommendation.value == "true"
+                        ? QCoreApplication::translate("MainWindow", "On")
+                        : QCoreApplication::translate("MainWindow", "Off");
+        }
+        descriptions.append(QStringLiteral("%1: %2").arg(label, value));
+    }
+    return descriptions.join(QLatin1Char('\n'));
+}
 
 QString GetTranslatedGameIconSize(size_t index) {
     return QCoreApplication::translate("MainWindow", default_game_icon_sizes[index].second);
@@ -563,7 +610,8 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         }
 
         if (!lp.filepath.empty()) {
-            BootGame(QString::fromStdString(lp.filepath), ApplicationAppletParameters());
+            BootGame(QString::fromStdString(lp.filepath), ApplicationAppletParameters(),
+                     StartGameType::Normal, false);
         } else if (lp.launch_setup) {
             LaunchFirmwareApplet(u64(Service::AM::AppletProgramId::Starter), std::nullopt);
         } else if (lp.launch_qlaunch) {
@@ -1659,6 +1707,14 @@ void MainWindow::ConnectWidgetEvents() {
 
     connect(game_list, &GameList::OpenPerGameGeneralRequested, this,
             &MainWindow::OnGameListOpenPerGameProperties);
+    connect(game_list, &GameList::ResetRecommendedSettingsPromptRequested, this,
+            [this](u64 program_id) {
+                UISettings::values.skipped_recommended_settings.erase(program_id);
+                asked_recommended_settings.erase(program_id);
+                const bool players_were_global = Settings::values.players.UsingGlobal();
+                config->SaveAllValues();
+                Settings::values.players.SetGlobal(players_were_global);
+            });
     connect(game_list, &GameList::LinkToRyujinxRequested, this, &MainWindow::OnLinkToRyujinx);
 
     connect(this, &MainWindow::UpdateInstallProgress, this, &MainWindow::IncrementInstallProgress);
@@ -2201,7 +2257,7 @@ bool MainWindow::ConfirmLowRamBoot(const QString& filename,
 }
 
 void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
-                          StartGameType type) {
+                          StartGameType type, bool allow_recommended_settings_prompt) {
 #ifdef LICHII_NX_TOOLS
     if (nx_metadata_write_in_progress) {
         QMessageBox::information(this, tr("NX Archive"),
@@ -2277,6 +2333,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     const auto loader =
         Loader::GetLoader(*QtCommon::system, v_file, params.program_id, params.program_index);
 
+    std::optional<QtConfig> per_game_config;
     if (loader != nullptr && loader->ReadProgramId(title_id) == Loader::ResultStatus::Success &&
         type == StartGameType::Normal) {
         // Load per game settings
@@ -2285,9 +2342,83 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         const auto config_file_name = title_id == 0
                                           ? Common::FS::PathToUTF8String(file_path.filename())
                                           : fmt::format("{:016X}", title_id);
-        QtConfig per_game_config(config_file_name, Config::ConfigType::PerGameConfig);
+        per_game_config.emplace(config_file_name, Config::ConfigType::PerGameConfig);
         QtCommon::system->HIDCore().ReloadInputDevices();
         QtCommon::system->ApplySettings();
+    }
+
+    const auto* preset = Settings::FindGamePreset(title_id);
+    if (preset != nullptr && allow_recommended_settings_prompt &&
+        !UISettings::values.skipped_recommended_settings.contains(title_id) &&
+        asked_recommended_settings.insert(title_id).second) {
+        const QString game_name = QString::fromUtf8(preset->name);
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Recommended %1 settings").arg(game_name));
+        QVBoxLayout layout(&dialog);
+        QLabel description(
+            tr("Use the recommended settings for %1?\n\n%2\n\n"
+               "Choose Yes to use them for this launch. Remember these settings saves them for "
+               "%1. Skipping this prompt uses your saved settings on future launches.")
+                .arg(game_name, DescribeRecommendedSettings(*preset)),
+            &dialog);
+        description.setWordWrap(true);
+        layout.addWidget(&description);
+
+        QCheckBox remember_settings(tr("Remember these settings"), &dialog);
+        remember_settings.setEnabled(per_game_config.has_value());
+        remember_settings.setToolTip(
+            tr("Choose Yes to save the recommended settings in this game's configuration."));
+        layout.addWidget(&remember_settings);
+        QCheckBox skip_prompt(tr("Skip this prompt next time"), &dialog);
+        layout.addWidget(&skip_prompt);
+
+        QDialogButtonBox buttons(QDialogButtonBox::Yes | QDialogButtonBox::No, &dialog);
+        buttons.button(QDialogButtonBox::No)->setDefault(true);
+        buttons.button(QDialogButtonBox::No)->setFocus();
+        connect(buttons.button(QDialogButtonBox::Yes), &QPushButton::clicked, &dialog,
+                [&dialog] { dialog.done(QDialog::Accepted); });
+        connect(buttons.button(QDialogButtonBox::No), &QPushButton::clicked, &dialog,
+                &QDialog::reject);
+        layout.addWidget(&buttons);
+
+        ControllerNavigation controller_navigation(QtCommon::system->HIDCore());
+        connect(&controller_navigation, &ControllerNavigation::TriggerKeyboardEvent, &dialog,
+                [&dialog](Qt::Key key) {
+                    if (key == Qt::Key_Down || key == Qt::Key_Right) {
+                        key = Qt::Key_Tab;
+                    } else if (key == Qt::Key_Up || key == Qt::Key_Left) {
+                        key = Qt::Key_Backtab;
+                    } else if (key == Qt::Key_Enter || key == Qt::Key_Return) {
+                        if (auto* button = qobject_cast<QAbstractButton*>(dialog.focusWidget())) {
+                            button->click();
+                            return;
+                        }
+                    }
+                    auto* target = dialog.focusWidget();
+                    QCoreApplication::postEvent(
+                        target ? target : &dialog,
+                        new QKeyEvent(QEvent::KeyPress, key, Qt::NoModifier));
+                });
+        QtCommon::TouchUi::PreparePage(&dialog);
+        const bool accepted = dialog.exec() == QDialog::Accepted;
+        controller_navigation.UnloadController();
+        if (skip_prompt.isChecked()) {
+            UISettings::values.skipped_recommended_settings.insert(title_id);
+        }
+        const bool players_were_global = Settings::values.players.UsingGlobal();
+        config->SaveAllValues();
+        Settings::values.players.SetGlobal(players_were_global);
+        LOG_INFO(Config, "Recommended settings for {:016X} accepted: {}", title_id, accepted);
+        if (Settings::ApplyGamePreset(Settings::values, title_id, accepted)) {
+            QtCommon::system->ApplySettings();
+            Settings::UpdateGPUAccuracy();
+            if (remember_settings.isChecked() && per_game_config) {
+                per_game_config->SaveAllValues();
+            }
+            LOG_INFO(Config,
+                     "Applied recommended settings for {:016X} after per-game configuration",
+                     title_id);
+        }
     }
 
     PrepareShaderPrecache(title_id, std::filesystem::path{filename.toStdU16String()});
@@ -2630,6 +2761,7 @@ void MainWindow::OnEmulationStopTimeExpired() {
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->ForceStop();
         emu_force_stop_clock.start();
+        emu_progress_clock.start();
         shutdown_progress_seen = Common::ShutdownProgress();
         emu_terminate_timer.setSingleShot(true);
         emu_terminate_timer.start(EmuThreadStopTimeoutMs);
@@ -2639,17 +2771,20 @@ void MainWindow::OnEmulationStopTimeExpired() {
 }
 
 bool MainWindow::EmulationShutdownProgressing() {
+    if (!emu_force_stop_clock.isValid()) {
+        return false;
+    }
     const u64 progress = Common::ShutdownProgress();
-    const bool moved = progress != shutdown_progress_seen;
-    shutdown_progress_seen = progress;
-    return moved && emu_force_stop_clock.isValid() &&
-           emu_force_stop_clock.elapsed() < MaxEmuThreadShutdownMs;
+    if (progress != shutdown_progress_seen) {
+        shutdown_progress_seen = progress;
+        emu_progress_clock.start();
+    }
+    return Common::CanWaitForShutdown(emu_force_stop_clock.elapsed(),
+                                      emu_progress_clock.elapsed());
 }
 
 void MainWindow::OnEmulationStopTimeout() {
-    // Terminating the thread mid-teardown can leave a lock it holds (the heap's, the driver's)
-    // taken for good, which froze the whole app. While the teardown still moves (pipeline caches
-    // written, pipelines destroyed), it gets another timeout.
+    // Long device and guest-memory teardown steps can be silent between progress reports.
     if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning() &&
         EmulationShutdownProgressing()) {
         LOG_INFO(Frontend, "Emulation thread still shutting down after {} ms, waiting",
@@ -2657,20 +2792,23 @@ void MainWindow::OnEmulationStopTimeout() {
         emu_terminate_timer.start(EmuThreadStopTimeoutMs);
         return;
     }
-    TerminateEmulationThread();
+    AbandonEmulationThread();
     OnEmulationStopped();
 }
 
-void MainWindow::TerminateEmulationThread() {
-    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
-        LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
-        // On Windows terminate() emits finished with the thread's mutex held, and
-        // OnEmulationStopped calls isRunning(), which takes it. Both callers run it afterwards.
-        disconnect(QtCommon::emu_thread.get(), &QThread::finished, this,
-                   &MainWindow::OnEmulationStopped);
-        QtCommon::emu_thread->terminate();
-        QtCommon::emu_thread->wait();
+void MainWindow::AbandonEmulationThread() {
+    if (!QtCommon::emu_thread || !QtCommon::emu_thread->isRunning()) {
+        return;
     }
+    LOG_CRITICAL(Frontend,
+                 "Emulation teardown stalled ({} ms total, {} ms since progress); ending the process",
+                 emu_force_stop_clock.elapsed(), emu_progress_clock.elapsed());
+    // Driver/allocator locks may belong to the stuck thread. Neither QThread::terminate nor
+    // DLL detach handlers can safely release them. Avoid joining the logger here as well.
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), EXIT_FAILURE);
+#endif
+    std::_Exit(EXIT_FAILURE);
 }
 
 void MainWindow::OnEmulationStopped() {
@@ -2791,7 +2929,7 @@ void MainWindow::ShutdownGame() {
         } while (QtCommon::emu_thread && QtCommon::emu_thread->isRunning() &&
                  EmulationShutdownProgressing());
     }
-    TerminateEmulationThread();
+    AbandonEmulationThread();
     OnEmulationStopped();
 }
 

@@ -18,6 +18,11 @@ inline void NoteShutdownProgress() noexcept {
     shutdown_progress.fetch_add(1, std::memory_order_relaxed);
 }
 
+/// Silent teardown steps get 60 seconds; continuing progress cannot extend the total past 180.
+[[nodiscard]] constexpr bool CanWaitForShutdown(s64 total_ms, s64 silent_ms) noexcept {
+    return total_ms >= 0 && silent_ms >= 0 && silent_ms < 60'000 && total_ms < 180'000;
+}
+
 [[nodiscard]] inline u64 ShutdownProgress() noexcept {
     return shutdown_progress.load(std::memory_order_relaxed);
 }

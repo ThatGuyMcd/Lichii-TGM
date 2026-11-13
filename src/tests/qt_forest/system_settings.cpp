@@ -13,7 +13,10 @@
 #include "common/fs/path_util.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "common/game_presets.h"
 #include "core/core.h"
+#include "qt_common/config/qt_config.h"
+#include "qt_common/config/uisettings.h"
 #include "qt_common/util/game.h"
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/configuration/shared_widget.h"
@@ -47,6 +50,48 @@ class SystemSettingsTests : public QObject {
     }
 
 private slots:
+    void gamePromptChoicesMigratePersistAndCanBeCleared() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous_path = Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir);
+        const auto previous_skipped = UISettings::values.skipped_recommended_settings;
+        const bool players_global = Settings::values.players.UsingGlobal();
+        SCOPE_EXIT {
+            Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir, previous_path);
+            UISettings::values.skipped_recommended_settings = previous_skipped;
+            Settings::values.players.SetGlobal(players_global);
+        };
+        Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir,
+                               std::filesystem::path{directory.path().toStdString()});
+        QFile legacy(directory.filePath(QStringLiteral("preset-choice.ini")));
+        QVERIFY(legacy.open(QIODevice::WriteOnly));
+        const QByteArray content = QByteArrayLiteral(
+            "[UI]\nskip_oot_settings_prompt=true\nskip_mkw_settings_prompt=true\n");
+        QCOMPARE(legacy.write(content), qint64{content.size()});
+        legacy.close();
+        {
+            QtConfig config("preset-choice");
+            QVERIFY(UISettings::values.skipped_recommended_settings.contains(
+                Settings::OcarinaOfTimeProgramId));
+            QVERIFY(UISettings::values.skipped_recommended_settings.contains(
+                Settings::MarioKartWorldProgramId));
+            UISettings::values.skipped_recommended_settings.erase(Settings::OcarinaOfTimeProgramId);
+            config.SaveAllValues();
+        }
+        {
+            QtConfig config("preset-choice");
+            QVERIFY(!UISettings::values.skipped_recommended_settings.contains(
+                Settings::OcarinaOfTimeProgramId));
+            QVERIFY(UISettings::values.skipped_recommended_settings.contains(
+                Settings::MarioKartWorldProgramId));
+            UISettings::values.skipped_recommended_settings.clear();
+            config.SaveAllValues();
+        }
+        {
+            QtConfig config("preset-choice");
+            QVERIFY(UISettings::values.skipped_recommended_settings.empty());
+        }
+    }
     void sharingCodesPreserveValuesAndRejectDamagedPayloads() {
         const std::vector<SettingsShare::Entry> entries{
             {"volume", "42"}, {"label", "space ; equal= and Unicode: \xc3\xa9"}};

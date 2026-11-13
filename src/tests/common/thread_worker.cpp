@@ -6,6 +6,7 @@
 #include <memory>
 
 #include <catch2/catch_test_macros.hpp>
+#include "common/shutdown_progress.h"
 
 #include "common/thread_worker.h"
 
@@ -54,4 +55,14 @@ TEST_CASE("Thread worker drain includes task capture destruction", "[common][thr
     workers.WaitForRequests();
     REQUIRE_FALSE(admitted_during_cleanup);
     REQUIRE_FALSE(returned_during_cleanup);
+}
+
+TEST_CASE("Shutdown waits for silent steps but retains a fixed deadline", "[common][shutdown]") {
+    CHECK(Common::CanWaitForShutdown(10'000, 10'000));
+    CHECK(Common::CanWaitForShutdown(100'000, 59'999));
+    CHECK_FALSE(Common::CanWaitForShutdown(100'000, 60'000));
+    CHECK(Common::CanWaitForShutdown(179'999, 0));
+    CHECK_FALSE(Common::CanWaitForShutdown(180'000, 0));
+    CHECK_FALSE(Common::CanWaitForShutdown(-1, 0));
+    CHECK_FALSE(Common::CanWaitForShutdown(0, -1));
 }

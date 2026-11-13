@@ -5572,6 +5572,7 @@ void MainWindow::UpdateWindowTitle(std::string_view title_name, std::string_view
     const auto window_title = override_title.empty() ? yuzu_title : override_title;
 
     if (title_name.empty()) {
+        running_window_title.clear();
         setWindowTitle(QString::fromStdString(window_title));
     } else {
         const auto run_title = [window_title, title_name, title_version, gpu_vendor]() {
@@ -5581,6 +5582,7 @@ void MainWindow::UpdateWindowTitle(std::string_view title_name, std::string_view
             return fmt::format("{} | {} | {} | {}", window_title, title_name, title_version,
                                gpu_vendor);
         }();
+        running_window_title = run_title;
         setWindowTitle(QString::fromStdString(run_title));
     }
 }
@@ -5958,6 +5960,11 @@ void MainWindow::UpdateStatusBar() {
         fpsText = fpsText % QStringLiteral(" (%1)").arg(fpsSuffix);
 
     game_fps_label->setText(fpsText);
+    if (!running_window_title.empty()) {
+        setWindowTitle(QString::fromStdString(
+            fmt::format("{} | {:.0f} FPS ({:.0f}%)", running_window_title,
+                        std::round(results.average_game_fps), results.emulation_speed * 100.0)));
+    }
 
     emu_frametime_label->setText(tr("Frame: %1 ms").arg(results.frametime * 1000.0, 0, 'f', 2));
     // EDEN_NX2_FPS_LOG=1 writes the status-bar numbers to the log twice a second, for
@@ -6050,7 +6057,7 @@ void MainWindow::UpdateFrameGenButton() {
 
     const Settings::FrameGenType selected_type = Settings::values.frame_gen_type.GetValue();
     // Once a game runs, NVIDIA DLSS Frame Generation that isn't this session's generator gives
-    // way to FSR3.
+    // way to built-in optical flow interpolation.
     const bool dlssg_fallback = selected_type == Settings::FrameGenType::Dlssg &&
                                 emulation_running &&
                                 frame_gen_state == VideoCore::FrameGenState::Running;
@@ -6116,7 +6123,7 @@ void MainWindow::UpdateFrameGenButton() {
 
     const QString fallback =
         dlssg_fallback ? tr(" NVIDIA DLSS Frame Generation can't run for this game or setup, so "
-                            "FSR3 runs instead; the log says why.")
+                            "built-in Optical Flow Interpolation runs instead; the log says why.")
                        : QString();
     if (frame_gen_generating) {
         frame_gen_status_button->setText(mode);

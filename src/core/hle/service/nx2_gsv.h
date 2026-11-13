@@ -585,7 +585,7 @@ private:
         } else {
             LOG_WARNING(Service, "nx2:gpu 211 map of unknown handle {}", handle);
         }
-        EventFor(slot)->Signal(system.Kernel());
+        SignalAfterGpu(slot);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
@@ -623,7 +623,9 @@ private:
     // console's graphics server completes unmap jobs behind the submitted work.
     void SignalAfterGpu(u32 slot) {
         auto* const event = EventFor(slot);
-        system.GPU().RunInOrder([this, event] { event->Signal(system.Kernel()); });
+        Nvidia::Devices::Nx2GpuMemoryRegistry::Defer([this, event] {
+            system.GPU().RunInOrder([this, event] { event->Signal(system.Kernel()); });
+        });
     }
 
     // Sub 102: word 2 is the memory handle 101 returned, word 3 the job slot. The game frees the
@@ -656,23 +658,27 @@ private:
                 // the GPU thread is past the work queued on it. GPU-written buffer data there is
                 // never downloaded on Switch 2 titles; a later flush would write it over the
                 // heap's new contents.
-                system.GPU().RunInOrder([this, handle, address, size,
-                                         devices = registry.DeviceRangesOf(address, size)] {
-                    auto* const rasterizer = system.GPU().Renderer().ReadRasterizer();
-                    bool gpu_written = false;
-                    for (const auto& [device, device_size] : devices) {
-                        gpu_written |= rasterizer->MustFlushRegion(
-                            device, device_size, VideoCommon::CacheType::BufferCache);
-                        system.GPU().InvalidateRegion(device, device_size);
-                    }
-                    // The first 32, then every 1000th.
-                    if (gpu_written && (++m_destroy_invalidations <= 32 ||
-                                        m_destroy_invalidations % 1000 == 0)) {
-                        LOG_INFO(Service,
-                                 "nx2:gpu 102 destroy of memory {} [{:#x}, +{:#x}] dropped "
-                                 "GPU-written buffer data before the heap reuses it ({} so far)",
-                                 handle, address, size, m_destroy_invalidations);
-                    }
+                Nvidia::Devices::Nx2GpuMemoryRegistry::Defer(
+                    [this, handle, address, size,
+                     devices = registry.DeviceRangesOf(address, size)]() mutable {
+                        system.GPU().RunInOrder([this, handle, address, size,
+                                                devices = std::move(devices)] {
+                            auto* const rasterizer = system.GPU().Renderer().ReadRasterizer();
+                            bool gpu_written = false;
+                            for (const auto& [device, device_size] : devices) {
+                                gpu_written |= rasterizer->MustFlushRegion(
+                                    device, device_size, VideoCommon::CacheType::BufferCache);
+                                system.GPU().InvalidateRegion(device, device_size);
+                            }
+                            // The first 32, then every 1000th.
+                            if (gpu_written && (++m_destroy_invalidations <= 32 ||
+                                                m_destroy_invalidations % 1000 == 0)) {
+                                LOG_INFO(Service,
+                                         "nx2:gpu 102 destroy of memory {} [{:#x}, +{:#x}] dropped "
+                                         "GPU-written buffer data before the heap reuses it ({} so far)",
+                                         handle, address, size, m_destroy_invalidations);
+                            }
+                        });
                 });
                 const auto leftovers = registry.UnmapMemory(address, size);
                 for (const auto& [gpu_address, range_size] : leftovers) {
@@ -787,7 +793,7 @@ private:
         } else {
             LOG_WARNING(Service, "nx2:gpu 214 unexpected region [{:#x}, {:#x}]", start, last);
         }
-        EventFor(slot)->Signal(system.Kernel());
+        SignalAfterGpu(slot);
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }

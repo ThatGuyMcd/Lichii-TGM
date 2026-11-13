@@ -228,11 +228,9 @@ public:
             PauseCounter();
         }
         AbandonCurrentQuery();
-        std::function<void()> func([this] {
-            amend_value = 0;
-            accumulation_value = 0;
-        });
-        rasterizer->SyncOperation(std::move(func));
+        if (sync_batcher == nullptr || !sync_batcher->QueueAccumulationReset(this)) {
+            rasterizer->SyncOperation([this] { ClearAccumulation(); });
+        }
         accumulation_since_last_sync = false;
         first_accumulation_checkpoint = (std::min)(first_accumulation_checkpoint, num_slots_used);
         last_accumulation_checkpoint = (std::max)(last_accumulation_checkpoint, num_slots_used);
@@ -306,7 +304,8 @@ public:
         // a frame in Ocarina). Queries complete in order on the queue, so waiting for the newest
         // one is enough before copying the range without the wait.
         const bool wait_on_last =
-            driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE;
+            driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE ||
+            driver_id == VK_DRIVER_ID_MESA_RADV;
 
         // Copy only the slots of the queries being synced and zero the slots between them. The
         // wide copy waits (WAIT_BIT) on every slot of the span; a slot in it no query ended

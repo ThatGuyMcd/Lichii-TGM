@@ -670,6 +670,13 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     const Core::SystemResultStatus load_result = state->system.Load(*state->emu_window, lp.filepath, load_parameters);
     switch (load_result) {
     case Core::SystemResultStatus::Success:
+        {
+            std::string game_title;
+            if (state->system.GetGameName(game_title) != Loader::ResultStatus::Success) {
+                game_title.clear();
+            }
+            state->emu_window->SetGameTitle(std::move(game_title));
+        }
         if (restarted) {
             std::error_code ec;
             std::filesystem::remove(RestartHandoffPath(), ec);

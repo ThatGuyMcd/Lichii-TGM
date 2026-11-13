@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -21,6 +22,7 @@
 #include "video_core/control/channel_state_cache.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/query_cache/query_base.h"
+#include "video_core/query_cache/query_stream.h"
 #include "video_core/query_cache/types.h"
 
 namespace VideoCore {
@@ -39,10 +41,13 @@ struct LookupData {
 };
 
 template <typename Traits>
-class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
+class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo>,
+                       public QuerySyncBatcher {
     using RuntimeType = typename Traits::RuntimeType;
 
 public:
+    bool QueueAccumulationReset(StreamerInterface* streamer) override;
+
     /// Device pages this cache ever registered objects on (InnerInvalidation skips the rest).
     VideoCommon::PageFilter page_filter;
 
@@ -274,6 +279,29 @@ protected:
     /// Before a report's bytes go to guest memory: a download for a guest read still on its way
     /// would write the GPU's older copy over them later (as MemoryManager::Write).
     void FinishReads(DAddr address, size_t size);
+
+    /// What a report's completion needs (CounterReport's operation).
+    struct ReportRecord {
+        bool is_synced;
+        StreamerInterface* streamer;
+        QueryBase* query_base;
+        QueryLocation query_location;
+        u8* pointer;
+        u8* pointer_timestamp;
+        DAddr cpu_addr;
+        GPUVAddr addr;
+        size_t asid;
+        QueryType counter_type;
+        std::optional<u64> split_entry;
+        bool mirrored;
+        u64 report_size;
+        bool report_noted;
+    };
+    /// A report's completion once the host query is in (without the async report's settle).
+    void RunReport(const ReportRecord& record);
+
+    struct OpBatch;
+    void AppendOp(const ReportRecord& report, StreamerInterface* reset = nullptr);
 
     ::Common::unordered_map<u64, ::Common::unordered_map<u32, QueryLocation>> cached_queries;
     std::mutex cache_mutex;

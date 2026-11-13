@@ -3073,6 +3073,11 @@ bool DriverCachesPipelines(const Device& device) {
     case VK_DRIVER_ID_NVIDIA_PROPRIETARY:
     case VK_DRIVER_ID_AMD_PROPRIETARY:
         return true;
+    case VK_DRIVER_ID_MESA_RADV: {
+        const char* disabled = std::getenv("MESA_SHADER_CACHE_DISABLE");
+        return disabled == nullptr || (std::string_view{disabled} != "true" &&
+                                       std::string_view{disabled} != "1");
+    }
     default:
         return false;
     }

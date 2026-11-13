@@ -47,6 +47,11 @@ public:
     /// Sets the title the titlebar timer prepared; call from the main thread.
     void ApplyPendingTitle();
 
+    /// Called on the main thread after the loader succeeds; the timer never reads the loader.
+    void SetGameTitle(std::string title) {
+        game_title = std::move(title);
+    }
+
     /// Returns if window is shown (not minimized)
     bool IsShown() const override;
 
@@ -57,6 +62,7 @@ public:
     void SetWindowIcon();
 
 protected:
+    std::string game_title;
     /// Called by WaitEvent when a key is pressed or released.
     void OnKeyEvent(int key, u8 state);
 

@@ -29,7 +29,8 @@ constexpr f32 UNLOADED_BASE_RETENTION = 0.75f;
 constexpr f32 CREDIT_EPSILON = 1.0e-4f;
 constexpr u32 MAX_PROBE_FAILURES = 4;
 
-constexpr auto STABILIZATION_DURATION = std::chrono::seconds(1);
+// Re-measure after a hitch without withholding generation for a full second (Fritchii #22).
+constexpr auto STABILIZATION_DURATION = std::chrono::milliseconds(250);
 constexpr auto PROBE_DURATION = std::chrono::seconds(1);
 constexpr auto DEFICIT_DURATION = std::chrono::seconds(1);
 constexpr auto PROBE_STEP_DELAY = std::chrono::milliseconds(250);

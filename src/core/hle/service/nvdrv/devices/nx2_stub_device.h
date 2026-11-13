@@ -49,6 +49,18 @@ constexpr bool Nx2RangeInside(u64 start, u64 size, u64 span_start, u64 span_size
            size <= span_size - (start - span_start);
 }
 
+template <typename Ranges>
+auto Nx2FindContainingDeviceRange(Ranges& ranges, u64 cpu_address, u64 size) {
+    auto it = ranges.upper_bound(std::pair{cpu_address, ~u64{0}});
+    while (it != ranges.begin()) {
+        --it;
+        if (Nx2RangeInside(cpu_address, size, it->first.first, it->first.second)) {
+            return it;
+        }
+    }
+    return ranges.end();
+}
+
 // Erases the device ranges of `ranges` (keyed by CPU start and size) that lie inside
 // [cpu_address, +size) and passes each to `release`. A game maps parts of one memory at offsets
 // (211), so the key a range was made under is rarely the span released later; ranges that reach
@@ -409,6 +421,10 @@ public:
     // Device (SMMU) address of a CPU range an address space mapped; used to present images.
     void RecordDeviceRange(u64 cpu_address, u64 size, u64 device_address) {
         std::scoped_lock lk{device_mutex};
+        if (const auto it = device_ranges.find(cpu_address);
+            it != device_ranges.end() && it->second.first >= size) {
+            return;
+        }
         device_ranges[cpu_address] = {size, device_address};
     }
 

@@ -110,6 +110,7 @@ add_library(video_core STATIC
     front_qmd.h
     frame_gen_choice.h
     present_frame_budget.h
+    sync_operation_batch.h
     gpu.cpp
     gpu.h
     gpu_timestamp.h

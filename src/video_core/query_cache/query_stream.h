@@ -19,10 +19,30 @@
 
 namespace VideoCommon {
 
+class StreamerInterface;
+
+/// Queues a streamer's accumulation reset with ordered query report records when supported.
+class QuerySyncBatcher {
+public:
+    virtual bool QueueAccumulationReset(StreamerInterface* streamer) = 0;
+
+protected:
+    ~QuerySyncBatcher() = default;
+};
+
 class StreamerInterface {
 public:
     explicit StreamerInterface(size_t id_) : id{id_}, dependence_mask{}, dependent_mask{} {}
     virtual ~StreamerInterface() = default;
+
+    /// Set by the owning query cache.
+    QuerySyncBatcher* sync_batcher{};
+
+    /// What ResetCounter's sync operation does (SamplesStreamer).
+    void ClearAccumulation() noexcept {
+        amend_value = 0;
+        accumulation_value = 0;
+    }
 
     virtual QueryBase* GetQuery(size_t id) = 0;
 

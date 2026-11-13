@@ -441,3 +441,15 @@ TEST_CASE("NX2 registry keeps no history unless the index check is on", "[video_
     registry.Unmap(0x8000, 0x1000, 213);
     REQUIRE(registry.Describe(0x8000, 0x1000) == "not mapped");
 }
+
+TEST_CASE("NX2 subrange reuse finds an older containing pool past a shorter range",
+          "[video_core][nx2_mapping]") {
+    using Service::Nvidia::Devices::Nx2FindContainingDeviceRange;
+    std::map<std::pair<u64, u64>, u64> ranges{
+        {{0x1000, 0x10000}, 0x100000}, {{0x4000, 0x1000}, 0x200000}};
+    const auto found = Nx2FindContainingDeviceRange(ranges, 0x8000, 0x1000);
+    REQUIRE(found != ranges.end());
+    REQUIRE(found->first.first == 0x1000);
+    REQUIRE(found->second + 0x8000 - found->first.first == 0x107000);
+    REQUIRE(Nx2FindContainingDeviceRange(ranges, 0x10000, 0x2000) == ranges.end());
+}

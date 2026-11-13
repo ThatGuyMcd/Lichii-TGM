@@ -31,6 +31,7 @@
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/sync_operation_batch.h"
 
 namespace VideoCommon {
 
@@ -80,7 +81,24 @@ public:
         // SignalFence moves the list into pending_operations: unguarded, the list was corrupted
         // and the fencing thread crashed walking it. Its own lock, held for no callbacks.
         std::scoped_lock lock{uncommitted_guard};
+        open_batch.reset();
         uncommitted_operations.emplace_back(std::move(func));
+    }
+
+    void AppendSyncOperation(void* owner, SyncBatchFactory factory, const void* record) {
+        std::scoped_lock lock{uncommitted_guard};
+        if (open_batch && batch_owner == owner && batch_factory == factory && batch_size < 1024) {
+            open_batch->Append(record);
+            ++batch_size;
+            return;
+        }
+        auto batch = factory(owner);
+        batch->Append(record);
+        uncommitted_operations.emplace_back([batch] { batch->Run(); });
+        open_batch = std::move(batch);
+        batch_owner = owner;
+        batch_factory = factory;
+        batch_size = 1;
     }
 
     void SignalFence(std::function<void()>&& func) {
@@ -116,6 +134,9 @@ public:
         }
         {
             std::scoped_lock lock{uncommitted_guard};
+            // The worker may start immediately after publication. No producer can retain a
+            // mutable batch across this boundary, including callbacks from other threads.
+            open_batch.reset();
             if (delay_fence) {
                 uncommitted_operations.emplace_back(std::move(func));
             }
@@ -481,6 +502,10 @@ private:
     // Vectors, not deques: MSVC's deque of std::function holds one element per block, so every
     // queued operation (one per query report, about 1000 a frame in busy scenes) allocated a block.
     using OperationList = std::vector<std::function<void()>>;
+    std::shared_ptr<SyncOperationBatch> open_batch; ///< Guarded by uncommitted_guard
+    void* batch_owner{};
+    SyncBatchFactory batch_factory{};
+    size_t batch_size{};
     OperationList uncommitted_operations;
     std::deque<OperationList> pending_operations;
     std::vector<OperationList> spare_operations; ///< Guarded by uncommitted_guard

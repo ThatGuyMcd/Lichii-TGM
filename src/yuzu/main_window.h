@@ -616,6 +616,7 @@ private:
 
     // Stores what suffix to add to the FPS counter, e.g. Unlocked.
     QString m_fpsSuffix{};
+    std::string running_window_title;
 
     UserDataMigrator user_data_migrator;
     std::unique_ptr<QtConfig> config;

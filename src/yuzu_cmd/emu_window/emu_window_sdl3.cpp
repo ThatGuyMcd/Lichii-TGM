@@ -165,6 +165,9 @@ bool EmuWindow_SDL3::IsOpen() const {
 
 void EmuWindow_SDL3::ApplyPendingTitle() {
     if (std::string* const title = pending_title.exchange(nullptr)) {
+        if (!game_title.empty()) {
+            *title += " | " + game_title;
+        }
         SDL_SetWindowTitle(render_window, title->c_str());
         delete title;
     }

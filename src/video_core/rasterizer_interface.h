@@ -20,6 +20,7 @@
 #include "video_core/gpu.h"
 #include "video_core/query_cache/types.h"
 #include "video_core/rasterizer_download_area.h"
+#include "video_core/sync_operation_batch.h"
 
 namespace Tegra {
 class MemoryManager;
@@ -103,6 +104,13 @@ public:
 
     /// Send an operation to be done after a certain amount of flushes.
     virtual void SyncOperation(std::function<void()>&& func) = 0;
+
+    virtual void AppendSyncOperation(void* owner, VideoCommon::SyncBatchFactory factory,
+                                     const void* record) {
+        auto batch = factory(owner);
+        batch->Append(record);
+        SyncOperation([batch] { batch->Run(); });
+    }
 
     /// Signal a GPU based syncpoint as a fence
     virtual void SignalSyncPoint(u32 value) = 0;

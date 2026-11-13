@@ -203,9 +203,19 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
         // The same CPU range is often mapped twice (at its own address and in a sparse region), so
         // reuse its SMMU mapping.
         Nx2DeviceRange range{};
+        bool subrange_of_existing = false;
         if (const auto it = nx2_device_ranges.find({cpu_address, size});
             it != nx2_device_ranges.end()) {
             range = it->second;
+        } else if (const auto containing = Nx2FindContainingDeviceRange(
+                       nx2_device_ranges, cpu_address, size);
+                   containing != nx2_device_ranges.end()) {
+            range = containing->second;
+            range.address += cpu_address - containing->first.first;
+            subrange_of_existing = true;
+        }
+        if (range.address != 0) {
+            // The parent retains ownership when a tile reuses part of its device range.
         } else if (session->has_preallocated_area && session->mapper->IsInBounds(cpu_address, size)) {
             range = {session->mapper->Map(cpu_address, size), true};
         } else {
@@ -236,8 +246,10 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
             }
         }
         device_address = range.address;
-        nx2_device_ranges[{cpu_address, size}] = range;
-        Nx2GpuMemoryRegistry::Get().RecordDeviceRange(cpu_address, size, device_address);
+        if (!subrange_of_existing) {
+            nx2_device_ranges[{cpu_address, size}] = range;
+            Nx2GpuMemoryRegistry::Get().RecordDeviceRange(cpu_address, size, device_address);
+        }
         asid = session->asid;
         if (!fresh) {
             process = std::make_shared<Kernel::KScopedAutoObject<Kernel::KProcess>>(

@@ -381,8 +381,8 @@ std::optional<Decoded> Decode(const QString& code, QString& error) {
     if (!match.captured(2).isEmpty()) {
         const auto decoded = QByteArray::fromBase64Encoding(
             pairs, QByteArray::Base64UrlEncoding | QByteArray::AbortOnBase64DecodingErrors);
-        if (!decoded || decoded->size() < 4 ||
-            qFromBigEndian<quint32>(decoded->constData()) > MaxDecodedBytes) {
+        if (!decoded || (*decoded).size() < 4 ||
+            qFromBigEndian<quint32>((*decoded).constData()) > MaxDecodedBytes) {
             error = Tr("This code is incomplete, damaged or too large.");
             return std::nullopt;
         }

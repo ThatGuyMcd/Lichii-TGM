@@ -73,6 +73,7 @@ add_executable(tests
     audio_core/hardware_audio_codec.cpp
     core/gpu_dirty_memory.cpp
     core/memory_acquire.cpp
+    core/device_kept_memory.cpp
     core/builtin_patches.cpp
     core/oot_ultrawide.cpp
     video_core/oot_ultrawide.cpp

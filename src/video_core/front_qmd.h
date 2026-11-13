@@ -81,13 +81,13 @@ public:
 
     /// The front, between commands and before QMD methods: takes the back's table over if the
     /// view lost it or signals wait, and the back has run everything sent.
-    void MaybeTakeOver(const GpuSplit& split, const Tegra::NativeQmdScheduler& back,
+    void MaybeTakeOver(GpuSplit& split, const Tegra::NativeQmdScheduler& back,
                        Nx2AcquireStats::QmdTakeOver where) {
         if (!Current() && split.Ran(split.Position())) [[unlikely]] {
             TakeOver(back, where);
         }
     }
-    void MaybeTakeOver(const GpuSplit& split, Nx2AcquireStats::QmdTakeOver where) {
+    void MaybeTakeOver(GpuSplit& split, Nx2AcquireStats::QmdTakeOver where) {
         MaybeTakeOver(split, back_table, where);
     }
 
@@ -157,7 +157,7 @@ public:
 
     /// LOAD_INLINE_QMD_DATA was just sent: running it, the back writes `qmd` to the QMD at
     /// `device`. Until then the front reads it from here (ReadDescriptor).
-    void NoteInlineWrite(const GpuSplit& split, u64 device, const Descriptor& qmd) {
+    void NoteInlineWrite(GpuSplit& split, u64 device, const Descriptor& qmd) {
         InlineWrite& written = inline_writes[inline_writes_count % inline_writes.size()];
         ++inline_writes_count;
         written.device = device;

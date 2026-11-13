@@ -53,7 +53,7 @@ u64 g_last_copy_writer{};
 
 /// Whether copy engine work sent so far may still be queued on the split's back. A new session
 /// starts the split's positions over: a position past the current one is from an older session.
-[[nodiscard]] bool CopyWritersPending(const VideoCommon::GpuSplit& split) {
+[[nodiscard]] bool CopyWritersPending(VideoCommon::GpuSplit& split) {
     if (g_last_copy_writer > split.Position()) {
         g_last_copy_writer = 0;
     }

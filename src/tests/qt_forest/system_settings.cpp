@@ -11,6 +11,7 @@
 #include <QTemporaryDir>
 #include <QtTest>
 #include "common/fs/path_util.h"
+#include "common/fs/profile_migration.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/game_presets.h"
@@ -51,16 +52,24 @@ class SystemSettingsTests : public QObject {
 
 private slots:
     void gamePromptChoicesMigratePersistAndCanBeCleared() {
+        try {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const auto previous_path = Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir);
+        const auto previous_root = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir);
         const auto previous_skipped = UISettings::values.skipped_recommended_settings;
         const bool players_global = Settings::values.players.UsingGlobal();
         SCOPE_EXIT {
             Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir, previous_path);
+            Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir, previous_root);
             UISettings::values.skipped_recommended_settings = previous_skipped;
             Settings::values.players.SetGlobal(players_global);
         };
+        QVERIFY(QDir(directory.path()).mkdir(QStringLiteral("profile")));
+        Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir,
+                               std::filesystem::path{directory.filePath(QStringLiteral("profile")).toStdString()});
+        Common::FS::ProfileMigration::MarkFresh(
+            std::filesystem::path{directory.filePath(QStringLiteral("profile.migration")).toStdString()});
         Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir,
                                std::filesystem::path{directory.path().toStdString()});
         QFile legacy(directory.filePath(QStringLiteral("preset-choice.ini")));
@@ -90,6 +99,9 @@ private slots:
         {
             QtConfig config("preset-choice");
             QVERIFY(UISettings::values.skipped_recommended_settings.empty());
+        }
+        } catch (const std::exception& error) {
+            QFAIL(error.what());
         }
     }
     void sharingCodesPreserveValuesAndRejectDamagedPayloads() {

@@ -216,6 +216,7 @@ add_executable(tests
     common/mapped_file.cpp
     common/page_table.cpp
     common/param_package.cpp
+    common/parent_of_member.cpp
     common/range_map.cpp
     common/ring_buffer.cpp
     common/scratch_buffer.cpp

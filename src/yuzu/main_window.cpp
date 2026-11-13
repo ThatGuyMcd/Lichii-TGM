@@ -126,6 +126,7 @@
 
 #include "qt_common/util/content.h"
 #include "qt_common/util/fs.h"
+#include "qt_common/util/game.h"
 #include "qt_common/util/meta.h"
 #include "qt_common/util/mod.h"
 #include "qt_common/util/path.h"
@@ -203,6 +204,10 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "video_core/pipeline_cache_files.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline.h"
+#include "video_core/vulkan_common/streamline_frame_gen.h"
+#endif
 
 #include <SDL3/SDL.h>
 
@@ -1134,6 +1139,12 @@ void MainWindow::InitializeWidgets() {
             [this](const QPoint& menu_location) {
                 QMenu context_menu;
                 for (auto const& [type, text] : ConfigurationShared::frame_gen_type_texts_map) {
+#ifndef EGLANTINE_STREAMLINE
+                    // Only builds with NVIDIA Streamline (Windows) have DLSS Frame Generation.
+                    if (type == Settings::FrameGenType::Dlssg) {
+                        continue;
+                    }
+#endif
                     const QString label = ConfigurationShared::TranslateMapText(translator, text);
                     context_menu.addAction(label, [this, type] {
                         Settings::values.frame_gen_type.SetValue(type);
@@ -2156,6 +2167,39 @@ bool MainWindow::SelectAndSetCurrentUser(
     return true;
 }
 
+bool MainWindow::ConfirmLowRamBoot(const QString& filename,
+                                   const Service::AM::FrontendAppletParameters& params) {
+    const auto ram = Common::GetHostRam();
+    if (!UISettings::values.show_low_ram_warning.GetValue() ||
+        !Common::IsBelowSwitch2RamMinimum(ram) ||
+        !Core::FindSwitch2Program(
+            *QtCommon::system,
+            Core::GetGameFileFromPath(QtCommon::vfs, filename.toUtf8().constData()),
+            params.program_id, params.program_index)) {
+        return true;
+    }
+
+    QMessageBox box(QMessageBox::Warning, tr("Available memory"),
+                    tr("This PC reports %1 GB of RAM. Switch 2 games may need more memory "
+                       "than is available on this system. Closing other applications can help.\n\n"
+                       "Continue loading the game?")
+                        .arg(static_cast<double>(ram.bytes) / 1_GiB, 0, 'g', 3),
+                    QMessageBox::NoButton, this);
+    QPushButton* const continue_button =
+        box.addButton(tr("Continue anyway"), QMessageBox::AcceptRole);
+    QPushButton* const cancel_button = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+    box.setDefaultButton(cancel_button);
+    box.setEscapeButton(cancel_button);
+    QCheckBox* const dont_show = new QCheckBox(tr("Don't show this again"), &box);
+    box.setCheckBox(dont_show);
+    box.exec();
+
+    if (dont_show->isChecked()) {
+        UISettings::values.show_low_ram_warning.SetValue(false);
+    }
+    return box.clickedButton() == continue_button;
+}
+
 void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
                           StartGameType type) {
 #ifdef LICHII_NX_TOOLS
@@ -2212,6 +2256,11 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     if (params.program_id == 0 ||
         params.program_id > static_cast<u64>(Service::AM::AppletProgramId::MaxProgramId)) {
         StoreRecentFile(filename); // Put the filename on top of the list
+    }
+
+    if (params.launch_type == Service::AM::LaunchType::FrontendInitiated &&
+        !ConfirmLowRamBoot(filename, params)) {
+        return;
     }
 
     // Save configurations
@@ -2466,6 +2515,10 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         title_name = Common::FS::PathToUTF8String(
             std::filesystem::path{Common::U16StringFromBuffer(filename.utf16(), filename.size())}
                 .filename());
+    }
+    // The name the user gave the game in Properties wins, as in the library.
+    if (auto custom_title = QtCommon::Game::ReadCustomTitle(title_id); !custom_title.empty()) {
+        title_name = std::move(custom_title);
     }
     const bool is_64bit = QtCommon::system->Kernel().ApplicationProcess()->Is64Bit();
     const auto instruction_set_suffix = is_64bit ? tr("(64-bit)") : tr("(32-bit)");
@@ -4469,7 +4522,22 @@ void MainWindow::OpenPerGameConfiguration(u64 title_id, const std::string& file_
 
     const auto result = dialog.exec();
 
+    // A rename only changes the shown name: no rescan of the library.
+    if (const auto renamed = dialog.RenamedTitle()) {
+        game_list->SetGameTitle(title_id, *renamed);
+    }
+    // The running game shows the new name in the window title too, also when the custom name was
+    // removed from a game that has no name of its own to show in the library.
+    if (dialog.TitleChanged() && emulation_running && title_id != 0 &&
+        title_id == QtCommon::system->GetApplicationProcessProgramID()) {
+        OnApplicationChanged(title_id);
+    }
+
     if (result != QDialog::Accepted && !UISettings::values.configuration_applied) {
+        // Artwork saved before a failed save of the rest stays saved after Cancel: show it.
+        if (UISettings::values.is_game_list_reload_pending.exchange(false)) {
+            OnGameListRefresh();
+        }
         Settings::RestoreGlobalState(QtCommon::system->IsPoweredOn());
         return;
     } else if (result == QDialog::Accepted) {
@@ -5453,11 +5521,22 @@ void MainWindow::OnApplicationChanged(u64 program_id) {
     std::string title_name;
     std::string title_version;
 
+    // The loader's name stays when the game has no control metadata (a NUP without an installed
+    // control record), as on boot.
+    if (QtCommon::system->GetGameName(title_name) != Loader::ResultStatus::Success) {
+        title_name.clear();
+    }
+
     const FileSys::PatchManager pm(program_id, QtCommon::system->GetFileSystemController(),
                                    QtCommon::system->GetContentProvider());
     if (const auto metadata = pm.GetControlMetadata(); metadata.first != nullptr) {
         title_version = metadata.first->GetVersionString();
-        title_name = metadata.first->GetApplicationName();
+        if (auto metadata_name = metadata.first->GetApplicationName(); !metadata_name.empty()) {
+            title_name = std::move(metadata_name);
+        }
+    }
+    if (auto custom_title = QtCommon::Game::ReadCustomTitle(program_id); !custom_title.empty()) {
+        title_name = std::move(custom_title);
     }
     if (title_name.empty()) {
         title_name = fmt::format("{:016X}", program_id);
@@ -5802,6 +5881,14 @@ void MainWindow::UpdateStatusBar() {
                                            static_cast<double>(frame_gen_ms)
                                      : 0.0;
     frame_gen_generating = frame_gen.generated_frames > frame_gen_frames;
+#ifdef EGLANTINE_STREAMLINE
+    // NVIDIA DLSS Frame Generation adds its frames after the renderer, at present.
+    if (Vulkan::Streamline::FrameGenActive()) {
+        const auto rates = Vulkan::Streamline::FrameGenRecentRates();
+        frame_gen_fps = std::max(rates.shown_fps - rates.real_fps, 0.0);
+        frame_gen_generating = rates.generating;
+    }
+#endif
     frame_gen_frames = frame_gen.generated_frames;
     frame_gen_state = frame_gen.state;
 
@@ -5853,11 +5940,22 @@ void MainWindow::UpdateStatusBar() {
     }
 
     QString fpsText = tr("Game: %1 FPS").arg(std::round(results.average_game_fps), 0, 'f', 0);
+    QString fpsSuffix = m_fpsSuffix;
+#ifdef EGLANTINE_STREAMLINE
+    if (Vulkan::Streamline::FrameGenActive()) {
+        QString frameGen = Vulkan::Streamline::FrameGenRecentRates().generating
+                               ? tr("DLSS FG")
+                               : tr("DLSS FG paused");
+        if (!fpsSuffix.isEmpty())
+            frameGen = frameGen % QStringLiteral(", ") % fpsSuffix;
+        fpsSuffix = frameGen;
+    }
+#endif
     if (frame_gen_fps >= 0.5) {
         fpsText = fpsText % tr(" + %1 generated").arg(std::round(frame_gen_fps), 0, 'f', 0);
     }
-    if (!m_fpsSuffix.isEmpty())
-        fpsText = fpsText % QStringLiteral(" (%1)").arg(m_fpsSuffix);
+    if (!fpsSuffix.isEmpty())
+        fpsText = fpsText % QStringLiteral(" (%1)").arg(fpsSuffix);
 
     game_fps_label->setText(fpsText);
 
@@ -5950,10 +6048,19 @@ void MainWindow::UpdateFrameGenButton() {
         return;
     }
 
-    const QString& type_text = ConfigurationShared::frame_gen_type_texts_map
-                                   .find(Settings::values.frame_gen_type.GetValue())
-                                   ->second;
-    const QString type = ConfigurationShared::TranslateMapText(translator, type_text).toUpper();
+    const Settings::FrameGenType selected_type = Settings::values.frame_gen_type.GetValue();
+    // Once a game runs, NVIDIA DLSS Frame Generation that isn't this session's generator gives
+    // way to FSR3.
+    const bool dlssg_fallback = selected_type == Settings::FrameGenType::Dlssg &&
+                                emulation_running &&
+                                frame_gen_state == VideoCore::FrameGenState::Running;
+    const Settings::FrameGenType shown_type =
+        dlssg_fallback ? Settings::FrameGenType::Fsr3 : selected_type;
+    const QString& type_text =
+        ConfigurationShared::frame_gen_type_texts_map.find(shown_type)->second;
+    const QString type = shown_type == Settings::FrameGenType::Dlssg
+                             ? QStringLiteral("DLSS-G")
+                             : ConfigurationShared::TranslateMapText(translator, type_text).toUpper();
     const u32 target_rate = Settings::values.frame_gen_target_rate.GetValue();
     const QString mode = target_rate == 0
                              ? tr("FG %1 %2X").arg(type).arg(Settings::FrameGenMultiplier())
@@ -5995,6 +6102,8 @@ void MainWindow::UpdateFrameGenButton() {
         unavailable = tr("LSFG needs Lossless.dll from Lossless Scaling in the \"lossless\" folder "
                          "of the user directory. It is missing or could not be loaded.");
         break;
+    case VideoCore::FrameGenState::NvidiaFrameGen:
+        break;
     }
 
     if (!unavailable.isEmpty()) {
@@ -6005,9 +6114,14 @@ void MainWindow::UpdateFrameGenButton() {
         return;
     }
 
+    const QString fallback =
+        dlssg_fallback ? tr(" NVIDIA DLSS Frame Generation can't run for this game or setup, so "
+                            "FSR3 runs instead; the log says why.")
+                       : QString();
     if (frame_gen_generating) {
         frame_gen_status_button->setText(mode);
-        frame_gen_status_button->setToolTip(tr("Frame generation is running.%1").arg(target));
+        frame_gen_status_button->setToolTip(
+            tr("Frame generation is running.%1%2").arg(target, fallback));
         return;
     }
 
@@ -6019,8 +6133,8 @@ void MainWindow::UpdateFrameGenButton() {
     frame_gen_status_button->setToolTip(
         tr("Frame generation is on but generated no frames in the last half second. It pauses "
            "while it warms up, for a second after a frame takes longer than 100 ms, and while "
-           "frames arrive in bursts.%1")
-            .arg(target_met));
+           "frames arrive in bursts.%1%2")
+            .arg(target_met, fallback));
 }
 
 void MainWindow::UpdateVolumeUI() {

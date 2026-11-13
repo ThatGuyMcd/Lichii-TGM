@@ -42,6 +42,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vk_shader_reuse.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache_prebuild.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/shader_cache.h"
@@ -489,6 +490,8 @@ private:
     DescriptorPool& descriptor_pool;
     GuestDescriptorQueue& guest_descriptor_queue;
     DescriptorBufferRing& descriptor_buffer_ring;
+    /// 8192 templates: a frame's distinct textured draws, Donkey Kong Bananza's included.
+    DrawTemplates draw_templates{2048};
     RenderPassCache& render_pass_cache;
     BufferCache& buffer_cache;
     TextureCache& texture_cache;
@@ -499,6 +502,7 @@ private:
     bool use_asynchronous_shaders{};
     bool use_vulkan_pipeline_cache{};
     bool mesh_warm_enabled{};
+    ShaderReuseCache shader_reuse;
     /// The pipelines' builds, the prebuild and the precache. Declared before the pipelines, whose
     /// builds it runs.
     std::optional<VideoCommon::ShaderJobScheduler> shader_jobs;

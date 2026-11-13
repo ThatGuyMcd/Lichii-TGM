@@ -52,6 +52,59 @@ Any changed user-mod bytes in either patch record or the timer state take
 precedence over the entire built-in patch. An incompatible build, original
 instruction, layout, or truncated module leaves both patch records untouched.
 
+## Water ripple passes
+
+The ripple simulation (compute shaders `fb4203a7d928ed42` then `e2ce39e630ce65f3`,
+256x256 ping-pong textures) sets its pass count at `main+0x475F8` as
+`iterations * (int)step`, with `iterations` 6. Truncation is harmless at the
+original step of exactly 1.0, but any step below 1.0 runs no passes: at 120 fps
+the ripples stop, and the grid origin that follows the player keeps moving with
+no pass to apply the shift. Upstream PR #1180 measured this at a save in Zora's
+Domain, frames that ran the simulation out of 10: no patch 10, FPS Unlock capped
+at 60 fps 4 (step 0.998 to 1.003), FPS Unlock at about 99 fps 0.
+
+Both built-ins replace that `fcvtzs` with `bl 0x3C46300` and drop the `mul` that
+followed it. The routine adds `iterations * step` to a remainder kept per water
+object, runs the rounded whole number of passes and keeps the rest, with at least
+one pass whenever the step is positive so the origin shift is always applied. A
+paused game (step 0) still runs none. The final pass `6a7f45ab293a93b1` was never
+affected.
+
+The remainders live in 8 slots of 16 bytes from `0x4EA0000` (the water object
+from `x21` at the patch site, then the remainder as a float), with the next slot
+to reuse at `0x4EA0080`. An object without a slot takes the next one in turn, so
+two water objects drawn in the same frame don't pull from one shared fraction.
+The original timer state remains 16 bytes at `0x4E9FE00`. The routine is 148 bytes at
+`0x3C46300-0x3C46393`, clear of the Dynamic FPS routine at `0x3C46200` and of the
+ultrawide caves at `0x3C46400` and up. It uses w8, x9-x12 and s0-s2, none read
+by the game again before it writes them.
+
+## Combined patch storage
+
+TGM keeps Photo Mode's state at `0x4E9FE40..0x4E9FED0` and its executable cave
+at `0x3C46420`. The aspect code occupies `0x3C46800..0x3C46A10`. Importing the
+water, sound and step-counter PRs at their original addresses would overlap those
+features. They are relocated together through the patch pipeline:
+
+| Component | Executable storage | Mutable state |
+|---|---|---|
+| Water (#1180) | `0x3C46300`, 148 bytes | `0x4EA0000..0x4EA0088` |
+| Sound (#1289) | `0x3C46280`, 16 bytes; `0x3C46A20`, 124 bytes | `0x4EA0090..0x4EA0098` |
+| Step counters (#1587) | `0x3C46B00..0x3C46C3C` | `0x4EA00A0..0x4EA01B0` |
+
+The loader reserves one new zero-filled 4 KiB data page after the original BSS,
+only for the supported OOT main build and exact original segment layout. Both
+layout calculation and loading reserve the same page. Other titles, modules and
+layouts receive no allocation. Patch application requires this reservation, clear
+state, every original instruction and unused executable padding; a conflicting
+user mod skips the whole affected built-in. Original Photo Mode storage is unchanged.
+
+FPS Unlock applies all three additions. Dynamic FPS uses the water correction;
+the sound and step-counter fixes apply to FPS Unlock only. The sound job updates
+at 60 Hz above 60 FPS and receives a step of at least one. Four step-driven counters
+use sixteen per-address fractional accumulators to avoid integer truncation at
+high frame rates. This does not establish a native 60 FPS performance gain.
+
 ## Timing limits
 
 The routine reads `CNTPCT_EL0` and `CNTFRQ_EL0`. After its first call, it caps

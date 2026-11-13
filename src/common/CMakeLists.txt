@@ -97,6 +97,8 @@ add_library(
     math_util.h
     memory_detect.cpp
     memory_detect.h
+    nvidia_shader_cache.cpp
+    nvidia_shader_cache.h
     multi_level_page_table.cpp
     multi_level_page_table.h
     overflow.h

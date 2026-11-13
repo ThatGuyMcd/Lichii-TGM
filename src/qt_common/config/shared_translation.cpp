@@ -151,8 +151,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "On: HDR whenever the display driver offers an HDR format.\n"
               "The game is told the display is HDR only while Lichii really presents HDR. SDR "
               "games and menus are shown at the reference white.\n"
-              "While HDR is active, anti-aliasing, post-processing, FSR/SGSR upscaling and frame "
-              "generation are off and the window is scaled bilinearly.\n"
+              "While HDR is active, anti-aliasing, post-processing and FSR/SGSR upscaling are off "
+              "and the window is scaled bilinearly. Frame generation keeps working.\n"
               "Screenshots are tone mapped to SDR."));
     INSERT(Settings, hdr_swapchain, tr("HDR format:"),
            tr("HDR10: 10-bit PQ, what HDR displays take.\n"
@@ -338,7 +338,15 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
 
     INSERT(Settings, frame_gen, tr("Enable Frame Generation"),
            tr("Paused while HDR output is active."));
-    INSERT(Settings, frame_gen_type, tr("Frame Generation Type"), QString());
+    INSERT(Settings, frame_gen_type, tr("Frame Generation Type"),
+           tr("Optical Flow Interpolation is built in and runs on any GPU.\nNVIDIA DLSS Frame "
+              "Generation (Windows only) needs a GeForce RTX 40 series or newer GPU (3x and 4x need "
+              "an RTX 50 series), Hardware-accelerated GPU scheduling on in Windows' graphics "
+              "settings, \"Use NVIDIA DLSS\" on and NVIDIA's files from the NVIDIA DLSS panel. "
+              "It takes the game's depth and motion vectors from the DLSS evaluation, so it runs "
+              "in The Legend of Zelda: Ocarina of Time only, docked, with DLSS as its upscaler. "
+              "Other games, and scRGB HDR output, use Optical Flow Interpolation instead.\nVSync "
+              "is off while it runs. Choosing it takes effect when a game starts."));
     INSERT(Settings, frame_gen_multiplier, tr("Frame Generation Multiplier"), QString());
     INSERT(Settings, frame_gen_target_rate, tr("Target Frame Rate"), QString());
     INSERT(Settings, frame_gen_flow_scale_auto, tr("Auto Flow Scale"), QString());
@@ -352,6 +360,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, frame_gen_flow_quality, tr("Optical Flow Quality"),
            tr("Quality of the optical flow hardware's motion estimate. Higher quality costs more "
               "GPU time."));
+    INSERT(Settings, frame_gen_performance_mode, tr("LSFG Performance Mode"),
+           tr("Uses the lighter LSFG 3.1 network. Leave disabled for standard quality."));
 
     // Renderer (Advanced Graphics)
     INSERT(Settings, use_asynchronous_gpu_emulation, QString(), QString());
@@ -569,6 +579,8 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     // Ui
 
     // Ui General
+    INSERT(UISettings, show_low_ram_warning, tr("Show memory notice before loading Switch 2 games"),
+           tr("Show a dismissible notice when the host reports less memory than the Switch 2 baseline."));
     INSERT(UISettings, select_user_on_boot, tr("Prompt for user profile on boot"),
            tr("Useful if multiple people use the same PC."));
     INSERT(UISettings, pause_when_in_background, tr("Pause when not in focus"),
@@ -742,6 +754,7 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(FrameGenType, Lsfg, tr("Lossless Scaling (LSFG)")),
                               PAIR(FrameGenType, Fsr3, tr("Optical Flow Interpolation (built-in)")),
+                              PAIR(FrameGenType, NvidiaDlssG, tr("NVIDIA DLSS Frame Generation")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::FrameGenMotion>::Index(),
                           {

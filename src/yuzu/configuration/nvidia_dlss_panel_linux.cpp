@@ -127,6 +127,13 @@ void NvidiaDlssPanel::showEvent(QShowEvent *event) {
     Refresh();
 }
 
+void NvidiaDlssPanel::SetFrameGenWanted(bool wanted) {
+    if (frame_gen_wanted != wanted) {
+        frame_gen_wanted = wanted;
+        Refresh();
+    }
+}
+
 /// Update runtime and model status plus action availability, reusing cached driver and model
 /// checks.
 void NvidiaDlssPanel::Refresh() {
@@ -148,6 +155,11 @@ void NvidiaDlssPanel::Refresh() {
     } else {
         text = Tr(
             "Linux DLSS runtime installed. Device compatibility is checked when the game starts.");
+    }
+    if (frame_gen_wanted) {
+        text += Tr("\nFrame generation needs a compatible GPU and the separate Linux DLSS-G runtime "
+                   "(libnvidia-ngx-dlssg.so). Use Open folder to install it. The download button "
+                   "installs Super Resolution.");
     }
     status_label->setText(text);
     status_label->setToolTip(PathText(model.empty() ? Ngx::UserFolder() : model));

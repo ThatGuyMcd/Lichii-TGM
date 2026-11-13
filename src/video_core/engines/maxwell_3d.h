@@ -3255,6 +3255,11 @@ public:
     void WriteStateRegisters(Core::System& system, std::span<const u64, 4> flags,
                              std::span<const u64> writes, u32 last_break);
 
+    /// GpuSplit's back: `count` more draw.begin writes of the value just written, as as many
+    /// CallMethod calls would run them. Only an instance loop's subsequent begins, which each add
+    /// an instance; false where a begin would do more, and then nothing was done.
+    [[nodiscard]] bool RepeatDrawBegin(u32 count);
+
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod: runs macros and macro uploads against a copy of the
     /// registers and sends the register writes to the back thread.
@@ -3334,6 +3339,11 @@ public:
     static bool IsFastDrawVertexFormat(u32 method);
     void NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end,
                                  bool diagnostic_equal = false);
+    /// Writes constant buffer data at `offset` (`bytes` within the buffer) through the buffer
+    /// CB_ADDRESS and CB_SIZE select, translated once per selection and memory map. False, having
+    /// done nothing, where the general path has to: the buffer isn't one mapped device range, it
+    /// can reach the texture or sampler headers, or the write lands on Switch 2 sparse memory.
+    bool WriteBoundConstantBuffer(u32 offset, const void* data, u32 bytes);
 
     /// Handles a write to the CB_DATA[i] register.
     void ProcessCBData(u32 value);
@@ -3461,6 +3471,18 @@ private:
     /// Device memory of the texture and sampler header tables (NoteFastDrawConstantData).
     VideoCommon::Nx2FastDraw::DeviceSpans fast_draw_header_spans;
     VideoCommon::Nx2FastDraw::DeviceSpans fast_draw_sampler_spans;
+
+    /// The constant buffer WriteBoundConstantBuffer last translated, and the state it read.
+    struct BoundConstantBuffer {
+        GPUVAddr address{};
+        u32 size{};
+        u64 map_serial{};
+        GPUVAddr tic{};
+        u64 tic_size{};
+        GPUVAddr tsc{};
+        u64 tsc_size{};
+        DAddr device{}; ///< 0: the general path writes its data
+    } bound_constant_buffer;
 
     VideoCore::RasterizerInterface* rasterizer = nullptr;
 

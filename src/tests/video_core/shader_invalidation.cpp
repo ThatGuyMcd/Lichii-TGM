@@ -14,6 +14,8 @@
 #include "core/core.h"
 #include "tests/core/system_test_context.h"
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/engines/maxwell_3d.h"
+#include "video_core/dirty_flags.h"
 #include "video_core/macro.h"
 #include "video_core/memory_manager.h"
 #include "shader_recompiler/exception.h"
@@ -55,6 +57,14 @@ struct ShaderCacheTestAccess {
         } catch (...) {
             cache.RememberRejection(address);
         }
+    }
+    static void ConfigureGraphics(ShaderCache& cache, Tegra::Engines::Maxwell3D& graphics,
+                                  Tegra::MemoryManager& memory) {
+        cache.maxwell3d = &graphics;
+        cache.gpu_memory = &memory;
+    }
+    static bool Refresh(ShaderCache& cache, std::array<u64, 6>& hashes) {
+        return cache.RefreshStages(hashes);
     }
     static void ConfigureCompute(ShaderCache& cache, Tegra::Engines::KeplerCompute& compute,
                                  Tegra::MemoryManager& memory) {
@@ -344,4 +354,50 @@ TEST_CASE("Cached tensor rejections retain the stand-in reason on every dispatch
         REQUIRE(ShaderCacheTestAccess::Compute(*cache) == nullptr);
         REQUIRE(ShaderCacheTestAccess::IsRejected(*cache, device_address));
     }
+}
+
+TEST_CASE("Unchanged shader registers refresh after their cached program is removed",
+          "[shader_invalidation]") {
+    ScopedSystemTestContext context;
+    Core::System system;
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device_memory{physical};
+    TensorPolicyRasterizer rasterizer;
+    Tegra::MemoryManager memory{system, device_memory, 32, 1ULL << 31};
+    memory.BindRasterizer(&rasterizer);
+    constexpr GPUVAddr gpu_address = 0x100000;
+    constexpr DAddr device_address = 0x10000;
+    memory.Map(gpu_address, device_address, 0x1000, Tegra::PTEKind::PITCH, false);
+    Tegra::Engines::Maxwell3D graphics{memory};
+    graphics.BindRasterizer(&rasterizer);
+    graphics.regs.program_region.address_low = static_cast<u32>(gpu_address);
+    graphics.regs.program_region.address_high = 0;
+    for (auto& stage : graphics.regs.pipelines) {
+        stage.enable.Assign(0);
+        stage.offset = 0;
+    }
+    constexpr size_t vertex = static_cast<size_t>(Tegra::Engines::Maxwell3D::Regs::ShaderType::VertexB);
+    auto cache = ShaderCacheTestAccess::Create(device_memory);
+    ShaderCacheTestAccess::ConfigureGraphics(*cache, graphics, memory);
+    ShaderCacheTestAccess::Register(*cache, device_address, 0x100, 0x1234);
+    std::array<u64, 6> hashes{};
+    graphics.dirty.flags[VideoCommon::Dirty::Shaders] = true;
+    REQUIRE(ShaderCacheTestAccess::Refresh(*cache, hashes));
+    REQUIRE(hashes[vertex] == 0x1234);
+    REQUIRE_FALSE(graphics.dirty.flags[VideoCommon::Dirty::Shaders]);
+
+    SECTION("Immediate invalidation") {
+        cache->InvalidateRegion(device_address, 1);
+    }
+    SECTION("Pending invalidation drained with another region") {
+        cache->OnCacheInvalidation(device_address, 1);
+        const std::array other{std::pair<DAddr, size_t>{device_address + 0x10000, 1}};
+        cache->InvalidateRegions(other);
+    }
+    REQUIRE_FALSE(ShaderCacheTestAccess::Find(*cache, device_address));
+    ShaderCacheTestAccess::Register(*cache, device_address, 0x100, 0x5678);
+    // No register write marks shaders dirty: the removal generation must force the lookup.
+    REQUIRE_FALSE(graphics.dirty.flags[VideoCommon::Dirty::Shaders]);
+    REQUIRE(ShaderCacheTestAccess::Refresh(*cache, hashes));
+    CHECK(hashes[vertex] == 0x5678);
 }

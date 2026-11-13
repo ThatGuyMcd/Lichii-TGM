@@ -27,6 +27,7 @@
 #include "core/loader/nso.h"
 #include "core/ocarina_photo_mode.h"
 #include "core/oot_ultrawide.h"
+#include "core/oot_fps_patches.h"
 
 namespace {
 
@@ -346,9 +347,31 @@ constexpr std::array<std::pair<size_t, u32>, 3> GroundVelocityBranches{{
     {sizeof(Loader::NSOHeader) + 0x389AC2C, 0x540017CC},
 }};
 
+void InitializeFpsHooks(std::vector<u8>& nso) {
+    constexpr std::array<std::pair<u32, u32>, 8> originals{{
+        {0x475F8, 0x1E380009}, {0x4760C, 0x1B097D08},
+        {0x415300, 0xD503237F}, {0x415334, 0xBD401100},
+        {0xA68300, 0x1E38000C}, {0x3293410, 0x1E390008},
+        {0x53F914, 0x1100077A}, {0x6E6CC4, DynamicOriginalInstruction}}};
+    for (const auto& [offset, original] : originals) {
+        std::memcpy(nso.data() + sizeof(Loader::NSOHeader) + offset, &original, sizeof(original));
+    }
+    constexpr std::array<u8, 44> hitstop{
+        0x00, 0xB9, 0xA1, 0x5E, 0x09, 0x01, 0x38, 0x1E, 0x00, 0xD8, 0x21,
+        0x5E, 0x00, 0x39, 0x20, 0x1E, 0x00, 0x20, 0x30, 0x1E, 0xAA, 0x17,
+        0x00, 0x54, 0x00, 0x20, 0x31, 0x1E, 0x09, 0x18, 0x00, 0x54, 0x0A,
+        0x9B, 0x40, 0xB9, 0x3F, 0x05, 0x00, 0x71, 0x29, 0xC5, 0x9F, 0x1A};
+    std::copy(hitstop.begin(), hitstop.end(),
+              nso.begin() + sizeof(Loader::NSOHeader) + 0x2F53268);
+    for (const auto& [offset, original] : GroundVelocityBranches) {
+        std::memcpy(nso.data() + offset, &original, sizeof(original));
+    }
+}
+
 std::vector<u8> MakeDynamicMain() {
     auto nso = MakeMain(OcarinaBuildId, TbzInstruction);
-    nso.resize(DynamicStateOffset + 16);
+    nso.resize(sizeof(Loader::NSOHeader) + Core::OotFpsPatches::StateBase +
+               Core::OotFpsPatches::ExtraBssSize);
     Loader::NSOHeader header;
     std::memcpy(&header, nso.data(), sizeof(header));
     header.segments[0].size = 63201744;
@@ -356,13 +379,11 @@ std::vector<u8> MakeDynamicMain() {
     header.segments[1].size = 12603520;
     header.segments[2].location = 75812864;
     header.segments[2].size = 5217152;
-    header.segments[2].bss_size = 1414272;
+    header.segments[2].bss_size = 1414272 + Core::OotFpsPatches::ExtraBssSize;
     std::memcpy(nso.data(), &header, sizeof(header));
     std::memcpy(nso.data() + DynamicCallOffset, &DynamicOriginalInstruction,
                 sizeof(DynamicOriginalInstruction));
-    for (const auto& [offset, original] : GroundVelocityBranches) {
-        std::memcpy(nso.data() + offset, &original, sizeof(original));
-    }
+    InitializeFpsHooks(nso);
     return nso;
 }
 
@@ -791,13 +812,19 @@ TEST_CASE("Ocarina aspect profiles patch cameras, UI and movie bounds together",
     }
 }
 
-TEST_CASE("Texture Pool x2, Photo Mode and every aspect profile coexist in executable padding",
+TEST_CASE("All OOT FPS fixes, Texture Pool, Photo Mode and aspects coexist",
           "[patch_manager]") {
     namespace Photo = Core::OcarinaPhotoMode;
     PatchManagerTestContext context;
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution}};
     auto nso = MakeUltrawideMain();
-    nso.resize(sizeof(Loader::NSOHeader) + Photo::StateOffset + Photo::StateSize);
+    nso.resize(sizeof(Loader::NSOHeader) + Core::OotFpsPatches::StateBase +
+               Core::OotFpsPatches::ExtraBssSize);
+    Loader::NSOHeader header;
+    std::memcpy(&header, nso.data(), sizeof(header));
+    header.segments[2].bss_size += Core::OotFpsPatches::ExtraBssSize;
+    std::memcpy(nso.data(), &header, sizeof(header));
+    InitializeFpsHooks(nso);
     PutWord(nso, sizeof(Loader::NSOHeader) + Photo::SiteOffset, Photo::Word(Photo::SiteOriginal));
     PutWord(nso, sizeof(Loader::NSOHeader) + 0xC2A36C, 0xA90127E8);
     for (const auto& profile : Core::OotUltrawide::AspectProfiles) {
@@ -812,6 +839,63 @@ TEST_CASE("Texture Pool x2, Photo Mode and every aspect profile coexist in execu
         REQUIRE(WordAt(patched, UltrawideHookCaveOffset) == 0x2D558400);
         REQUIRE(WordAt(patched, sizeof(Loader::NSOHeader) + 0xC2A36C) == 0x94C06FD5);
         REQUIRE(WordAt(patched, sizeof(Loader::NSOHeader) + 0x3C462C0) == 0xD37FF908);
+        REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicCallInstruction);
+        REQUIRE(WordAt(patched, sizeof(Loader::NSOHeader) + 0x475F8) == 0x94EFFB42);
+        const auto branch_target = [&](u32 offset) {
+            const u32 instruction = WordAt(patched, sizeof(Loader::NSOHeader) + offset);
+            const s64 delta = static_cast<s32>(instruction << 6) >> 4;
+            return static_cast<u32>(offset + delta);
+        };
+        REQUIRE(branch_target(0x415300) == 0x3C46A20);
+        REQUIRE(branch_target(0xA68300) == 0x3C46B00);
+        REQUIRE(branch_target(0x3293410) == 0x3C46B28);
+        REQUIRE(branch_target(0x2F53268) == 0x3C46B50);
+        REQUIRE(branch_target(0x53F914) == 0x3C46C00);
+        REQUIRE(std::all_of(patched.begin() + sizeof(Loader::NSOHeader) + Photo::StateOffset,
+                            patched.begin() + sizeof(Loader::NSOHeader) + Photo::StateOffset +
+                                Photo::StateSize,
+                            [](u8 byte) { return byte == 0; }));
+    }
+}
+
+TEST_CASE("OOT extra patch storage is reserved only for the supported original module layout",
+          "[patch_manager]") {
+    PatchManagerTestContext context;
+    const auto nso = MakeDynamicMain();
+    Loader::NSOHeader header;
+    std::memcpy(&header, nso.data(), sizeof(header));
+    header.segments[2].bss_size -= Core::OotFpsPatches::ExtraBssSize;
+    const auto manager = context.Manager();
+    CHECK(manager.AdditionalNSOBssSize(header, "main") == Core::OotFpsPatches::ExtraBssSize);
+    CHECK(manager.AdditionalNSOBssSize(header, "sdk") == 0);
+    CHECK(context.Manager(OtherTitleId).AdditionalNSOBssSize(header, "main") == 0);
+    header.build_id[0] ^= 1;
+    CHECK(manager.AdditionalNSOBssSize(header, "main") == 0);
+    header.build_id[0] ^= 1;
+    header.segments[2].bss_size += 1;
+    CHECK(manager.AdditionalNSOBssSize(header, "main") == 0);
+}
+
+TEST_CASE("OOT FPS additions preserve transactional guards for every cave and skipped instruction",
+          "[patch_manager]") {
+    PatchManagerTestContext context;
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{DynamicFps}};
+    const auto original = MakeDynamicMain();
+    constexpr std::array<u32, 10> changed_sites{
+        0x475F8, 0x4760C, 0x3C46300, 0x415300, 0x415334,
+        0x3C46A20, 0x3C46280, 0x3C46B00, 0x3C46C00, Core::OotFpsPatches::StateBase};
+    for (const u32 site : changed_sites) {
+        auto nso = original;
+        nso[sizeof(Loader::NSOHeader) + site] ^= 1;
+        const auto patched = context.Manager().PatchNSO(nso, "main");
+        CHECK(WordAt(patched, DynamicCallOffset) == DynamicOriginalInstruction);
+        CHECK(WordAt(patched, sizeof(Loader::NSOHeader) + 0xA68300) == 0x1E38000C);
+    }
+    for (u32 byte = 0; byte < 44; ++byte) {
+        auto nso = original;
+        nso[sizeof(Loader::NSOHeader) + 0x2F53268 + byte] ^= 1;
+        const auto patched = context.Manager().PatchNSO(nso, "main");
+        CHECK(WordAt(patched, DynamicCallOffset) == DynamicOriginalInstruction);
     }
 }
 
@@ -840,5 +924,89 @@ TEST_CASE("A user modification to the second consumed projection instruction win
         PutWord(expected, offset, NopInstruction);
         REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
         REQUIRE(Core::OotUltrawide::AcceptedProfile() == nullptr);
+    }
+}
+
+
+TEST_CASE("Built-in text speed is off until checked in Add-Ons", "[patch_manager]") {
+    constexpr size_t SiteOffset = sizeof(Loader::NSOHeader) + 0xAFE1B4;
+    constexpr size_t CaveOffset = sizeof(Loader::NSOHeader) + 0x3C46F00;
+    constexpr u32 LdrhInstruction = 0x7940DE69;
+    constexpr u32 BranchToCave = 0x14C52353;
+    constexpr std::string_view Double = "Text Speed 2x (built-in)";
+    constexpr std::string_view Quadruple = "Text Speed 4x (built-in)";
+    constexpr std::string_view Instant = "Text Speed Instant (built-in)";
+    PatchManagerTestContext context;
+    const auto manager = context.Manager();
+    auto nso = MakeDynamicMain();
+    std::memcpy(nso.data() + SiteOffset, &LdrhInstruction, sizeof(LdrhInstruction));
+
+    SECTION("Unchecked by default: listed off and not applied") {
+        for (const auto& patch : manager.GetPatches()) {
+            if (patch.name.starts_with("Text Speed")) {
+                REQUIRE_FALSE(patch.enabled);
+                REQUIRE(patch.off_by_default);
+            }
+        }
+        const auto patched = manager.PatchNSO(nso, "main");
+        REQUIRE(WordAt(patched, SiteOffset) == LdrhInstruction);
+        REQUIRE(WordAt(patched, CaveOffset) == 0);
+    }
+
+    SECTION("Each speed branches to the cave with its scale once checked") {
+        const std::array<std::pair<std::string_view, u32>, 3> speeds{{
+            {Double, 0x40000000},    // 2.0f
+            {Quadruple, 0x40800000}, // 4.0f
+            {Instant, 0x49742400},   // 1e6f
+        }};
+        for (const auto& [name, scale] : speeds) {
+            Settings::values.disabled_addons[OcarinaTitleId] = {FileSys::EnabledAddonKey(name)};
+            const auto patches = manager.GetPatches();
+            REQUIRE(std::ranges::any_of(patches, [&](const FileSys::Patch& patch) {
+                return patch.name == name && patch.enabled;
+            }));
+            const auto patched = manager.PatchNSO(nso, "main");
+            REQUIRE(WordAt(patched, SiteOffset) == BranchToCave);
+            REQUIRE(Common::HexToString(std::span{patched}.subspan(CaveOffset, 16)) ==
+                    "9000001C0008301E69DE4079ABDC3A17");
+            REQUIRE(WordAt(patched, CaveOffset + 16) == scale);
+        }
+    }
+
+    SECTION("With more than one checked, the fastest applies") {
+        Settings::values.disabled_addons[OcarinaTitleId] = {FileSys::EnabledAddonKey(Double),
+                                                            FileSys::EnabledAddonKey(Quadruple)};
+        const auto patched = manager.PatchNSO(nso, "main");
+        REQUIRE(WordAt(patched, CaveOffset + 16) == 0x40800000);
+    }
+
+    SECTION("Another word at the site skips") {
+        Settings::values.disabled_addons[OcarinaTitleId] = {FileSys::EnabledAddonKey(Double)};
+        std::memcpy(nso.data() + SiteOffset, &NopInstruction, sizeof(NopInstruction));
+        const auto patched = manager.PatchNSO(nso, "main");
+        REQUIRE(WordAt(patched, SiteOffset) == NopInstruction);
+        REQUIRE(WordAt(patched, CaveOffset) == 0);
+    }
+}
+
+TEST_CASE("Unchecked add-on lists store off-by-default built-ins when checked", "[patch_manager]") {
+    const std::string Double{"Text Speed 2x (built-in)"};
+    const std::string Quadruple{"Text Speed 4x (built-in)"};
+    const std::string Instant{"Text Speed Instant (built-in)"};
+    const std::string MaxResolutionName{MaxResolution};
+
+    SECTION("Unchecked off-by-default built-ins are not stored, checked ones get their key") {
+        auto stored = FileSys::StoredDisabledAddons(OcarinaTitleId,
+                                                    {MaxResolutionName, Double, Instant});
+        std::ranges::sort(stored);
+        std::vector<std::string> expected{MaxResolutionName,
+                                          FileSys::EnabledAddonKey(Quadruple)};
+        std::ranges::sort(expected);
+        REQUIRE(stored == expected);
+    }
+
+    SECTION("Other titles are stored as given") {
+        REQUIRE(FileSys::StoredDisabledAddons(OtherTitleId, {Double}) ==
+                std::vector<std::string>{Double});
     }
 }

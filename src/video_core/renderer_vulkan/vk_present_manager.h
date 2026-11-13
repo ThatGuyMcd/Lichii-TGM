@@ -16,6 +16,9 @@
 #include "common/polyfill_thread.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#ifdef EGLANTINE_STREAMLINE
+#include "video_core/vulkan_common/streamline_frame_gen.h"
+#endif
 
 namespace Core::Frontend {
 class EmuWindow;
@@ -50,6 +53,12 @@ struct Frame {
     /// signals, so the graphics queue never waits for it.
     bool generated_async{};
     vk::Fence generated_ready;
+#ifdef EGLANTINE_STREAMLINE
+    // DLSS Frame Generation: the guest frame presented and where the guest image is in the frame.
+    bool frame_gen{};
+    Streamline::FrameGenFrame frame_gen_frame{};
+    VkRect2D guest_rect{};
+#endif
 };
 
 class PresentManager {
@@ -65,6 +74,13 @@ public:
 
     /// Returns the last used presentation frame
     Frame* GetRenderFrame();
+
+    /// The time GetRenderFrame calls waited for a frame since the last call of this (the
+    /// present thread holding the renderer back).
+    [[nodiscard]] std::chrono::steady_clock::duration TakeBlockedTime() {
+        return std::chrono::steady_clock::duration{
+            blocked_time.exchange(0, std::memory_order_relaxed)};
+    }
 
     /// Pushes a frame for presentation
     void Present(Frame* frame);
@@ -88,8 +104,9 @@ public:
     [[nodiscard]] VkFormat SwapchainImageFormat() const { return swapchain_image_format; }
 
 private:
-    void StartPresentThread();
     enum class TransferMode { Unsupported, Copy, Blit };
+
+    void StartPresentThread();
 
     void PresentThread(std::stop_token token);
 
@@ -149,6 +166,9 @@ private:
         std::chrono::nanoseconds spacing{};
         std::chrono::steady_clock::duration present_time{};
     } pacing_log;
+    /// See TakeBlockedTime. Atomic: a composite can also run from a syncpoint action on
+    /// another thread (GPU::RequestComposite).
+    std::atomic<std::chrono::steady_clock::rep> blocked_time{};
 };
 
 } // namespace Vulkan

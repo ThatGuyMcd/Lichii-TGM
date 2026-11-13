@@ -44,6 +44,7 @@
 #include "core/loader/nso.h"
 #include "core/memory/cheat_engine.h"
 #include "core/oot_ultrawide.h"
+#include "core/oot_fps_patches.h"
 #include "video_core/oot_dlss.h"
 
 namespace FileSys {
@@ -71,12 +72,18 @@ struct BuiltinPatch {
     std::span<const BuiltinPatchRecord> records;
     size_t state_offset = 0;
     size_t state_size = 0;
+    size_t auxiliary_state_size = 0;
     // Another built-in this one contains; it is skipped once this one is applied.
     std::string_view replaces{};
     // When set, the patch applies only with this DLSS mode chosen and is not listed in Add-Ons.
     std::optional<Settings::OcarinaDlssMode> render_scale{};
     /// Selects one guarded game-rendering patch for the chosen display ratio.
     std::optional<Settings::AspectRatio> aspect_ratio{};
+    // Off until checked in Add-Ons (stored as EnabledAddonKey(name)), for game options rather
+    // than fixes.
+    bool off_by_default = false;
+    // Built-ins that patch the same place: the first one applied (in this list's order) wins.
+    std::string_view group{};
 };
 
 constexpr std::array<u8, 4> MAX_RESOLUTION_ORIGINAL{0xE8, 0x41, 0x00, 0x36};
@@ -140,6 +147,11 @@ constexpr std::array<u8, 128> FPS_UNLOCK_ROUTINE{
 constexpr std::array DYNAMIC_FPS_RECORDS{
     BuiltinPatchRecord{0x6E6CC4, DYNAMIC_FPS_CALL, DYNAMIC_FPS_ORIGINAL},
     BuiltinPatchRecord{0x3C46200, DYNAMIC_FPS_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x475F8, Core::OotFpsPatches::WATER_STEPS_CALL,
+                       Core::OotFpsPatches::WATER_STEPS_ORIGINAL},
+    BuiltinPatchRecord{0x4760C, Core::OotFpsPatches::WATER_MUL_NOP,
+                       Core::OotFpsPatches::WATER_MUL_ORIGINAL},
+    BuiltinPatchRecord{0x3C46300, Core::OotFpsPatches::WATER_STEPS_ROUTINE, {}, true},
 };
 // The character controller takes a tenth of its ground's velocity once the frame rate is over
 // 100 (b.gt after fcmp with 100.0, in three places), so a moving platform leaves the player behind.
@@ -161,6 +173,30 @@ constexpr std::array FPS_UNLOCK_RECORDS{
     BuiltinPatchRecord{0x13A070, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_A},
     BuiltinPatchRecord{0x13D710, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_B},
     BuiltinPatchRecord{0x389AC2C, GROUND_VELOCITY_NOP, GROUND_VELOCITY_ORIGINAL_C},
+    BuiltinPatchRecord{0x475F8, Core::OotFpsPatches::WATER_STEPS_CALL,
+                       Core::OotFpsPatches::WATER_STEPS_ORIGINAL},
+    BuiltinPatchRecord{0x4760C, Core::OotFpsPatches::WATER_MUL_NOP,
+                       Core::OotFpsPatches::WATER_MUL_ORIGINAL},
+    BuiltinPatchRecord{0x3C46300, Core::OotFpsPatches::WATER_STEPS_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x415300, Core::OotFpsPatches::SOUND_ENTRY_BRANCH,
+                       Core::OotFpsPatches::SOUND_ENTRY_ORIGINAL},
+    BuiltinPatchRecord{0x415334, Core::OotFpsPatches::SOUND_STEP_CALL,
+                       Core::OotFpsPatches::SOUND_STEP_ORIGINAL},
+    BuiltinPatchRecord{0x3C46A20, Core::OotFpsPatches::SOUND_GATE, {}, true},
+    BuiltinPatchRecord{0x3C46280, Core::OotFpsPatches::SOUND_FEED, {}, true},
+    BuiltinPatchRecord{0xA68300, Core::OotFpsPatches::STEP_HUD_HOOK,
+                       Core::OotFpsPatches::STEP_HUD_ORIGINAL},
+    BuiltinPatchRecord{0x3C46B00, Core::OotFpsPatches::STEP_HUD_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x3293410, Core::OotFpsPatches::STEP_REPLAY_HOOK,
+                       Core::OotFpsPatches::STEP_REPLAY_ORIGINAL},
+    BuiltinPatchRecord{0x3C46B28, Core::OotFpsPatches::STEP_REPLAY_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x2F53268, Core::OotFpsPatches::STEP_HITSTOP_HOOK,
+                       Core::OotFpsPatches::STEP_HITSTOP_ORIGINAL},
+    BuiltinPatchRecord{0x3C46B50, Core::OotFpsPatches::STEP_HITSTOP_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x53F914, Core::OotFpsPatches::STEP_AMBIENT_HOOK,
+                       Core::OotFpsPatches::STEP_AMBIENT_ORIGINAL},
+    BuiltinPatchRecord{0x3C46C00, Core::OotFpsPatches::STEP_AMBIENT_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x3C46B80, Core::OotFpsPatches::STEP_SHARED_ROUTINE, {}, true},
 };
 
 constexpr std::array PHOTO_MODE_RECORDS{
@@ -518,6 +554,36 @@ constexpr std::array OOT_POLL_BACKOFF_RECORDS{
     BuiltinPatchRecord{0x17088, OOT_POLL_BACKOFF_CAVE, OOT_POLL_PADDING_ORIGINAL},
 };
 
+// Text speed (port of NotRexed/Hookshot#402): main+0xAFE140 steps a text pane's letter
+// animation. At 0xAFE1B4, the start of the letters' block, s0 holds the frame time that moves
+// the letters' clock (+0x60 += rate * time) and counts down pauses (+0x58 -= time); the
+// auto-advance timer before it keeps the game's time. The site branches to a cave that scales
+// s0 (s16 is unused in the function), redoes the displaced ldrh and branches back.
+constexpr size_t TEXT_SPEED_SITE = 0xAFE1B4;
+constexpr size_t TEXT_SPEED_CAVE = 0x3C46F00;
+constexpr std::array<u8, 4> TEXT_SPEED_ORIGINAL{0x69, 0xDE, 0x40, 0x79}; // ldrh w9, [x19, #0x6e]
+constexpr std::array<u8, 4> TEXT_SPEED_BRANCH{0x53, 0x23, 0xC5, 0x14};   // b 0x3C46F00
+// ldr s16, scale ; fmul s0, s0, s16 ; ldrh w9, [x19, #0x6e] ; b 0xAFE1B8 ; scale (float)
+#define TEXT_SPEED_CAVE_CODE                                                                       \
+    0x90, 0x00, 0x00, 0x1C, 0x00, 0x08, 0x30, 0x1E, 0x69, 0xDE, 0x40, 0x79, 0xAB, 0xDC, 0x3A, 0x17
+constexpr std::array<u8, 20> TEXT_SPEED_2X_CAVE{TEXT_SPEED_CAVE_CODE, 0x00, 0x00, 0x00, 0x40};
+constexpr std::array<u8, 20> TEXT_SPEED_4X_CAVE{TEXT_SPEED_CAVE_CODE, 0x00, 0x00, 0x80, 0x40};
+// 1e6: a page at once (a frame per pause), like the game's own skip on A.
+constexpr std::array<u8, 20> TEXT_SPEED_INSTANT_CAVE{TEXT_SPEED_CAVE_CODE, 0x00, 0x24, 0x74, 0x49};
+#undef TEXT_SPEED_CAVE_CODE
+constexpr std::array TEXT_SPEED_2X_RECORDS{
+    BuiltinPatchRecord{TEXT_SPEED_SITE, TEXT_SPEED_BRANCH, TEXT_SPEED_ORIGINAL},
+    BuiltinPatchRecord{TEXT_SPEED_CAVE, TEXT_SPEED_2X_CAVE, {}, true},
+};
+constexpr std::array TEXT_SPEED_4X_RECORDS{
+    BuiltinPatchRecord{TEXT_SPEED_SITE, TEXT_SPEED_BRANCH, TEXT_SPEED_ORIGINAL},
+    BuiltinPatchRecord{TEXT_SPEED_CAVE, TEXT_SPEED_4X_CAVE, {}, true},
+};
+constexpr std::array TEXT_SPEED_INSTANT_RECORDS{
+    BuiltinPatchRecord{TEXT_SPEED_SITE, TEXT_SPEED_BRANCH, TEXT_SPEED_ORIGINAL},
+    BuiltinPatchRecord{TEXT_SPEED_CAVE, TEXT_SPEED_INSTANT_CAVE, {}, true},
+};
+
 constexpr std::array BUILTIN_PATCHES{
     // Ocarina of Time takes its "dynamic resolution disabled" path, so the 3D renders at full scale
     // instead of following the GPU-time controller down to its 480p floor.
@@ -572,6 +638,7 @@ constexpr std::array BUILTIN_PATCHES{
         .records = FPS_UNLOCK_RECORDS,
         .state_offset = 0x4E9FE00,
         .state_size = 16,
+        .auxiliary_state_size = Core::OotFpsPatches::UnlockStateSize,
         .replaces = "Dynamic FPS by Dark (built-in)",
     },
     BuiltinPatch{
@@ -582,6 +649,7 @@ constexpr std::array BUILTIN_PATCHES{
         .records = DYNAMIC_FPS_RECORDS,
         .state_offset = 0x4E9FE00,
         .state_size = 16,
+        .auxiliary_state_size = Core::OotFpsPatches::WaterStateSize,
     },
     // Photo mode (core/ocarina_photo_mode.h): the emulator's free camera replaces the game's.
     BuiltinPatch{
@@ -646,7 +714,58 @@ constexpr std::array BUILTIN_PATCHES{
                  .title_id = Core::OotUltrawide::ProgramId, .module = "main",
                  .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
                  .records = ULTRAWIDE_RECORDS, .aspect_ratio = Settings::AspectRatio::R32_10},
+    // Text speed: off until checked in Add-Ons; with more than one checked, the fastest wins.
+    BuiltinPatch{
+        .name = "Text Speed Instant (built-in)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .records = TEXT_SPEED_INSTANT_RECORDS,
+        .off_by_default = true,
+        .group = "Text Speed",
+    },
+    BuiltinPatch{
+        .name = "Text Speed 4x (built-in)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .records = TEXT_SPEED_4X_RECORDS,
+        .off_by_default = true,
+        .group = "Text Speed",
+    },
+    BuiltinPatch{
+        .name = "Text Speed 2x (built-in)",
+        .title_id = 0x0400486024DEC000,
+        .module = "main",
+        .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
+        .records = TEXT_SPEED_2X_RECORDS,
+        .off_by_default = true,
+        .group = "Text Speed",
+    },
 };
+
+} // Anonymous namespace
+
+std::string EnabledAddonKey(std::string_view name) {
+    return fmt::format("+{}", name);
+}
+
+std::vector<std::string> StoredDisabledAddons(u64 title_id, std::vector<std::string> unchecked) {
+    for (const auto& patch : BUILTIN_PATCHES) {
+        if (patch.title_id != title_id || !patch.off_by_default) {
+            continue;
+        }
+        const auto it = std::find(unchecked.begin(), unchecked.end(), patch.name);
+        if (it != unchecked.end()) {
+            unchecked.erase(it);
+        } else {
+            unchecked.push_back(EnabledAddonKey(patch.name));
+        }
+    }
+    return unchecked;
+}
+
+namespace {
 
 enum class TitleVersionFormat : u8 {
     ThreeElements, ///< vX.Y.Z
@@ -1017,6 +1136,19 @@ std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualD
     return out;
 }
 
+u32 PatchManager::AdditionalNSOBssSize(const Loader::NSOHeader& header, std::string_view name) const {
+    if (title_id != Core::OotUltrawide::ProgramId || name != "main" ||
+        Common::HexToString(std::span{header.build_id}.first(20)) !=
+            "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348") {
+        return 0;
+    }
+    const auto& data = header.segments[2];
+    // Match the original layout as well as the build, before growing any allocation.
+    return u64{data.location} + data.size == 0x4D46B80 && data.bss_size == 1414272
+               ? Core::OotFpsPatches::ExtraBssSize
+               : 0;
+}
+
 std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::string& name) const {
     if (name == "main") {
         Settings::SetAppliedOcarinaRenderScale(std::nullopt);
@@ -1085,6 +1217,7 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
     const auto disabled = GetDisabledAddons();
     std::vector<std::string_view> replaced;
     bool max_resolution_applied = false;
+    std::vector<std::string_view> applied_groups;
     for (const auto& patch : BUILTIN_PATCHES) {
         if (patch.title_id != title_id || patch.module != name) {
             continue;
@@ -1105,8 +1238,19 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
             continue;
 #endif
         }
-        if (std::find(disabled.cbegin(), disabled.cend(), patch.name) != disabled.cend()) {
+        if (patch.off_by_default) {
+            if (std::find(disabled.cbegin(), disabled.cend(), EnabledAddonKey(patch.name)) ==
+                disabled.cend()) {
+                continue;
+            }
+        } else if (std::find(disabled.cbegin(), disabled.cend(), patch.name) != disabled.cend()) {
             LOG_INFO(Loader, "    - Skipping \"{}\": disabled in Add-Ons", patch.name);
+            continue;
+        }
+        if (!patch.group.empty() && std::find(applied_groups.cbegin(), applied_groups.cend(),
+                                              patch.group) != applied_groups.cend()) {
+            LOG_INFO(Loader, "    - Skipping \"{}\": another {} built-in is applied", patch.name,
+                     patch.group);
             continue;
         }
         if (std::find(replaced.cbegin(), replaced.cend(), patch.name) != replaced.cend()) {
@@ -1152,6 +1296,24 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
                 !std::equal(nso.begin() + offset, nso.begin() + offset + patch.state_size,
                             out.begin() + offset)) {
                 LOG_WARNING(Loader, "    - Skipping \"{}\": timer state is not zero-filled",
+                            patch.name);
+                continue;
+            }
+        }
+        if (patch.auxiliary_state_size != 0) {
+            const size_t state = Core::OotFpsPatches::StateBase;
+            const size_t size = patch.auxiliary_state_size;
+            const auto& data = header.segments[2];
+            if (u64{data.location} + data.size + data.bss_size !=
+                    Core::OotFpsPatches::StateBase + Core::OotFpsPatches::ExtraBssSize ||
+                !fits(nso, state, size) || !fits(out, state, size) ||
+                !std::all_of(nso.begin() + sizeof(Loader::NSOHeader) + state,
+                             nso.begin() + sizeof(Loader::NSOHeader) + state + size,
+                             [](u8 byte) { return byte == 0; }) ||
+                !std::equal(nso.begin() + sizeof(Loader::NSOHeader) + state,
+                            nso.begin() + sizeof(Loader::NSOHeader) + state + size,
+                            out.begin() + sizeof(Loader::NSOHeader) + state)) {
+                LOG_WARNING(Loader, "    - Skipping \"{}\": auxiliary state is not reserved or clear",
                             patch.name);
                 continue;
             }
@@ -1217,6 +1379,9 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
                  records.size(), name);
         if (!patch.replaces.empty()) {
             replaced.push_back(patch.replaces);
+        }
+        if (!patch.group.empty()) {
+            applied_groups.push_back(patch.group);
         }
     }
 
@@ -1870,7 +2035,8 @@ std::vector<Patch> PatchManager::GetPatches(VirtualFile update_raw) const {
             return other.title_id == title_id && other.replaces == patch.name &&
                    !is_disabled(other.name);
         });
-        out.push_back({.enabled = !is_disabled(patch.name),
+        out.push_back({.enabled = patch.off_by_default ? is_disabled(EnabledAddonKey(patch.name))
+                                                       : !is_disabled(patch.name),
                        .name = std::string{patch.name},
                        .version = replacing != BUILTIN_PATCHES.end()
                                       ? fmt::format("IPS, replaced by {} when it applies",
@@ -1879,7 +2045,8 @@ std::vector<Patch> PatchManager::GetPatches(VirtualFile update_raw) const {
                        .type = PatchType::Mod,
                        .program_id = title_id,
                        .title_id = title_id,
-                       .source = PatchSource::Unknown});
+                       .source = PatchSource::Unknown,
+                       .off_by_default = patch.off_by_default});
     }
 
     // DLC

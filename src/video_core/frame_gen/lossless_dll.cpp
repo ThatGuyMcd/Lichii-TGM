@@ -40,12 +40,10 @@ constexpr u32 RESOURCE_SUBDIRECTORY_FLAG = 0x80000000;
 constexpr u32 RESOURCE_TYPE_RCDATA = 10;
 
 constexpr u32 MIPMAPS_SHADER_ID = 255;
-constexpr u32 GENERATE_SHADER_ID = 256;
-constexpr u32 PERFORMANCE_SHADER_ID_FIRST = 280;
 constexpr u32 PERFORMANCE_SHADER_ID_LAST = 302;
 
 constexpr u32 CACHE_MAGIC = 0x4746534C;
-constexpr u32 CACHE_VERSION = 4;
+constexpr u32 CACHE_VERSION = 5;
 
 struct CacheHeader {
     u32 magic;
@@ -263,34 +261,35 @@ using ResourceSpans = std::map<u32, std::span<const u8>>;
     return true;
 }
 
-[[nodiscard]] std::vector<u32> PerformanceShaderIds() {
-    std::vector<u32> ids{MIPMAPS_SHADER_ID, GENERATE_SHADER_ID};
-    for (u32 id = PERFORMANCE_SHADER_ID_FIRST; id <= PERFORMANCE_SHADER_ID_LAST; ++id) {
+[[nodiscard]] std::vector<u32> LsfgShaderIds() {
+    std::vector<u32> ids;
+    // Both LSFG 3.1 networks share mipmaps/generation; 257-279 are standard quality.
+    for (u32 id = MIPMAPS_SHADER_ID; id <= PERFORMANCE_SHADER_ID_LAST; ++id) {
         ids.push_back(id);
     }
     return ids;
 }
 
 template <typename Map>
-[[nodiscard]] bool HasPerformanceShaders(const Map& resources) {
-    const std::vector<u32> ids = PerformanceShaderIds();
+[[nodiscard]] bool HasLsfgShaders(const Map& resources) {
+    const std::vector<u32> ids = LsfgShaderIds();
     return std::ranges::all_of(ids, [&](u32 id) { return resources.contains(id); });
 }
 
 template <typename Map>
 [[nodiscard]] bool HasNativeShaders(const Map& resources) {
-    return std::ranges::all_of(PerformanceShaderIds(), [&](u32 id) {
-        const auto hit = resources.find(id + PerformanceShader::NATIVE_FP16_OFFSET);
+    return std::ranges::all_of(LsfgShaderIds(), [&](u32 id) {
+        const auto hit = resources.find(id + LsfgShader::NATIVE_FP16_OFFSET);
         return hit != resources.end() && IsSpirvModule(hit->second);
     });
 }
 
 [[nodiscard]] LosslessStatus TranslateAll(const ResourceSpans& resources, ShaderVariant variant,
                                           ShaderModules& out_modules) {
-    const u32 offset = variant == ShaderVariant::NativeFp16 ? PerformanceShader::NATIVE_FP16_OFFSET
-                                                            : PerformanceShader::NATIVE_FP32_OFFSET;
+    const u32 offset = variant == ShaderVariant::NativeFp16 ? LsfgShader::NATIVE_FP16_OFFSET
+                                                            : LsfgShader::NATIVE_FP32_OFFSET;
     out_modules.clear();
-    for (const u32 id : PerformanceShaderIds()) {
+    for (const u32 id : LsfgShaderIds()) {
         const auto hit = resources.find(id + offset);
         if (hit == resources.end()) {
             return LosslessStatus::MissingShaders;
@@ -356,7 +355,7 @@ template <typename Map>
         out_modules.emplace(id, std::move(words));
     }
 
-    return HasPerformanceShaders(out_modules);
+    return HasLsfgShaders(out_modules);
 }
 
 [[nodiscard]] LosslessStatus ReadImageFile(const std::filesystem::path& path,

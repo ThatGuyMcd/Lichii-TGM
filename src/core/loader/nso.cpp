@@ -170,6 +170,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::memcpy(codeset.memory.data() + end_offset + sizeof(NSOArgumentHeader), arg_data.data(), arg_data.size());
     }
 
+    if (pm) {
+        nso_header.segments[2].bss_size += pm->AdditionalNSOBssSize(nso_header, nso_file.GetName());
+    }
     codeset.DataSegment().size += nso_header.segments[2].bss_size;
     u32 image_size = PageAlignSize(u32(codeset.memory.size()) + nso_header.segments[2].bss_size);
     codeset.memory.resize(image_size);

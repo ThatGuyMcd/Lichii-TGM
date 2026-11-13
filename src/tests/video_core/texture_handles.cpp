@@ -986,3 +986,25 @@ TEST_CASE("A handle word the translation saw dereferenced is not a handle withou
     desc.handle_program = 0;
     CHECK_FALSE(VideoCommon::HandleIsStoragePointer(info, desc, 0));
 }
+
+TEST_CASE("Every texel buffer array element consumes the sampled image budget",
+          "[video_core][texture_handles]") {
+    for (const u32 texel_count : {4U, 8U}) {
+        CAPTURE(texel_count);
+        HandleProgram shader;
+        const Value offset{shader.Emit(Opcode::ShiftLeftLogical32, {shader.Storage(0), Value{4U}})};
+        auto& sample{shader.Sample(shader.Emit(Opcode::GetCbufU32, {Value{0U}, offset}))};
+        shader.Run();
+        auto& info = shader.program.info;
+        info.texture_buffer_descriptors.push_back({.count = texel_count});
+        Shader::HostTranslateInfo host;
+        host.ApplyDescriptorLimitPolicy();
+        host.max_per_stage_descriptor_sampled_images = 16;
+        host.max_per_stage_descriptor_samplers = 64;
+        Shader::Optimization::LimitSampledTextureArrays(shader.program, host);
+        REQUIRE(info.texture_descriptors.front().count == 16 - texel_count);
+        CHECK(sample.Arg(0).InstRecursive()->Arg(1).U32() == 15 - texel_count);
+        // The texel array remains intact; only the sampled texture array is bounded.
+        CHECK(info.texture_buffer_descriptors.front().count == texel_count);
+    }
+}

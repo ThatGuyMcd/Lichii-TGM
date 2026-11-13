@@ -13,7 +13,9 @@
 #include "common/cpu_features.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
+#include "common/literals.h"
 #include "common/logging.h"
+#include "common/memory_detect.h"
 #include "common/nx2_sampler.h"
 #include "common/adpf.h"
 #include "common/settings.h"
@@ -212,6 +214,12 @@ ProgramPlatform ReadProgramPlatform(System& system, const FileSys::VirtualFile& 
 }
 
 } // namespace
+
+std::optional<u64> FindSwitch2Program(System& system, const FileSys::VirtualFile& file,
+                                    u64 program_id, std::size_t program_index) {
+    const auto platform = ReadProgramPlatform(system, file, program_id, program_index);
+    return platform.is_switch2 ? std::optional{platform.program_id} : std::nullopt;
+}
 
 struct System::Impl {
     explicit Impl(System& system)
@@ -455,6 +463,16 @@ struct System::Impl {
         Settings::SetGameHandheldOverride(false);
         if (new_application) {
             OotUltrawide::BeginApplication(platform.program_id, switch2_program);
+        }
+
+        if (const auto ram = Common::GetHostRam();
+            switch2_program && Common::IsBelowSwitch2RamMinimum(ram)) {
+            using namespace Common::Literals;
+            LOG_WARNING(Core,
+                        "Low host RAM: {:.3g} GB {}; Switch 2 titles need at least 16 GB (32 GB "
+                        "recommended)",
+                        static_cast<f64>(ram.bytes) / f64{1_GiB},
+                        ram.installed ? "installed" : "usable");
         }
 
         // Switch 2 titles size their heap from the total memory and need the 12 GiB layout. Set it

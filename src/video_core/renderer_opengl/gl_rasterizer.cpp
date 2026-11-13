@@ -18,6 +18,7 @@
 #include "common/math_util.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "video_core/buffer_cache/indirect_buffer.h"
 #include "shader_recompiler/exception.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/kepler_compute.h"
@@ -424,10 +425,8 @@ void RasterizerOpenGL::DispatchCompute() {
     auto indirect_address = kepler_compute->GetIndirectComputeAddress();
     if (indirect_address) {
         // DispatchIndirect
-        static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
-        const auto post_op = VideoCommon::ObtainBufferOperation::DiscardWrite;
         const auto [buffer, offset] =
-            buffer_cache.ObtainBuffer(*indirect_address, 12, sync_info, post_op);
+            VideoCommon::ObtainIndirectBuffer(buffer_cache, *indirect_address);
         glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, buffer->Handle());
         glDispatchComputeIndirect(static_cast<GLintptr>(offset));
         return;

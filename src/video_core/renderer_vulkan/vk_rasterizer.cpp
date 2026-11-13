@@ -36,6 +36,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/indirect_buffer.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/gpu_wait_stats.h"
 #include "video_core/host_logic_op.h"
@@ -80,6 +81,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2.h"
+#include "video_core/nx2_backx.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_drain_check.h"
 #include "video_core/nx2_fast_draw.h"
@@ -513,6 +515,8 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
     namespace FastDraw = VideoCommon::Nx2FastDraw;
     const ReusableDraw draw = std::exchange(reusable_draw, ReusableDraw{});
     const FastDraw::Delta delta = std::exchange(FastDraw::g_delta, FastDraw::Delta{});
+    // A draw that stopped before binding its uniforms never handed its writes to the keeps.
+    uniform_writes_lost |= std::exchange(taken_delta_unconsumed, true);
     taken_delta = delta;
     const auto full = [&](FullDraw reason) -> GraphicsPipeline* {
         ++fast_draw_stats.full[static_cast<size_t>(reason)];
@@ -718,6 +722,9 @@ void RasterizerVulkan::ReportFastDraws() {
              all_draws == 0 ? 0.0 : static_cast<double>(all_ns) / 1e3 / static_cast<double>(all_draws),
              static_cast<double>(all_draws) / seconds);
     if (fast_draw_verify) {
+        if (stats.vertex_input_mismatches != 0) {
+            LOG_ERROR(Render_Vulkan, "Fast draw vertex input mismatches: {}", stats.vertex_input_mismatches);
+        }
         LOG_INFO(Render_Vulkan,
                  "Fast draw verify per second: {:.0f} checked, {:.0f} pipeline mismatches, {:.0f} "
                  "view or sampler mismatches, {:.0f} kept buffer binding mismatches (totals {} {} "
@@ -886,6 +893,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         fast_draw_on = on;
         reusable_draw = {};
         FastDraw::g_delta = {};
+        uniform_writes_lost = true;
         fast_draw_stats = {};
     }
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
@@ -1306,6 +1314,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     };
     const bool delta_holds =
         delta_pipeline != nullptr && DeltaStillHolds(draw_serial, draw_map_serial);
+    verify_vertex_input = fast_draw_verify && delta_holds;
     const bool verify_views =
         delta_holds && verify_pipeline != nullptr && verify_pipeline == pipeline;
     if (delta_holds && verify_pipeline != nullptr) {
@@ -1313,7 +1322,10 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         fast_draw_stats.pipeline_mismatches += verify_pipeline != pipeline ? 1 : 0;
     }
     const DrawPath path = delta_holds && !verify_pipeline ? DrawPath::Delta : DrawPath::Full;
-    buffer_cache.BeginGraphicsUniforms(path == DrawPath::Delta ? &taken_delta : nullptr);
+    // Every draw keeps the uniform buffers no write reached since they were streamed.
+    buffer_cache.BeginGraphicsUniforms(fast_draw_on && !uniform_writes_lost ? &taken_delta
+                                                                            : nullptr);
+    uniform_writes_lost = taken_delta_unconsumed = false;
     if (path == DrawPath::Delta) {
         if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->ConfigureDelta(is_indexed)) {
             report_failure("configure failed");
@@ -2688,10 +2700,8 @@ void RasterizerVulkan::DispatchCompute() {
     }
     if (indirect_address) {
         // DispatchIndirect
-        static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
-        const auto post_op = VideoCommon::ObtainBufferOperation::DiscardWrite;
         const auto [buffer, offset] =
-            buffer_cache.ObtainBuffer(*indirect_address, 12, sync_info, post_op);
+            VideoCommon::ObtainIndirectBuffer(buffer_cache, *indirect_address);
         scheduler.RequestOutsideRenderPassOperationContext();
         scheduler.NoteComputeWrites();
         scheduler.TraceComputePipeline(pipeline->ShaderHash());
@@ -2809,6 +2819,8 @@ void RasterizerVulkan::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
             VideoCommon::Nx2DrainCheck::NoteRelease(*released);
         }
     }
+    // Reports and semaphore releases reach guest memory the CPU may wait on.
+    VideoCommon::Nx2FastDraw::NoteSync();
     query_cache.CounterReport(gpu_addr, type, flags, payload, subreport);
 }
 
@@ -3088,6 +3100,16 @@ void RasterizerVulkan::InvalidateRegion(DAddr addr, u64 size, VideoCommon::Cache
 }
 
 void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    InvalidateCachedWrites(sequences, false);
+}
+
+void RasterizerVulkan::InvalidateConstantBufferData(
+    std::span<const std::pair<DAddr, std::size_t>> sequences) {
+    InvalidateCachedWrites(sequences, true);
+}
+
+void RasterizerVulkan::InvalidateCachedWrites(
+    std::span<const std::pair<DAddr, std::size_t>> sequences, bool constant_buffer_data) {
     // The GPU's own cached writes (constant buffer data, every draw): most land where no image,
     // query or shader was ever registered, which page_filter tells without the caches' locks.
     const auto any = [&](const VideoCommon::PageFilter& filter) {
@@ -3109,11 +3131,20 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
     if (Settings::values.skip_cpu_inner_invalidation.GetValue()) {
         return;
     }
-    {
+    // Constant buffer data only streamed uniform buffers read needs no buffer cache work: those
+    // pages stay CPU-modified, and uniform keeps learn of the write from the draw's fast draw
+    // delta (BufferCache::ConstantDataReachesBuffers).
+    const auto reaches_buffers = [&](const std::pair<DAddr, std::size_t>& range) {
+        return !constant_buffer_data ||
+               buffer_cache.ConstantDataReachesBuffers(range.first, range.second);
+    };
+    if (std::ranges::any_of(sequences, reaches_buffers)) {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.ClaimCpuWrites(sequences);
-        for (const auto& [addr, size] : sequences) {
-            buffer_cache.WriteMemory(addr, size);
+        for (const auto& range : sequences) {
+            if (reaches_buffers(range)) {
+                buffer_cache.WriteMemory(range.first, range.second);
+            }
         }
     }
     if (any(query_cache.page_filter)) {
@@ -3143,14 +3174,36 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
 }
 
 void RasterizerVulkan::OnCacheInvalidations(std::span<const std::pair<DAddr, u64>> ranges) {
-    // Out of the GPU-written ranges first: applying one write downloads the GPU's bytes elsewhere
-    // on its pages (WriteMemory), which would write over the next collected write.
+    // Each cache's lock is taken once for all the writes, not once a write (jpkto/Lichii
+    // f5edeabdbb): guest CPU write traps hold the buffer cache's for long. The caches are
+    // independent (TextureCache::WriteMemory reads and changes only texture state, and the page
+    // counts both change commute), so each ends as with the writes applied one by one.
+    const auto valid = [](const std::pair<DAddr, u64>& range) {
+        return range.first != 0 && range.second != 0;
+    };
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        for (const auto& range : ranges) {
+            if (valid(range)) {
+                texture_cache.WriteMemory(range.first, range.second);
+            }
+        }
+    }
     {
         std::scoped_lock lock{buffer_cache.mutex};
+        // Out of the GPU-written ranges first: applying one write downloads the GPU's bytes
+        // elsewhere on its pages (WriteMemory), which would write over the next collected write.
         buffer_cache.ClaimCpuWrites(ranges);
+        for (const auto& range : ranges) {
+            if (valid(range)) {
+                buffer_cache.WriteMemory(range.first, range.second);
+            }
+        }
     }
-    for (const auto& [addr, size] : ranges) {
-        OnCacheInvalidation(addr, size);
+    for (const auto& range : ranges) {
+        if (valid(range)) {
+            pipeline_cache.InvalidateRegion(range.first, range.second);
+        }
     }
 }
 
@@ -3211,18 +3264,22 @@ void RasterizerVulkan::ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) {
 }
 
 void RasterizerVulkan::SignalFence(std::function<void()>&& func) {
+    VideoCommon::Nx2FastDraw::NoteSync();
     fence_manager.SignalFence(std::move(func));
 }
 
 void RasterizerVulkan::SyncOperation(std::function<void()>&& func) {
+    VideoCommon::Nx2FastDraw::NoteSync();
     fence_manager.SyncOperation(std::move(func));
 }
 
 void RasterizerVulkan::SignalSyncPoint(u32 value) {
+    VideoCommon::Nx2FastDraw::NoteSync();
     fence_manager.SignalSyncPoint(value);
 }
 
 void RasterizerVulkan::SignalReference() {
+    VideoCommon::Nx2FastDraw::NoteSync();
     fence_manager.SignalReference();
 }
 
@@ -4069,8 +4126,41 @@ void RasterizerVulkan::AccelerateInlineToMemory(GPUVAddr address, size_t copy_si
     }();
     // One cache at a time: holding both while waiting for either (std::lock) waited longer, the
     // fencing thread and CPU write traps holding one of them most of the time.
-    bool uploaded;
-    {
+    bool uploaded = false;
+    // InlineMemory uploads only into GPU-written buffer data, and Nx2NoteListHostWrite acts only
+    // on command list pages and kept words (GPU-written too). Every range the buffer cache records
+    // as GPU-written marks its pages in Tegra::g_nx2_gpu_written_pages first, under its lock, on
+    // this thread, and the bits never clear. So when no written page has either mark the locked
+    // section changes nothing, and the write skips the lock (jpkto/Lichii 7a5e5357cb).
+    const DAddr page_begin = Common::AlignDown(*cpu_addr, Core::DEVICE_PAGESIZE);
+    const DAddr page_end = Common::AlignUp(*cpu_addr + copy_size, Core::DEVICE_PAGESIZE);
+    const auto reaches_list_page = [&] {
+        if (copy_size == 0 ||
+            !Tegra::g_nx2_has_command_list_pages.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        for (DAddr page = page_begin; page < page_end;
+             page += DAddr{1} << Tegra::Nx2WrittenPageBits) {
+            if (Tegra::Nx2IsCommandListPage(page)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const bool lock_free = defer && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+                           !Tegra::Nx2MayBeGpuWritten(page_begin, page_end - page_begin) &&
+                           !reaches_list_page();
+    if (lock_free) {
+        if (VideoCommon::BackX::g_verify) {
+            std::scoped_lock lock{buffer_cache.mutex};
+            if (buffer_cache.IsRegionGpuModified(page_begin, page_end - page_begin)) {
+                VideoCommon::BackX::Mismatch("inline write into GPU-written buffer data", *cpu_addr,
+                                             copy_size);
+                buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size);
+                uploaded = buffer_cache.InlineMemory(*cpu_addr, copy_size, memory);
+            }
+        }
+    } else {
         std::scoped_lock lock{buffer_cache.mutex};
         // Guest memory has the words now: a command list copy of the page no longer does.
         buffer_cache.Nx2NoteListHostWrite(*cpu_addr, copy_size);
@@ -5765,15 +5855,10 @@ void RasterizerVulkan::UpdateStencilTestEnable(Tegra::Engines::Maxwell3D::Regs& 
 
 void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) {
     auto& dirty{maxwell3d->dirty.flags};
-    const bool vertex_input_dirty = dirty[Dirty::VertexInput];
-    const bool vertex_buffers_dirty = dirty[VideoCommon::Dirty::VertexBuffers];
-    if (!vertex_input_dirty && !vertex_buffers_dirty) {
+    const bool record = dirty[Dirty::VertexInput] || dirty[VideoCommon::Dirty::VertexBuffers];
+    if (!record && !verify_vertex_input) {
         return;
     }
-    dirty[Dirty::VertexInput] = false;
-
-    boost::container::static_vector<VkVertexInputBindingDescription2EXT, 32> bindings;
-    boost::container::static_vector<VkVertexInputAttributeDescription2EXT, 32> attributes;
 
     const u32 max_attributes =
         static_cast<u32>(std::min<size_t>(Maxwell::NumVertexAttributes,
@@ -5781,15 +5866,89 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) 
     const u32 max_bindings =
         static_cast<u32>(std::min<size_t>(Maxwell::NumVertexArrays,
                                           device.GetMaxVertexInputBindings()));
+    const auto same_state = [](const VertexInputState& lhs, const VertexInputState& rhs) {
+        return std::ranges::equal(lhs.bindings, rhs.bindings,
+                                  [](const auto& a, const auto& b) {
+                                      return a.binding == b.binding && a.stride == b.stride &&
+                                             a.inputRate == b.inputRate && a.divisor == b.divisor;
+                                  }) &&
+               std::ranges::equal(lhs.attributes, rhs.attributes, [](const auto& a, const auto& b) {
+                   return a.location == b.location && a.binding == b.binding &&
+                          a.format == b.format && a.offset == b.offset;
+               });
+    };
 
+    if (!record) {
+        // EDEN_NX2_FAST_DRAW_VERIFY: no dirty flag asked for it, so the vertex input recorded
+        // last must be what the registers give.
+        VertexInputState state;
+        BuildVertexInput(regs, max_attributes, max_bindings, state);
+        if (vertex_input_recorded && !same_state(state, recorded_vertex_input)) {
+            ++fast_draw_stats.vertex_input_mismatches;
+        }
+        return;
+    }
+    dirty[Dirty::VertexInput] = false;
+    for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
+        dirty[Dirty::VertexAttribute0 + index] = false;
+    }
+    for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
+        dirty[Dirty::VertexBinding0 + index] = false;
+    }
 
+    // The state these registers built before, recorded by reference instead of built and copied
+    // into the command again (jpkto/Lichii e7581fa9f6): converting every attribute's format and
+    // copying both arrays into the command was ~0.5 ms a frame of Mario Kart World's back.
+    VideoCommon::VertexInputKey key{
+        .num_attributes = max_attributes,
+        .num_bindings = max_bindings,
+    };
+    for (u32 index = 0; index < max_attributes; ++index) {
+        key.attributes[index] = regs.vertex_attrib_format[index].hex;
+    }
+    for (u32 binding = 0; binding < max_bindings; ++binding) {
+        const auto& stream{regs.vertex_streams[binding]};
+        key.strides[binding] = stream.stride.Value();
+        key.divisors[binding] = stream.frequency;
+        key.instanced |= (regs.vertex_stream_instances.IsInstancingEnabled(binding) ? 1U : 0U)
+                         << binding;
+        key.repacked |= (buffer_cache_runtime.IsVertexRepacked(binding) ? 1U : 0U) << binding;
+    }
+    const u64 hash = key.Hash();
+    std::shared_ptr<const VertexInputState> state = vertex_input_cache.Find(key, hash);
+    if (!state) {
+        auto built = std::make_shared<VertexInputState>();
+        BuildVertexInput(regs, max_attributes, max_bindings, *built);
+        state = std::move(built);
+        vertex_input_cache.Insert(key, hash, state);
+    } else if (fast_draw_verify) {
+        // The key must hold everything the build reads.
+        VertexInputState built;
+        BuildVertexInput(regs, max_attributes, max_bindings, built);
+        if (!same_state(built, *state)) {
+            ++fast_draw_stats.vertex_input_mismatches;
+        }
+    }
+    if (fast_draw_verify) {
+        recorded_vertex_input = *state;
+        vertex_input_recorded = true;
+    }
+
+    scheduler.Record([input = std::move(state)](vk::CommandBuffer cmdbuf) {
+        cmdbuf.SetVertexInputEXT(input->bindings, input->attributes);
+    });
+}
+
+void RasterizerVulkan::BuildVertexInput(const Tegra::Engines::Maxwell3D::Regs& regs,
+                                        u32 max_attributes, u32 max_bindings,
+                                        VertexInputState& state) {
     for (u32 index = 0; index < max_attributes; ++index) {
         const Maxwell::VertexAttribute attribute{regs.vertex_attrib_format[index]};
         const u32 binding{attribute.buffer};
         if (attribute.constant || binding >= max_bindings) {
             continue;
         }
-        attributes.push_back({
+        state.attributes.push_back({
             .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
             .pNext = nullptr,
             .location = index,
@@ -5803,7 +5962,7 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) 
     for (u32 binding = 0; binding < max_bindings; ++binding) {
         const auto& input_binding{regs.vertex_streams[binding]};
         const bool is_instanced{regs.vertex_stream_instances.IsInstancingEnabled(binding)};
-        bindings.push_back({
+        state.bindings.push_back({
             .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
             .pNext = nullptr,
             .binding = binding,
@@ -5812,17 +5971,6 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs) 
             .divisor = is_instanced ? input_binding.frequency : 1,
         });
     }
-
-    for (size_t index = 0; index < Maxwell::NumVertexAttributes; ++index) {
-        dirty[Dirty::VertexAttribute0 + index] = false;
-    }
-    for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
-        dirty[Dirty::VertexBinding0 + index] = false;
-    }
-
-    scheduler.Record([bindings, attributes](vk::CommandBuffer cmdbuf) {
-        cmdbuf.SetVertexInputEXT(bindings, attributes);
-    });
 }
 
 void RasterizerVulkan::InitializeChannel(Tegra::Control::ChannelState& channel) {

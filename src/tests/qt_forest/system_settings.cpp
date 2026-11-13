@@ -6,9 +6,15 @@
 #include <QDateTimeEdit>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QFile>
+#include <QImage>
+#include <QTemporaryDir>
 #include <QtTest>
+#include "common/fs/path_util.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
+#include "qt_common/util/game.h"
 #include "yuzu/configuration/configure_system.h"
 #include "yuzu/configuration/shared_widget.h"
 
@@ -40,6 +46,35 @@ class SystemSettingsTests : public QObject {
     }
 
 private slots:
+    void customLibraryMetadataDoesNotRewriteTheGame() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto previous = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir);
+        SCOPE_EXIT { Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir, previous); };
+        Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir,
+                               std::filesystem::path{directory.path().toStdString()});
+        QFile game(directory.filePath(QStringLiteral("game.nup")));
+        const QByteArray original = QByteArrayLiteral("synthetic read-only game contents");
+        QVERIFY(game.open(QIODevice::WriteOnly));
+        QCOMPARE(game.write(original), qint64{original.size()});
+        game.close();
+        constexpr u64 program = 0x0400486024DEC000;
+        QImage artwork(32, 16, QImage::Format_ARGB32);
+        artwork.fill(Qt::green);
+        QVERIFY(QtCommon::Game::SaveCustomArtwork(program, artwork));
+        QVERIFY(QtCommon::Game::SaveCustomTitle(program, "  My  OOT game  "));
+        QCOMPARE(QtCommon::Game::ReadCustomTitle(program), std::string{"My OOT game"});
+        QVERIFY(QtCommon::Game::ReadCustomTitle(program + 1).empty());
+        const auto png = QtCommon::Game::ReadCustomArtwork(program);
+        QVERIFY(!png.empty());
+        QCOMPARE(QImage::fromData(png.data(), static_cast<int>(png.size())).size(), artwork.size());
+        QVERIFY(QtCommon::Game::RemoveCustomArtwork(program));
+        QVERIFY(QtCommon::Game::SaveCustomTitle(program, ""));
+        QVERIFY(QtCommon::Game::ReadCustomArtwork(program).empty());
+        QVERIFY(QtCommon::Game::ReadCustomTitle(program).empty());
+        QVERIFY(game.open(QIODevice::ReadOnly));
+        QCOMPARE(game.readAll(), original);
+    }
     void init() {
         was_global = Settings::IsConfiguringGlobal();
         Settings::SetConfiguringGlobal(true);

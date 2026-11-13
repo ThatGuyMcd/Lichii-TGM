@@ -106,6 +106,8 @@ struct Values {
                                                            true};
 
     Setting<bool> first_start{linkage, true, "firstStart", Category::Ui};
+    Setting<bool> show_low_ram_warning{linkage, true, "show_low_ram_warning", Category::UiGeneral,
+                                         Settings::Specialization::Default, true, true};
     Setting<bool> pause_when_in_background{linkage,
                                            false,
                                            "pauseWhenInBackground",

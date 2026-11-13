@@ -24,6 +24,18 @@ public:
 
     ~GPUDirtyMemoryManager() = default;
 
+    static inline bool count_collects{};
+
+    [[nodiscard]] u64 Collects() const {
+        return collects.load(std::memory_order_acquire);
+    }
+
+    /// Whether the next Gather can find collected work. This does not describe writes an
+    /// earlier Gather is currently applying; ForEachPending retains ownership of those too.
+    [[nodiscard]] bool MayHavePending() const {
+        return current.load(std::memory_order_acquire).mask != 0;
+    }
+
     void Collect(PAddr address, size_t size) {
         // A transform describes only one half-page. Split uploads before making its mask.
         while (size != 0) {
@@ -46,6 +58,7 @@ private:
                     std::scoped_lock lk(guard);
                     back_buffer.emplace_back(tmp);
                     current.exchange(t, std::memory_order_relaxed);
+                    CountCollect();
                     return;
                 }
                 tmp.address = t.address;
@@ -57,6 +70,13 @@ private:
             tmp.mask |= t.mask;
         } while (!current.compare_exchange_weak(original, tmp, std::memory_order_release,
                                                 std::memory_order_relaxed));
+        CountCollect();
+    }
+
+    void CountCollect() {
+        if (count_collects) {
+            collects.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
 public:
@@ -180,6 +200,7 @@ private:
     }
 
     std::atomic<TransformAddress> current{};
+    std::atomic<u64> collects{};
     std::mutex guard;
     std::mutex gather_guard;
     std::vector<TransformAddress> back_buffer;

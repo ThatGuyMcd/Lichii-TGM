@@ -602,6 +602,15 @@ struct Values {
     SwitchableSetting<bool> frame_gen_dump_flow{linkage, false, "frame_gen_dump_flow",
                                                 Category::Renderer};
 
+    SwitchableSetting<bool> frame_gen_performance_mode{linkage,
+                                                       true,
+                                                       "frame_gen_performance_mode",
+                                                       Category::Renderer,
+                                                       Specialization::Default,
+                                                       true,
+                                                       true,
+                                                       &frame_gen};
+
     SwitchableSetting<bool> use_asynchronous_gpu_emulation{linkage, true, "use_asynchronous_gpu_emulation",
                                                            Category::Renderer};
     // *nix platforms may have issues with the borderless windowed fullscreen mode.
@@ -1059,6 +1068,9 @@ struct Values {
     Setting<int> xbox_hit_accents{linkage, 50, "xbox_hit_accents", Category::Controls};
     // Direct mode: share of the high band sent to the trigger motors (left side LT, right RT)
     Setting<int> xbox_trigger_mix{linkage, 20, "xbox_trigger_mix", Category::Controls};
+    // Optional trigger motors for the SDL fallback; RenHDrum keeps its own controller policy.
+    Setting<u8, true> trigger_rumble_strength{linkage, 0, 0, 100, "trigger_rumble_strength",
+                                              Category::Controls};
 
     SwitchableSetting<bool> motion_enabled{linkage, true, "motion_enabled", Category::Controls};
     Setting<std::string> udp_input_servers{linkage, "127.0.0.1:26760", "udp_input_servers",

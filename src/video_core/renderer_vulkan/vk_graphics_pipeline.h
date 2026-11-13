@@ -31,6 +31,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_library.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/texture_cache/draw_template.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace VideoCore {
@@ -112,6 +113,13 @@ struct GraphicsPipelineLibraryParams {
     bool libraries_only{};
 };
 
+/// The sampled textures and image descriptors of a draw, kept across frames (ConfigureImpl).
+using DrawTemplate =
+    VideoCommon::DrawTemplate<DescriptorUpdateEntry,
+                              Tegra::Engines::Maxwell3D::Regs::MaxShaderStage,
+                              Shader::Backend::SPIRV::NUM_TEXTURE_AND_IMAGE_SCALING_WORDS>;
+using DrawTemplates = VideoCommon::DrawTemplateTable<DrawTemplate>;
+
 /// What an evicted graphics pipeline needs to be built again without translating its shaders
 struct KeptGraphicsStages {
     static constexpr size_t NUM_STAGES = Tegra::Engines::Maxwell3D::Regs::MaxShaderStage;
@@ -161,7 +169,8 @@ public:
         VideoCore::ShaderNotify* shader_notify,
         const Device& device, DescriptorPool& descriptor_pool,
         GuestDescriptorQueue& guest_descriptor_queue,
-        DescriptorBufferRing& descriptor_buffer_ring, const PipelineBuildQueue& build_queue,
+        DescriptorBufferRing& descriptor_buffer_ring, DrawTemplates& draw_templates,
+        const PipelineBuildQueue& build_queue,
         PipelineStatistics* pipeline_statistics, RenderPassCache& render_pass_cache,
         const GraphicsPipelineCacheKey& key, std::array<vk::ShaderModule, NUM_STAGES> stages,
         const std::array<const Shader::Info*, NUM_STAGES>& infos,
@@ -503,6 +512,17 @@ private:
 
     void KeepImageDescriptors(size_t stage, size_t first_entry);
 
+    /// Keeps the draw's textures and image descriptors, which the guest descriptor queue holds
+    /// at `ranges`, for later draws with the same key. With `verified`, the template the key
+    /// found is compared with them first (EDEN_NX2_DRAW_TEMPLATE_VERIFY).
+    void KeepDrawTemplate(DrawTemplate* verified, const VideoCommon::DrawTemplateContext& context,
+                          std::span<const u32> handles, u64 hash,
+                          std::span<const VideoCommon::TextureHandleRead> reads,
+                          std::span<const VideoCommon::ImageViewInOut> views,
+                          std::span<const VideoCommon::SamplerId> samplers,
+                          const std::array<std::pair<u32, u32>, NUM_STAGES>& ranges,
+                          const RescalingPushConstant& rescaling);
+
     bool ConfigureDraw(const RescalingPushConstant& rescaling,
                        const RenderAreaPushConstant& render_are);
 
@@ -542,6 +562,10 @@ private:
     Scheduler& scheduler;
     GuestDescriptorQueue& guest_descriptor_queue;
     DescriptorBufferRing& descriptor_buffer_ring;
+    DrawTemplates& draw_templates;
+    const u64 template_owner;
+    VideoCommon::DrawTemplateRecorder template_recorder;
+    u64 last_template_context{}; ///< Hash of the last kept template's context (verify, profile)
 
     bool (*configure_func)(GraphicsPipeline*, bool){};
 
@@ -569,7 +593,7 @@ private:
     u32 color_output_mask{};
     bool writes_storage{};
     /// Every texture is sampled with a handle read from a constant buffer: ConfigureImpl can
-    /// resolve them from texture_memo.
+    /// resolve them from texture_memo or a draw template.
     bool texture_memo_eligible{};
     VideoCommon::SampledTextureMemo texture_memo;
     bool writes_images{};

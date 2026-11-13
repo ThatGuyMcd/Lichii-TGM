@@ -18,6 +18,7 @@
 #include "video_core/neural_rendering/model.h"
 #include "video_core/neural_rendering/runtime.h"
 #include "video_core/renderer_vulkan/vk_nvidia_dlss.h"
+#include "video_core/renderer_vulkan/vk_ngx_frame_gen.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/vulkan_common/ngx_api.h"
 #include "video_core/vulkan_common/ngx_dlss.h"
@@ -196,8 +197,12 @@ bool NvidiaDlssUpscaler::Upscale(const Inputs &in) {
                     VK_IMAGE_ASPECT_COLOR_BIT};
     scheduler.RequestOutsideRenderPassOperationContext();
     const u32 index = frame_index++;
+    NgxFrameGen* frame_gen = NgxFrameGen::Current();
+    const auto* capture = frame_gen ? frame_gen->PrepareCapture(in) : nullptr;
+    const u64 capture_sequence = capture ? frame_gen->CaptureSequence() : 0;
     scheduler.Record([this, in, out, hdr, auto_exposure, preset, neural_style, neural_options,
-                      index, exposure_image_handle = exposure_image ? *exposure_image : VkImage{},
+                      index, capture, capture_sequence,
+                      exposure_image_handle = exposure_image ? *exposure_image : VkImage{},
                       exposure_view_handle = exposure_view ? *exposure_view : VkImageView{},
                       reset = in.reset || options_changed](vk::CommandBuffer cmdbuf) {
         const auto &api = Ngx::GetApi();
@@ -351,6 +356,9 @@ bool NvidiaDlssUpscaler::Upscale(const Inputs &in) {
                                            VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL));
         }
         const auto result = api.evaluate(*cmdbuf, feature, parameters, nullptr);
+        if (capture && NVSDK_NGX_SUCCEED(result)) {
+            NgxFrameGen::RecordCapture(cmdbuf, in, *capture, capture_sequence);
+        }
         const std::array restore{
             Barrier(in.color, VK_ACCESS_SHADER_READ_BIT,
                     VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,

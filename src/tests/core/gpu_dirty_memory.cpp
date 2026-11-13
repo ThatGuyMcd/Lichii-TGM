@@ -13,8 +13,10 @@
 TEST_CASE("GPUDirtyMemoryManager reports collected writes until they are gathered",
           "[core][gpu_dirty_memory]") {
     Core::GPUDirtyMemoryManager manager;
+    REQUIRE_FALSE(manager.MayHavePending());
     manager.Collect(0x10040, 0x10);
     manager.Collect(0x20000, 0x40);
+    REQUIRE(manager.MayHavePending());
 
     REQUIRE(manager.Overlaps(0x10040, 1));
     REQUIRE(manager.Overlaps(0x10000, 0x1000));
@@ -28,6 +30,7 @@ TEST_CASE("GPUDirtyMemoryManager reports collected writes until they are gathere
         gathered.emplace_back(address, size);
     };
     manager.Gather(callback);
+    REQUIRE_FALSE(manager.MayHavePending());
 
     REQUIRE(gathered.size() == 2);
     REQUIRE_FALSE(manager.Overlaps(0x10000, 0x1000));

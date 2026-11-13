@@ -18,6 +18,8 @@ struct Api {
     Init init{};
     NVSDK_NGX_Result (*shutdown)(VkDevice, int *){};
     decltype(&NVSDK_NGX_VULKAN_RequiredExtensions) required_extensions{};
+    decltype(&NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements) feature_instance_extensions{};
+    decltype(&NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements) feature_device_extensions{};
     decltype(&NVSDK_NGX_VULKAN_GetCapabilityParameters) capabilities{};
     decltype(&NVSDK_NGX_VULKAN_AllocateParameters) allocate_parameters{};
     decltype(&NVSDK_NGX_VULKAN_DestroyParameters) destroy_parameters{};

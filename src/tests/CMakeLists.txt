@@ -5,6 +5,17 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    video_core/draw_template.cpp
+    video_core/frame_gen_choice.cpp
+    video_core/lsfg_model.cpp
+    video_core/nx2_backx.cpp
+    video_core/shader_reuse.cpp
+    video_core/vertex_input_cache.cpp
+    core/nx2_fence_action.cpp
+    core/nx2_present_queue.cpp
+    core/nx2_syncpoint_allocator.cpp
+    common/nvidia_shader_cache.cpp
+    common/memory_detect.cpp
     video_core/ngx_runtime_path.cpp
     video_core/driver_cache_stats.cpp
     video_core/image_layout_guards.cpp

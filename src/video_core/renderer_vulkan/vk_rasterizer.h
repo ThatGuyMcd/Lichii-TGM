@@ -39,6 +39,7 @@
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/vertex_input_cache.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -142,6 +143,8 @@ public:
                           VideoCommon::CacheType which = VideoCommon::CacheType::All) override;
     void PrepareRegionWrite(DAddr addr, u64 size, VideoCommon::CacheType which) override;
     void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override;
+    void InvalidateConstantBufferData(
+        std::span<const std::pair<DAddr, std::size_t>> sequences) override;
     void OnCacheInvalidation(DAddr addr, u64 size) override;
     void OnCacheInvalidations(std::span<const std::pair<DAddr, u64>> ranges) override;
     bool TryCacheInvalidation(DAddr addr, u64 size) override;
@@ -322,6 +325,18 @@ private:
     void UpdateColorWriteEnable(Tegra::Engines::Maxwell3D::Regs& regs);
 
     void UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs);
+
+    /// A dynamic vertex input state: what vkCmdSetVertexInputEXT is given.
+    struct VertexInputState {
+        boost::container::static_vector<VkVertexInputBindingDescription2EXT, 32> bindings;
+        boost::container::static_vector<VkVertexInputAttributeDescription2EXT, 32> attributes;
+    };
+    /// Builds the state from the attribute formats, vertex streams and repacked bindings (the
+    /// registers VideoCommon::VertexInputKey holds).
+    void BuildVertexInput(const Tegra::Engines::Maxwell3D::Regs& regs, u32 max_attributes,
+                          u32 max_bindings, VertexInputState& state);
+    /// Dynamic vertex input states built before, by the registers they were built from.
+    VideoCommon::VertexInputCache<VertexInputState> vertex_input_cache;
 
     /// Clears a 3D color target whose slices the framebuffer can't reach. Returns true when handled.
     bool ClearVolumeSlices(const Framebuffer* framebuffer, u32 first_slice, u32 slice_count);
@@ -529,6 +544,7 @@ private:
         u64 pipeline_mismatches{};
         u64 view_mismatches{};
         u64 binding_mismatches{};
+        u64 vertex_input_mismatches{};
         /// DeltaPipeline draws by GraphicsPipeline::DeltaDrawBlocker.
         std::array<u64, static_cast<size_t>(GraphicsPipeline::DeltaBlocker::Count)> delta_blockers{};
         /// StateChanged draws by the reason of the last break, and by its 3D method.
@@ -539,6 +555,8 @@ private:
     /// The pipeline the draw can take the delta path with, or null for a full resolve. Clears
     /// the remembered draw either way: only a recorded draw remembers one again.
     GraphicsPipeline* TakeReusableDraw(bool is_indexed, bool is_indirect);
+    void InvalidateCachedWrites(std::span<const std::pair<DAddr, std::size_t>> sequences,
+                                bool constant_buffer_data);
     /// Whether the draw TakeReusableDraw took still holds once the caches are locked (serial and
     /// map_serial as read then), and the images it samples need no preparing.
     bool DeltaStillHolds(u64 serial, u64 map_serial);
@@ -553,10 +571,19 @@ private:
         handle_spans;
     /// The constant buffer binds and data since the previous draw.
     VideoCommon::Nx2FastDraw::Delta taken_delta;
+    /// taken_delta hasn't reached BeginGraphicsUniforms yet (the draw may still stop before).
+    bool taken_delta_unconsumed{};
+    /// Constant buffer data since the last BeginGraphicsUniforms that no delta it got holds.
+    bool uniform_writes_lost{};
     FastDrawStats fast_draw_stats;
     /// Nx2FastDraw::Enabled and VerifyEnabled as the drawing thread last read them.
     bool fast_draw_on{};
     bool fast_draw_verify{};
+    /// EDEN_NX2_FAST_DRAW_VERIFY: this draw passed DeltaStillHolds, so UpdateVertexInput compares
+    /// the vertex input recorded last with what the registers give now.
+    bool verify_vertex_input{};
+    VertexInputState recorded_vertex_input;
+    bool vertex_input_recorded{};
 
     struct IndirectTrace {
         vk::Buffer readback;

@@ -9,6 +9,7 @@
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
 #include "common/scm_rev.h"
+#include "common/nvidia_shader_cache.h"
 #include "nx2_switches.h"
 #include "startup_checks.h"
 
@@ -102,6 +103,7 @@ static void StartProfileDumper() {
 #endif
 
 int main(int argc, char* argv[]) {
+    Common::SetUpNvidiaShaderDiskCache();
     LoadNx2Switches(argv[0]);
 #ifdef LICHII_PGO_GENERATE
     StartProfileDumper();

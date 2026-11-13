@@ -20,6 +20,7 @@ add_library(video_core STATIC
     buffer_cache/buffer_cache_base.h
     buffer_cache/buffer_cache.cpp
     buffer_cache/buffer_cache.h
+    buffer_cache/indirect_buffer.h
     buffer_cache/memory_tracker_base.h
     buffer_cache/upload_order.h
     buffer_cache/usage_tracker.h
@@ -106,6 +107,7 @@ add_library(video_core STATIC
     macro_turing.h
     fence_manager.h
     front_qmd.h
+    frame_gen_choice.h
     gpu.cpp
     gpu.h
     gpu_timestamp.h
@@ -143,6 +145,8 @@ add_library(video_core STATIC
     nx2_stutter_trace.cpp
     nx2_stutter_trace.h
     nx2_perf.h
+    nx2_async_readback.h
+    nx2_backx.h
     nx2_download_trace.h
     nx2_read_trace.h
     pending_maps.h
@@ -288,6 +292,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_scheduler.cpp
     renderer_vulkan/vk_scheduler.h
     renderer_vulkan/fragment_barrier_state.h
+    renderer_vulkan/vk_shader_reuse.cpp
+    renderer_vulkan/vk_shader_reuse.h
     renderer_vulkan/vk_shader_util.cpp
     renderer_vulkan/vk_shader_util.h
     renderer_vulkan/vk_staging_buffer_pool.cpp
@@ -416,6 +422,7 @@ add_library(video_core STATIC
     textures/workers.h
     transform_feedback.cpp
     transform_feedback.h
+    vertex_input_cache.h
     video_core.cpp
     video_core.h
 )
@@ -729,6 +736,8 @@ if (ENABLE_NVIDIA_DLSS AND MSVC)
         vulkan_common/streamline.cpp
         vulkan_common/streamline.h
         vulkan_common/streamline_api.h
+        vulkan_common/streamline_frame_gen.cpp
+        vulkan_common/streamline_frame_gen.h
     )
     target_include_directories(video_core PRIVATE "${STREAMLINE_INCLUDE_DIR}")
     target_link_libraries(video_core PRIVATE version wintrust crypt32)
@@ -743,6 +752,11 @@ elseif (ENABLE_NVIDIA_DLSS)
         neural_rendering/runtime.cpp
         neural_rendering/runtime.h
         renderer_vulkan/vk_ngx_dlss.cpp
+        renderer_vulkan/vk_ngx_frame_gen.cpp
+        renderer_vulkan/vk_ngx_frame_gen.h
+        nvidia_dlss_inputs.h
+        vulkan_common/ngx_frame_gen.cpp
+        vulkan_common/ngx_frame_gen.h
         vulkan_common/ngx_dlss.cpp
         vulkan_common/ngx_dlss.h
         vulkan_common/ngx_api.h)

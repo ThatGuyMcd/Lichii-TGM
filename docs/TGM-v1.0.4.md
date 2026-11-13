@@ -13,6 +13,18 @@ ratios, Photo Mode and explicit shader preparation remain requirements throughou
 integration. Frame generation is not enabled automatically. No native 60 FPS,
 twofold performance improvement or crash cure is claimed by this candidate.
 
+The second checkpoint adds shader reuse and binding caches, frame-generation
+lifecycle/model choices and optional DLSS Frame Generation on Windows and Linux.
+It preserves the prior LSFG Performance choice and keeps frame generation off by
+default. DLSS Frame Generation needs compatible hardware and a separate runtime.
+
+OOT water, sound and step-counter fixes use a dedicated appended state page to
+coexist with Photo Mode and all aspect add-ons. Optional text speeds are available
+in Add-Ons. The library stores custom artwork and names outside the game archive.
+Linux NVIDIA cache defaults honor user overrides. Optional SDL trigger rumble
+preserves the separate RenHDrum controller settings. New present-fence changes
+include lifetime and bounded-queue regression coverage.
+
 Additional overlapping OOT branches are still being reconciled. Protected
 dependencies and Dynarmic are not modified. The final integration audit will list
 accepted, equivalent, superseded and blocked source changes individually.

@@ -112,18 +112,57 @@ inline thread_local ConstantWriteDiagnostics t_constant_write_diagnostics;
 [[nodiscard]] bool DiagnoseConstantWrite(const Tegra::MemoryManager& memory, GPUVAddr begin,
                                          const void* words, u64 bytes);
 
-inline std::atomic<u64> g_serial{1};
-/// The last break's reason and, for Register and Method, its 3D method (diagnostics).
+/// On its own cache line, away from what every thread reads (g_enabled).
+alignas(64) inline std::atomic<u64> g_serial{1};
+/// The last break's reason and, for Register and Method, its 3D method (diagnostics). Stored by
+/// every break, also those that skip the add below, so a register block's one break names what
+/// its writes one by one would.
 inline std::atomic<u32> g_last_break{};
 
+/// The thread that draws reads the serial before each draw (Serial). Once one of its breaks
+/// bumped the serial since that read, more change nothing it compares, so they skip the locked
+/// add (every changed 3D register breaks). Threads that never read it (the front's puller, guest
+/// CPU write traps, unmaps) always bump. From lucastaonline's 865afaa4f3 (#1161).
+inline thread_local bool t_reads_serial{};
+inline thread_local bool t_serial_bumped{};
+
+/// Bumped where the guest CPU may have synchronised with the GPU: fences, semaphores, syncpoints,
+/// reports, frames, other engines and requests from other threads. After one the guest may have
+/// written memory the caches were not told about (pages that aren't write-protected), so uniform
+/// keeps read their buffers again.
+inline std::atomic<u64> g_sync_serial{1};
+
+inline void NoteSync() {
+    g_sync_serial.fetch_add(1, std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline u64 SyncSerial() {
+    return g_sync_serial.load(std::memory_order_acquire);
+}
+
 inline void Break(Reason reason, u32 method = 0) {
-    if (Enabled()) {
+    // 3D methods that let the CPU synchronise (reports, syncpoints) note it where they reach the
+    // rasterizer. Invalidations end image and shader lifetimes, not guest memory writes.
+    if (reason != Reason::Register && reason != Reason::Method && reason != Reason::ConstantData &&
+        reason != Reason::TextureHeaders && reason != Reason::DeltaOverflow &&
+        reason != Reason::Invalidation) {
+        NoteSync();
+    }
+    if (!Enabled()) {
+        return;
+    }
+    g_last_break.store(static_cast<u32>(reason) | (method << 8), std::memory_order_relaxed);
+    if (!(t_reads_serial && t_serial_bumped)) {
         g_serial.fetch_add(1, std::memory_order_relaxed);
-        g_last_break.store(static_cast<u32>(reason) | (method << 8), std::memory_order_relaxed);
+        t_serial_bumped = t_reads_serial;
     }
 }
 
+/// The thread that draws: what it compares fast draws with (and from then on its next break
+/// bumps the serial again).
 inline u64 Serial() {
+    t_reads_serial = true;
+    t_serial_bumped = false;
     return g_serial.load(std::memory_order_relaxed);
 }
 

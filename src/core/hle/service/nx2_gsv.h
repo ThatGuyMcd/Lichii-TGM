@@ -61,6 +61,7 @@
 #include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/kernel/k_session.h"
+#include "core/hle/kernel/k_synchronization_object.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/k_transfer_memory.h"
 #include "core/hle/kernel/svc_results.h"
@@ -81,10 +82,12 @@
 #include "core/hle/service/nx2_auto_resolution.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
 #include "core/hle/service/nx2_stub_interface.h"
+#include "core/hle/service/nx2_fence_action.h"
 #include "core/hle/service/nx2_image_layout.h"
 #include "core/hle/service/nx2_movie_clock.h"
 #include "core/hle/service/nx2_video_input_queue.h"
 #include "core/hle/service/nx2_present_pacer.h"
+#include "core/hle/service/nx2_present_queue.h"
 #include "core/hle/service/nx2_video_ready.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/server_manager.h"
@@ -1860,6 +1863,15 @@ public:
     }
 
     ~INx2Vi2Session() override {
+        // A service fiber can be discarded during shutdown without unwinding its stack.
+        // Remove or join its callback before closing the session-owned event.
+        m_frame_wait_action.reset();
+        m_context.CloseEvent(m_frame_wait_event);
+        // Join release callbacks before returning their ID to the retained allocator.
+        if (m_release_queue) {
+            m_release_queue.reset();
+            m_release_module->GetContainer().GetSyncpointManager().FreeSyncpoint(m_release_syncpoint);
+        }
         // The vsync callback may be running on the HostTiming thread: empty its event list under
         // its lock first (it holds the state, not this session), then close the events.
         {
@@ -1874,6 +1886,8 @@ public:
         }
         // Its UI copy (TakeUiSnapshot) must not outlive the session's syncpoints.
         Tegra::Nx2ResetUiSnapshot();
+        // The interval belonged to this session's presents.
+        Tegra::g_nx2_guest_frame_interval_ns.store(0, std::memory_order_relaxed);
     }
 
 private:
@@ -1881,9 +1895,8 @@ private:
         TipcHandshake(ctx, "nx2:vi2");
     }
 
-    // 229(u64 client token, u32 slot, u32 image, ...fences): result, u64 mask of buffer slots the
-    // client may acquire next, four zero words. Nothing is shown yet; every slot is handed back
-    // at once (changes.patch's default mask is 0x7fff).
+    // 229(u64 client token, u32 slot, u32 image, ...fences): available slot mask and release fence.
+    // The client must wait for the release before reusing the presented buffer.
     void PresentClientBuffer(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         ++m_presents;
@@ -1963,9 +1976,27 @@ private:
                                        std::chrono::steady_clock::now() - waited)
                                        .count();
         }
-        Composite(w[5], ~w[22], w[24], w[7]);
+        // An adaptive or previous-frame wait can return because this frame needs more CPU work.
+        // Do not make that path wait on its unfinished frame through a release fence instead.
+        // Timestamp requests retain their existing post-pacing recording point.
+        const bool queued = system.IsMulticore() && frames_ahead == 0 && (w[18] & 0xf) == 0 &&
+                            (~w[22] >= 192 || system.Host1x().GetSyncpointManager().IsReadyGuest(
+                                                 ~w[22], w[24]));
+        std::array<u32, 4> release{};
+        if (queued) {
+            const auto fence = QueueRelease(w[12], ~w[22], w[24], ctx.GetThread().GetOwnerProcess());
+            if (!fence) {
+                IPC::ResponseBuilder rb{ctx, 2};
+                rb.PushRaw<u32>(Kernel::ResultOutOfResource.raw);
+                return;
+            }
+            release = *fence;
+        }
+        Composite(w[5], ~w[22], w[24], w[7], queued);
         const auto composited = std::chrono::steady_clock::now();
-        PaceToVblank(w[12], ctx.GetThread().GetOwnerProcess());
+        if (!queued) {
+            PaceToVblank(w[12], ctx.GetThread().GetOwnerProcess());
+        }
         const auto paced = std::chrono::steady_clock::now();
         if (Common::DkbFrameTrace::Enabled()) {
             const auto ms = [](auto duration) {
@@ -2054,14 +2085,58 @@ private:
         }
         constexpr u64 AvailableSlots = 0x7fff;
         TipcReplyWords(ctx, {static_cast<u32>(AvailableSlots),
-                             static_cast<u32>(AvailableSlots >> 32), 0, 0, 0, 0});
+                             static_cast<u32>(AvailableSlots >> 32),
+                             release[0], release[1], release[2], release[3]});
     }
 
-    // The console's compositor frees a buffer only once its frame's GPU fence has passed, which
-    // is what keeps a game from running ahead of the GPU. This reply always reports every buffer
-    // free, so pace the game here instead: wait (bounded, in case the GPU waits on the CPU) until
-    // Eden's GPU thread has processed the frame. Otherwise the game laps the GPU thread and
-    // rewrites command memory it hasn't read yet.
+    /// Moves the display deadline to a bounded release fence, also gated on the GPU fence.
+    std::optional<std::array<u32, 4>> QueueRelease(u32 timing, u32 fence_id, u32 fence_value,
+                                                const Kernel::KProcess* process) {
+        if (!m_release_queue) {
+            const auto service = system.ServiceManager().GetService<Nvidia::NVDRV>("nvdrv", false);
+            if (!service) {
+                LOG_ERROR(Service, "nx2:vi2 release queue unavailable: nvdrv is not registered");
+                return std::nullopt;
+            }
+            auto module = service->GetModule();
+            const auto id = module->GetContainer().GetSyncpointManager().TryAllocateSyncpoint(true);
+            if (!id) {
+                LOG_ERROR(Service, "nx2:vi2 release queue unavailable: syncpoint pool is full");
+                return std::nullopt;
+            }
+            m_release_syncpoint = *id;
+            m_release_module = std::move(module);
+            m_release_queue.emplace(system.CoreTiming(), system.Host1x().GetSyncpointManager(), *id);
+        }
+        // Keep the existing interval and catch-up policy, mapping the remaining host duration
+        // onto CoreTiming, whose clock has a different epoch.
+        const auto interval = PresentInterval(timing, process);
+        const auto now = std::chrono::steady_clock::now();
+        std::chrono::nanoseconds wait{};
+        Nx2PresentPacer pacer{m_present_pacer};
+        if (interval) {
+            const auto pacing = pacer.Advance(now, *interval);
+            wait = (std::max)(std::chrono::nanoseconds{0},
+                             std::chrono::duration_cast<std::chrono::nanoseconds>(pacing.deadline - now));
+            if (Common::DkbFrameTrace::Enabled()) {
+                m_frame_trace.deadline_reset = pacing.reset;
+            }
+        }
+        const auto deadline = system.CoreTiming().GetGlobalTimeNs() + wait;
+        const auto value = m_release_queue->Queue(deadline, fence_id, fence_value);
+        if (!value) {
+            LOG_ERROR(Service, "nx2:vi2 release queue exhausted at present {}", m_presents);
+            return std::nullopt;
+        }
+        m_present_pacer = pacer;
+        return std::array<u32, 4>{~m_release_syncpoint, 0, *value, 0};
+    }
+
+    std::shared_ptr<Nvidia::Module> m_release_module;
+    u32 m_release_syncpoint{~0U};
+    std::optional<Nx2PresentReleaseQueue> m_release_queue;
+
+    // Keep the existing frame wait so the game cannot rewrite command memory still in use.
     u32 m_wait_timeouts{};
     struct PresentStats {
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
@@ -2195,7 +2270,7 @@ private:
     } m_frame_trace;
 
     /**
-     * Holds this present until the next vblank its word asks for, or for longer when an FPS limit
+     * Resolves the requested display interval, lengthened when an FPS limit
      * (the setting, or EDEN_NX2_FPS_LIMIT) is below that rate.
      *
      * Fire Emblem: Fortune's Weave sends 0x1003c during its boot logos and 0x2003c (two vblanks
@@ -2205,7 +2280,8 @@ private:
      * @param timing  Present word 12: (swap interval << 16) | refresh rate.
      * @param process Owning process, for the Mario Kart World dynamic FPS case; may be null.
      */
-    void PaceToVblank(u32 timing, const Kernel::KProcess* process) {
+    std::optional<std::chrono::nanoseconds> PresentInterval(u32 timing,
+                                                          const Kernel::KProcess* process) {
         const bool trace = Common::DkbFrameTrace::Enabled();
         if (trace) {
             if (m_frame_trace.previous_word && *m_frame_trace.previous_word != timing) {
@@ -2252,7 +2328,8 @@ private:
         const bool speed_limited = !timer_paced && Settings::values.use_speed_limit.GetValue() &&
                                    Settings::SpeedLimit() != 0;
         if (!speed_limited && fps_limit == 0) {
-            return;
+            Tegra::g_nx2_guest_frame_interval_ns.store(0, std::memory_order_relaxed);
+            return std::nullopt;
         }
         if (timing != std::exchange(m_swap_word, timing)) {
             LOG_INFO(Service,
@@ -2265,11 +2342,25 @@ private:
                                                    refresh_rate /
                                                    (speed_limited ? Settings::SpeedLimit() : 100)};
         const auto interval = PacedInterval(vblank_interval, fps_limit);
+        Tegra::g_nx2_guest_frame_interval_ns.store(
+            static_cast<u64>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(interval).count()),
+            std::memory_order_relaxed);
         if (trace) {
             m_frame_trace.target_ms = std::chrono::duration<double, std::milli>(interval).count();
         }
+        return interval;
+    }
+
+    /// Keep blocking pacing for waits that can return before this frame's GPU fence.
+    void PaceToVblank(u32 timing, const Kernel::KProcess* process) {
+        const auto interval = PresentInterval(timing, process);
+        if (!interval) {
+            return;
+        }
+        const bool trace = Common::DkbFrameTrace::Enabled();
         const auto now = std::chrono::steady_clock::now();
-        const auto pacing = m_present_pacer.Advance(now, interval);
+        const auto pacing = m_present_pacer.Advance(now, *interval);
         if (trace) {
             m_frame_trace.deadline_reset = pacing.reset;
         }
@@ -2292,6 +2383,22 @@ private:
         }
     }
 
+    /// Allocate one reusable session event; resource exhaustion retains the host wait.
+    bool EnsureFrameWaitEvent() {
+        if (!m_frame_wait_event && !m_frame_wait_event_attempted) {
+            m_frame_wait_event_attempted = true;
+            m_frame_wait_event = m_context.CreateEvent("nx2:vi2 frame fence wait");
+            if (!m_frame_wait_event) {
+                LOG_WARNING(Service, "nx2:vi2 frame wait event unavailable; retaining host wait");
+            }
+        }
+        return m_frame_wait_event != nullptr;
+    }
+
+    Kernel::KEvent* m_frame_wait_event{};
+    std::optional<Nx2ScopedGuestFenceAction> m_frame_wait_action;
+    bool m_frame_wait_event_attempted{};
+
     /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
     /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
     /// Returns whether the fence was reached.
@@ -2305,36 +2412,61 @@ private:
         // command buffers ahead misses the equal-value gates its other channels acquire.
         const auto deadline = start + std::chrono::milliseconds{4000};
         if (!syncpoints.IsReadyGuest(fence_id, fence_value)) {
-            // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
-            // about 1 ms per check on Windows, added to every frame. An action left registered
-            // after a timeout fires later on a state nobody waits on.
-            struct Wake {
-                std::mutex mutex;
-                std::condition_variable cv;
-                bool done{};
-            };
-            auto wake = std::make_shared<Wake>();
-            syncpoints.RegisterGuestAction(fence_id, fence_value, [wake] {
-                {
-                    std::scoped_lock lk{wake->mutex};
-                    wake->done = true;
-                }
-                wake->cv.notify_all();
-            });
-            std::unique_lock lk{wake->mutex};
-            // Title 1's channels resume and suspend again while they wait on this thread, so any
-            // suspension counts, not only an unbroken one.
-            bool gpu_waited = false;
-            while (!wake->done && system.IsPoweredOn() &&
-                   std::chrono::steady_clock::now() < deadline) {
-                if (unless_gpu_waits) {
-                    gpu_waited |= system.GPU().HasSuspendedChannels();
-                    if (gpu_waited &&
-                        std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
-                        return false;
+            // Fixed waits suspend the guest service thread so its core can run other work.
+            // Adaptive waits retain their semaphore escape path below.
+            if (!unless_gpu_waits && EnsureFrameWaitEvent()) {
+                m_frame_wait_event->Clear(kernel);
+                m_frame_wait_action.emplace(
+                    syncpoints, fence_id, fence_value,
+                    [event = m_frame_wait_event, kernel_ptr = &kernel] {
+                        event->Signal(*kernel_ptr);
+                    });
+                Kernel::KSynchronizationObject* event = &m_frame_wait_event->GetReadableEvent();
+                while (!syncpoints.IsReadyGuest(fence_id, fence_value) && system.IsPoweredOn() &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    s32 index = -1;
+                    // Retain bounded shutdown checks and the existing four-second deadline.
+                    const auto timeout = kernel.HardwareTimer().GetTick() + 50'000'000;
+                    const Result result =
+                        Kernel::KSynchronizationObject::Wait(kernel, &index, &event, 1, timeout);
+                    if (result == Kernel::ResultTerminationRequested) {
+                        break;
                     }
                 }
-                wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});
+                // Join any in-progress signal before the next request clears the event.
+                m_frame_wait_action.reset();
+            } else {
+                // Woken by the GPU thread as it reaches the fence. Polling with 200 us sleeps slept
+                // about 1 ms per check on Windows, added to every frame. An action left registered
+                // after a timeout fires later on a state nobody waits on.
+                struct Wake {
+                    std::mutex mutex;
+                    std::condition_variable cv;
+                    bool done{};
+                };
+                auto wake = std::make_shared<Wake>();
+                syncpoints.RegisterGuestAction(fence_id, fence_value, [wake] {
+                    {
+                        std::scoped_lock lk{wake->mutex};
+                        wake->done = true;
+                    }
+                    wake->cv.notify_all();
+                });
+                std::unique_lock lk{wake->mutex};
+                // Title 1's channels resume and suspend again while they wait on this thread, so any
+                // suspension counts, not only an unbroken one.
+                bool gpu_waited = false;
+                while (!wake->done && system.IsPoweredOn() &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    if (unless_gpu_waits) {
+                        gpu_waited |= system.GPU().HasSuspendedChannels();
+                        if (gpu_waited &&
+                            std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
+                            return false;
+                        }
+                    }
+                    wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});
+                }
             }
         }
         if (unless_gpu_waits && !syncpoints.IsReadyGuest(fence_id, fence_value)) {
@@ -2359,7 +2491,8 @@ private:
     // surface in the console's native GOB layout at GPU address == CPU address.
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
     // into from the image's top-left corner (0 when it gives none).
-    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size) {
+    void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size,
+                   bool release_paced) {
         NotifyHdrChange();
         u64 address{};
         u32 parent{};
@@ -2491,7 +2624,10 @@ private:
         CaptureFrame();
         Core::OcarinaPhotoMode::Update(system);
         DumpRanges();
-        system.SpeedLimiter().DoSpeedLimiting(system.CoreTiming().GetGlobalTimeUs());
+        // Release-paced frames already enforce this deadline through their returned fence.
+        if (!release_paced) {
+            system.SpeedLimiter().DoSpeedLimiting(system.CoreTiming().GetGlobalTimeUs());
+        }
         system.GetPerfStats().EndSystemFrame();
         system.GetPerfStats().BeginSystemFrame();
     }

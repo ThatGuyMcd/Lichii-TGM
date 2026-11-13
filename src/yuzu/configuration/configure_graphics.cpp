@@ -244,10 +244,18 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     QCheckBox* nvidia_dlss_checkbox = nullptr;
     QLabel* upscaling_hint = nullptr;
 #endif
+#ifdef EGLANTINE_NVIDIA_DLSS
+    NvidiaDlssPanel* nvidia_dlss_panel = nullptr;
+#endif
 
     for (const auto setting : Settings::values.linkage.by_category[Settings::Category::Renderer]) {
         if (setting->Id() == Settings::values.hdr.Id()) {
             continue; // Its saved On/Off choice is represented by the HDR mode control.
+        }
+        // Global LSFG mode is edited in Controls; per-game overrides remain in Graphics.
+        if (Settings::IsConfiguringGlobal() &&
+            setting->Id() == Settings::values.frame_gen_performance_mode.Id()) {
+            continue;
         }
 #ifndef HAS_RESHADE
         if (setting->Id() == Settings::values.post_shader_enabled.Id()) {
@@ -416,6 +424,9 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             upscaling_hint->hide();
             upscaling_layout->addWidget(upscaling_hint);
             auto* panel = new NvidiaDlssPanel(upscaling_group);
+#ifdef EGLANTINE_NVIDIA_DLSS
+            nvidia_dlss_panel = panel;
+#endif
             upscaling_layout->addWidget(panel);
             panel->setVisible(nvidia_dlss_checkbox->isChecked());
             connect(nvidia_dlss_checkbox, &QCheckBox::toggled, panel, &QWidget::setVisible);
@@ -488,6 +499,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
         add(Settings::values.frame_gen_type.Id(), always);
         add(Settings::values.frame_gen_multiplier.Id(), always);
         add(Settings::values.frame_gen_target_rate.Id(), always);
+        add(Settings::values.frame_gen_performance_mode.Id(), lsfg);
         add(Settings::values.frame_gen_flow_scale_auto.Id(), lsfg);
         add(Settings::values.frame_gen_flow_scale.Id(), lsfg);
         add(Settings::values.frame_gen_queue_target.Id(), always);
@@ -509,6 +521,37 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             }
         }
     }
+
+#ifdef EGLANTINE_NVIDIA_DLSS
+    // The panel lists DLSS Frame Generation's files too while that frame generation type is
+    // chosen, and shows for it even before "Use NVIDIA DLSS" is ticked.
+    if (nvidia_dlss_panel != nullptr) {
+        const auto update_panel = [=] {
+            const bool frame_gen =
+                frame_gen_checkbox != nullptr && frame_gen_checkbox->isChecked() &&
+                frame_gen_type_combobox != nullptr &&
+                frame_gen_type_combobox->currentData().toUInt() ==
+                    static_cast<u32>(Settings::FrameGenType::Dlssg);
+            nvidia_dlss_panel->SetFrameGenWanted(frame_gen);
+            nvidia_dlss_panel->setVisible(nvidia_dlss_checkbox->isChecked() || frame_gen);
+        };
+        update_panel();
+        connect(nvidia_dlss_checkbox, &QCheckBox::toggled, nvidia_dlss_panel, update_panel);
+        if (frame_gen_checkbox != nullptr) {
+            connect(frame_gen_checkbox, &QCheckBox::toggled, nvidia_dlss_panel, update_panel);
+        }
+        if (frame_gen_type_combobox != nullptr) {
+            connect(frame_gen_type_combobox, &QComboBox::currentIndexChanged, nvidia_dlss_panel,
+                    update_panel);
+        }
+    }
+#else
+    // Builds without either platform NVIDIA runtime cannot use DLSS Frame Generation.
+    if (frame_gen_type_combobox != nullptr) {
+        frame_gen_type_combobox->removeItem(frame_gen_type_combobox->findData(
+            static_cast<u32>(Settings::FrameGenType::Dlssg)));
+    }
+#endif
 
     for (auto widget : hold_api) {
         api_grid_layout->addWidget(widget);

@@ -1066,10 +1066,12 @@ add_library(core STATIC
     hle/service/nx2_stub_interface.h
     hle/service/nx2_auto_resolution.h
     hle/service/nx2_gsv.h
+    hle/service/nx2_fence_action.h
     hle/service/nx2_movie_clock.h
     hle/service/nx2_video_input_queue.h
     hle/service/nx2_image_layout.h
     hle/service/nx2_present_pacer.h
+    hle/service/nx2_present_queue.h
     hle/service/nx2_video_ready.h
     hle/service/services.cpp
     hle/service/services.h
@@ -1207,6 +1209,7 @@ add_library(core STATIC
     ocarina_photo_mode.h
     oot_ultrawide.cpp
     oot_ultrawide.h
+    oot_fps_patches.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp

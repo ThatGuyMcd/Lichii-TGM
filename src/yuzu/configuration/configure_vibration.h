@@ -43,6 +43,7 @@ private:
 
     /// Spinboxes representing the vibration strength percentage.
     std::array<QSpinBox*, NUM_PLAYERS> vibration_spinboxes;
+    QSpinBox* trigger_strength{};
 
     /// Callback index to stop the controllers events
     std::array<int, NUM_PLAYERS> controller_callback_key;

@@ -6,6 +6,8 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <thread>
+#include <utility>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -781,4 +783,52 @@ TEST_CASE("Fast draw keeps vertex stream addresses and sizes light", "[fast_draw
     CHECK_FALSE(light(stream(0, 0)));     // stride and enable
     CHECK_FALSE(light(stream(0, 3)));     // frequency
     CHECK_FALSE(light(0x600 / 4 + 64));   // past the sizes
+}
+
+TEST_CASE("Fast draw keeps vertex attribute formats light only with dynamic vertex input",
+          "[fast_draw]") {
+    DeltaFixture f;
+    constexpr u32 formats = MAXWELL3D_REG_INDEX(vertex_attrib_format);
+    const auto light = [&](u32 method) {
+        FastDraw::g_delta = {};
+        const u64 serial = FastDraw::Serial();
+        f.Write(method, f.Reg(method) + 0x40); // the attribute's offset
+        return FastDraw::Serial() == serial;
+    };
+    const bool previous = std::exchange(FastDraw::g_vertex_streams_dynamic, false);
+    CHECK_FALSE(light(formats)); // the formats are in the pipeline key
+    FastDraw::g_vertex_streams_dynamic = true;
+    CHECK(light(formats));
+    CHECK(light(formats + Maxwell3D::Regs::NumVertexAttributes - 1));
+    CHECK_FALSE(light(formats + Maxwell3D::Regs::NumVertexAttributes));
+    f.DrawArrays(0, 3);
+    f.Write(formats + 2, f.Reg(formats + 2) + 0x40);
+    f.DrawArrays(3, 3);
+    CHECK(f.Reusable());
+    FastDraw::g_vertex_streams_dynamic = previous;
+}
+
+TEST_CASE("Fast draw breaks skip the add only on the drawing thread, after its first since a read",
+          "[fast_draw]") {
+    FastDraw::SetEnabledForTest(true);
+    const auto current = [] { return FastDraw::g_serial.load(std::memory_order_relaxed); };
+    const u64 read = FastDraw::Serial();
+    FastDraw::Break(FastDraw::Reason::Register, 1);
+    CHECK(current() == read + 1);
+    // More breaks before the next read change nothing a draw compares.
+    FastDraw::Break(FastDraw::Reason::Register, 2);
+    FastDraw::Break(FastDraw::Reason::Method, 3);
+    CHECK(current() == read + 1);
+    // A thread that never reads the serial bumps every time.
+    std::thread other{[] {
+        FastDraw::Break(FastDraw::Reason::Invalidation);
+        FastDraw::Break(FastDraw::Reason::Invalidation);
+    }};
+    other.join();
+    CHECK(current() == read + 3);
+    // After a read, the drawing thread's next break bumps again.
+    const u64 again = FastDraw::Serial();
+    CHECK(again == read + 3);
+    FastDraw::Break(FastDraw::Reason::Register, 4);
+    CHECK(current() == again + 1);
 }

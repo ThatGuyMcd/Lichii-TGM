@@ -18,6 +18,9 @@
 #endif
 #include "video_core/renderer_vulkan/vk_blit_screen.h"
 #include "video_core/renderer_vulkan/vk_present_manager.h"
+#ifdef EGLANTINE_NGX
+#include "video_core/renderer_vulkan/vk_ngx_frame_gen.h"
+#endif
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
@@ -26,6 +29,9 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#if defined(EGLANTINE_STREAMLINE) && !defined(HAS_LSFG)
+#include "video_core/vulkan_common/streamline.h"
+#endif
 
 namespace Core::Memory {
 class Memory;
@@ -60,9 +66,20 @@ public:
     }
 
     [[nodiscard]] VideoCore::FrameGenStatus GetFrameGenStatus() const override {
+#ifdef EGLANTINE_NGX
+        if (ngx_frame_gen && ngx_frame_gen->Active()) {
+            return {.state = VideoCore::FrameGenState::NvidiaFrameGen,
+                    .generated_frames = ngx_frame_gen->SuccessfulGenerations()};
+        }
+#endif
 #ifdef HAS_LSFG
         return frame_gen.CurrentStatus();
 #else
+#ifdef EGLANTINE_STREAMLINE
+        if (Streamline::FrameGenActive()) {
+            return {.state = VideoCore::FrameGenState::NvidiaFrameGen};
+        }
+#endif
         return {.state = VideoCore::FrameGenState::UnsupportedBuild};
 #endif
     }
@@ -92,6 +109,8 @@ private:
     VkCommandBuffer BeginSingleTimeCommands();
     void EndSingleTimeCommands(VkCommandBuffer command_buffer);
     void Report() const;
+    /// The surface the swapchain is made for, once the device exists.
+    VkSurfaceKHR PresentationSurface();
 
     /// The encoding and luminances this frame is presented with; picks the swapchain format
     /// again when the HDR settings or the monitor's state changed.
@@ -136,6 +155,9 @@ private:
     RasterizerVulkan rasterizer;
 #ifdef HAS_LSFG
     FrameGen frame_gen;
+#endif
+#ifdef EGLANTINE_NGX
+    std::optional<NgxFrameGen> ngx_frame_gen;
 #endif
     std::optional<TurboMode> turbo_mode;
 

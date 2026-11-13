@@ -32,4 +32,13 @@ TEST_CASE("NGX runtime discovery retains unversioned priority and compares numer
     REQUIRE_FALSE(Vulkan::Ngx::RuntimeVersion("libnvidia-ngx-dlss.so.1."));
     REQUIRE_FALSE(Vulkan::Ngx::RuntimeVersion("libnvidia-ngx-dlss.so.-1"));
     REQUIRE_FALSE(Vulkan::Ngx::RuntimeVersion("libnvidia-ngx-dlss.so.99999999999999999999999"));
+    REQUIRE(Vulkan::Ngx::FindRuntimeInDirectory(root, true).empty());
+    touch("libnvidia-ngx-dlssg.so.9.9");
+    touch("libnvidia-ngx-dlssg.so.10.1");
+    touch("libnvidia-ngx-dlssg.so.999.backup");
+    REQUIRE(Vulkan::Ngx::FindRuntimeInDirectory(root, true).filename() ==
+            "libnvidia-ngx-dlssg.so.10.1");
+    touch("libnvidia-ngx-dlssg.so");
+    REQUIRE(Vulkan::Ngx::FindRuntimeInDirectory(root, true).filename() ==
+            "libnvidia-ngx-dlssg.so");
 }

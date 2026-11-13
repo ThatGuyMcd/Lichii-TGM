@@ -223,7 +223,9 @@ public:
         return motion;
     }
 
-    bool RumblePlay(const Common::Input::VibrationStatus vibration) {
+    bool RumblePlay(const Common::Input::VibrationStatus vibration, bool right = false,
+                    f32 trigger_high = 0.0f) {
+        std::scoped_lock lock{rumble_mutex};
         constexpr u32 rumble_max_duration_ms = 2000;
         constexpr f32 low_start_sensitivity_limit = 140.0f;
         constexpr f32 low_width_sensitivity_limit = 400.0f;
@@ -249,8 +251,10 @@ public:
         f32 high_amplitude = vibration.high_amplitude * high_frequency_scale;
 
         if (sdl_controller) {
-            return SDL_RumbleGamepad(sdl_controller.get(), static_cast<u16>(low_amplitude),
-                                     static_cast<u16>(high_amplitude), rumble_max_duration_ms);
+            const bool rumbled = SDL_RumbleGamepad(sdl_controller.get(), static_cast<u16>(low_amplitude),
+                                                   static_cast<u16>(high_amplitude), rumble_max_duration_ms);
+            TriggerRumblePlay(trigger_high, right, rumble_max_duration_ms);
+            return rumbled;
         } else if (sdl_joystick) {
             return SDL_RumbleJoystick(sdl_joystick.get(), static_cast<u16>(low_amplitude),
                                       static_cast<u16>(high_amplitude),
@@ -258,6 +262,28 @@ public:
         }
 
         return false;
+    }
+
+    void TriggerRumblePlay(f32 high, bool right, u32 duration_ms) {
+        trigger_highs[right ? 1 : 0] = high;
+        const u8 percent = Settings::values.trigger_rumble_strength.GetValue();
+        if (percent == 0 && !triggers_rumbling) {
+            return;
+        }
+        SDL_Gamepad* const gamepad = sdl_controller.get();
+        if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gamepad),
+                                    SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false)) {
+            triggers_rumbling = false;
+            return;
+        }
+        const auto motor = [percent](f32 amplitude) {
+            return static_cast<u16>(std::clamp(amplitude * percent / 100.0f, 0.0f, 1.0f) * 0xFFFF);
+        };
+        const u16 left_trigger = motor(trigger_highs[0]);
+        const u16 right_trigger = motor(trigger_highs[1]);
+        // SDL's Windows backend restores all four motors here; send the body update first.
+        SDL_RumbleGamepadTriggers(gamepad, left_trigger, right_trigger, duration_ms);
+        triggers_rumbling = left_trigger != 0 || right_trigger != 0;
     }
 
     bool HasHDRumble() const {
@@ -456,6 +482,9 @@ private:
     mutable std::mutex mutex;
 
     mutable std::mutex renhdrum_mutex;
+    std::mutex rumble_mutex;
+    std::array<f32, 2> trigger_highs{};
+    bool triggers_rumbling{};
     std::shared_ptr<RenHDrumPad> renhdrum;
 
     u64 last_motion_update{};
@@ -928,7 +957,7 @@ Common::Input::DriverResult SDLDriver::SetVibration(
         .type = Common::Input::VibrationAmplificationType::Exponential,
     };
 
-    joystick->RumblePlay(new_vibration);
+    joystick->RumblePlay(new_vibration, identifier.pad == 1, vibration.high_amplitude);
 
     return Common::Input::DriverResult::Success;
 }

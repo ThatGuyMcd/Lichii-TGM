@@ -33,7 +33,7 @@ enum class ShaderVariant : u32 {
     NativeFp16 = 2,
 };
 
-namespace PerformanceShader {
+namespace LsfgShader {
 constexpr u32 MIPMAPS = 255;
 constexpr u32 GENERATE = 256;
 constexpr std::array<u32, 4> ALPHA{290, 291, 292, 293};
@@ -43,7 +43,7 @@ constexpr std::array<u32, 10> DELTA{280, 286, 287, 288, 289, 281, 294, 295, 296,
 
 constexpr u32 NATIVE_FP16_OFFSET = 49;
 constexpr u32 NATIVE_FP32_OFFSET = 98;
-} // namespace PerformanceShader
+} // namespace LsfgShader
 
 [[nodiscard]] std::filesystem::path GetLosslessDllPath();
 

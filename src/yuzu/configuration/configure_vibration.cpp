@@ -11,6 +11,9 @@
 #include "yuzu/configuration/configure_hd_rumble.h"
 
 #include <QPushButton>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QSpinBox>
 
 ConfigureVibration::ConfigureVibration(QWidget* parent, Core::HID::HIDCore& hid_core_)
     : QDialog(parent), ui(std::make_unique<Ui::ConfigureVibration>()), hid_core{hid_core_} {
@@ -45,8 +48,23 @@ ConfigureVibration::ConfigureVibration(QWidget* parent, Core::HID::HIDCore& hid_
     ui->checkBoxAccurateVibration->setChecked(
         Settings::values.enable_accurate_vibrations.GetValue());
 
+    auto* trigger_row = new QHBoxLayout;
+    trigger_strength = new QSpinBox(this);
+    trigger_strength->setRange(0, 100);
+    trigger_strength->setSuffix(tr("%"));
+    trigger_strength->setSpecialValueText(tr("Off"));
+    trigger_strength->setMinimumWidth(100);
+    trigger_strength->setValue(Settings::values.trigger_rumble_strength.GetValue());
+    trigger_strength->setToolTip(tr("Optional trigger motors for controllers using standard SDL rumble. "
+                                   "Each side follows its own high-frequency rumble. RenHDrum keeps "
+                                   "its separate controller settings."));
+    trigger_row->addWidget(new QLabel(tr("Standard controller trigger rumble"), this));
+    trigger_row->addWidget(trigger_strength);
+    ui->verticalLayout->addLayout(trigger_row);
+
     if (!Settings::IsConfiguringGlobal()) {
         ui->checkBoxAccurateVibration->setDisabled(true);
+        trigger_strength->setDisabled(true);
     }
 
     auto* hd_rumble_button = new QPushButton(tr("HD Rumble..."));
@@ -83,6 +101,9 @@ void ConfigureVibration::ApplyConfiguration() {
 
     Settings::values.enable_accurate_vibrations.SetValue(
         ui->checkBoxAccurateVibration->isChecked());
+    if (Settings::IsConfiguringGlobal()) {
+        Settings::values.trigger_rumble_strength.SetValue(static_cast<u8>(trigger_strength->value()));
+    }
 }
 
 void ConfigureVibration::changeEvent(QEvent* event) {

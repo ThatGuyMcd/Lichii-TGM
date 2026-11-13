@@ -77,7 +77,7 @@ if (BUILD_TESTING OR YUZU_TESTS)
             AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/../../yuzu/configuration")
         target_include_directories(system_settings_tests PRIVATE ../..)
         target_compile_features(system_settings_tests PRIVATE cxx_std_20)
-        target_link_libraries(system_settings_tests PRIVATE core frontend_common qt_common common
+        target_link_libraries(system_settings_tests PRIVATE core video_core frontend_common qt_common common
             Qt6::Widgets Qt6::Test ${PLATFORM_LIBRARIES} Threads::Threads)
         if (NOT MSVC)
             target_compile_options(system_settings_tests PRIVATE -Wno-conversion

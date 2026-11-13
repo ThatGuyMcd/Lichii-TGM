@@ -1869,8 +1869,10 @@ TEST_CASE("Split front sends state writes to the back as register blocks that ma
     {
         // Changed state writes in a row are one entry: the writes, their dirty flags and the
         // last one that ends fast draw reuse.
-        Fixture f;
-        VideoCommon::GpuSplit split;
+        auto fixture = std::make_unique<Fixture>();
+        auto& f = *fixture;
+        auto split_owner = std::make_unique<VideoCommon::GpuSplit>();
+        auto& split = *split_owner;
         Access::Initialize(split, f.system);
         auto& engine = f.fast;
         const u32 first = f.state_methods[10];
@@ -1899,7 +1901,8 @@ TEST_CASE("Split front sends state writes to the back as register blocks that ma
     // as its own entry, each with its back: registers, shadow RAM, dirty
     // flags, draws and fast draw breaks agree. Macro 0 sends its three parameters to state
     // registers; instance loops leave deferred draws for state writes to issue.
-    Fixture f;
+    auto fixture = std::make_unique<Fixture>();
+    auto& f = *fixture;
     const std::array<u32, 3> macro_registers{f.state_methods[30], f.state_methods[31],
                                              f.state_methods[200]};
     std::vector<u32> code;
@@ -1908,7 +1911,10 @@ TEST_CASE("Split front sends state writes to the back as register blocks that ma
           FifoInstruction(macro_registers[2], true), Encode(Mme{})}) {
         code.insert(code.end(), instruction.begin(), instruction.end());
     }
-    std::array<VideoCommon::GpuSplit, 2> splits;
+    // Each split owns large write-tracking arrays; two engines and two splits exceed the
+    // Windows test executable's default thread stack. Keep this comparison fixture on the heap.
+    auto split_owners = std::make_unique<std::array<VideoCommon::GpuSplit, 2>>();
+    auto& splits = *split_owners;
     std::array<Maxwell3D*, 2> engines{&f.fast, &f.slow};
     for (size_t i = 0; i < 2; ++i) {
         Access::Start(splits[i], f.system);

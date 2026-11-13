@@ -853,17 +853,20 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
     return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value();
 }
 
-boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
-    Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
-    std::span<const u8> input, std::span<u8> output, Tegra::Texture::UnswizzleWorker* worker) {
-    const size_t guest_size_bytes = input.size_bytes();
+namespace {
+boost::container::small_vector<BufferImageCopy, 16> UnswizzleImageImpl(
+    const ImageInfo& info, std::span<const u8> input, std::span<u8> output,
+    bool native_tiling, Tegra::Texture::UnswizzleWorker* worker, bool copies_only) {
+    const size_t guest_size_bytes = copies_only ? CalculateGuestSizeInBytes(info) : input.size_bytes();
     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
     const Extent2D tile_size = DefaultBlockSize(info.format);
     const Extent3D size = info.size;
 
     if (info.type == ImageType::Linear) {
-        ASSERT(output.size_bytes() >= guest_size_bytes);
-        gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
+        if (!copies_only) {
+            ASSERT(output.size_bytes() >= guest_size_bytes);
+            std::memcpy(output.data(), input.data(), guest_size_bytes);
+        }
 
         ASSERT((info.pitch >> bpp_log2) << bpp_log2 == info.pitch);
         return {{
@@ -918,17 +921,19 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
         size_t guest_layer_offset = 0;
 
         for (s32 layer = 0; layer < info.resources.layers; ++layer) {
-            const std::span<u8> dst = output.subspan(host_offset);
-            const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
-            if (!worker ||
-                info.type != ImageType::e2D || info.num_samples != 1 ||
-                !worker->TryUnswizzle(
-                    dst.first(host_bytes_per_layer), src.first(level_sizes[level]), 1U << bpp_log2,
-                    num_tiles.width, num_tiles.height, num_tiles.depth, block.height, block.depth,
-                    stride_alignment, gpu_memory.UsesNativeTiling(), Nx2Perf::Verify())) {
-                UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
-                                 num_tiles.depth, block.height, block.depth, stride_alignment,
-                                 gpu_memory.UsesNativeTiling());
+            if (!copies_only) {
+                const std::span<u8> dst = output.subspan(host_offset);
+                const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
+                if (!worker ||
+                    info.type != ImageType::e2D || info.num_samples != 1 ||
+                    !worker->TryUnswizzle(
+                        dst.first(host_bytes_per_layer), src.first(level_sizes[level]), 1U << bpp_log2,
+                        num_tiles.width, num_tiles.height, num_tiles.depth, block.height, block.depth,
+                        stride_alignment, native_tiling, Nx2Perf::Verify())) {
+                    UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
+                                     num_tiles.depth, block.height, block.depth, stride_alignment,
+                                     native_tiling);
+                }
             }
             guest_layer_offset += layer_stride;
             host_offset += host_bytes_per_layer;
@@ -936,6 +941,29 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
         guest_offset += level_sizes[level];
     }
     return copies;
+}
+} // namespace
+
+boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
+    Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
+    std::span<const u8> input, std::span<u8> output, Tegra::Texture::UnswizzleWorker* worker) {
+    if (info.type == ImageType::Linear) {
+        ASSERT(output.size_bytes() >= input.size_bytes());
+        gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), input.size_bytes());
+        auto copies = UnswizzleImageImpl(info, {}, {}, false, nullptr, true);
+        copies.front().buffer_size = input.size_bytes();
+        return copies;
+    }
+    return UnswizzleImageImpl(info, input, output, gpu_memory.UsesNativeTiling(), worker, false);
+}
+
+boost::container::small_vector<BufferImageCopy, 16> UnswizzleImageCopies(const ImageInfo& info) {
+    return UnswizzleImageImpl(info, {}, {}, false, nullptr, true);
+}
+
+void UnswizzleImageSnapshot(const ImageInfo& info, std::span<const u8> input,
+                            std::span<u8> output, bool native_tiling) {
+    (void)UnswizzleImageImpl(info, input, output, native_tiling, nullptr, false);
 }
 
 namespace {

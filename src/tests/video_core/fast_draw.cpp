@@ -32,6 +32,8 @@
 #include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/textures/decoders.h"
+#include "video_core/textures/upload_snapshot.h"
 
 namespace {
 
@@ -317,14 +319,15 @@ struct ConstantDiagnosticFixture : DeltaFixture {
     static constexpr DAddr Device = 0x10000;
     static constexpr VAddr Cpu = 0x4000;
 
-    ConstantDiagnosticFixture() {
+    explicit ConstantDiagnosticFixture(size_t mapping_size_ = 0x2000)
+        : mapping_size{mapping_size_} {
         system.Initialize();
         process = std::make_unique<Kernel::KProcess>(system.Kernel());
         auto& table = process->GetPageTable().GetImpl();
         table.Resize(20, 12);
         backing = physical.GetPointerFromRaw<u8>(Device);
-        std::memset(backing, 0, 0x2000);
-        for (u64 page = 0; page < 2; ++page) {
+        std::memset(backing, 0, mapping_size);
+        for (u64 page = 0; page < mapping_size / 0x1000; ++page) {
             const VAddr address = Cpu + page * 0x1000;
             table.entries.GetAndFault(address >> 12)
                 .Store(false, Common::PageType::Memory, 1,
@@ -333,13 +336,13 @@ struct ConstantDiagnosticFixture : DeltaFixture {
         process->GetMemory().SetCurrentPageTable(*process);
         asid = device_memory.RegisterProcess(&process->GetMemory());
         device_memory.BindInterface(&rasterizer);
-        device_memory.Map(Device, Cpu, 0x2000, asid);
+        device_memory.Map(Device, Cpu, mapping_size, asid);
         memory.BindRasterizer(&rasterizer);
-        memory.Map(Gpu, Device, 0x2000, Tegra::PTEKind::PITCH, false);
+        memory.Map(Gpu, Device, mapping_size, Tegra::PTEKind::PITCH, false);
         maxwell3d.fast_maxwell3d = true;
     }
     ~ConstantDiagnosticFixture() {
-        device_memory.Unmap(Device, 0x2000);
+        device_memory.Unmap(Device, mapping_size);
         device_memory.UnregisterProcess(asid);
         system.Kernel().UnregisterKernelObject(process.get());
     }
@@ -352,6 +355,7 @@ struct ConstantDiagnosticFixture : DeltaFixture {
     std::unique_ptr<Kernel::KProcess> process;
     Core::Asid asid{};
     u8* backing{};
+    size_t mapping_size;
 };
 
 struct ScopedConstantDiagnostics {
@@ -924,4 +928,68 @@ TEST_CASE("Detached shader environments own guest bytes after their engine and m
     CHECK(rejected_table);
     env.DropSnapshot();
     CHECK(env.SnapshotSizeBytes() == 0);
+}
+
+TEST_CASE("Deferred texture uploads decode owned bytes after guest mappings are destroyed",
+          "[texture_upload_snapshot]") {
+    using VideoCommon::TextureUploadSnapshot;
+    const bool native = GENERATE(false, true);
+    auto fixture = std::make_unique<ConstantDiagnosticFixture>(0x10000);
+    auto& f = *fixture;
+    if (native) {
+        f.memory.EnableNativeTiling();
+    }
+    VideoCommon::ImageInfo info;
+    info.type = VideoCommon::ImageType::e2D;
+    info.format = VideoCore::Surface::PixelFormat::A8B8G8R8_UNORM;
+    info.size = {128, 128, 1};
+    info.block = {0, 2, 0};
+    const size_t host_size = VideoCommon::CalculateUnswizzledSizeBytes(info);
+    REQUIRE(VideoCommon::CalculateGuestSizeInBytes(info) == 0x10000);
+    std::vector<u8> expected(host_size);
+    for (size_t i = 0; i < expected.size(); ++i) {
+        expected[i] = static_cast<u8>((i * 13) ^ (i >> 9));
+    }
+    Tegra::Texture::SwizzleTexture(std::span<u8>{f.backing, 0x10000}, expected, 4, 128, 128,
+                                   1, 2, 0, 1, native);
+    // A zero-worker pool deterministically leaves the job for command-order claiming; a real
+    // worker also exercises racing decode/claim without changing the owned-byte contract.
+    Common::ThreadWorker workers{GENERATE(0U, 1U), "SnapshotClaimTest"};
+    auto snapshot = TextureUploadSnapshot::Capture(f.memory, f.Gpu, info, &workers);
+    REQUIRE(snapshot);
+    REQUIRE(snapshot->Copies().size() == 1);
+    CHECK(snapshot->Copies()[0].buffer_size == host_size);
+    std::memset(f.backing, 0xee, 0x10000);
+    fixture.reset();
+    std::vector<u8> staging(host_size + 32, 0xa5);
+    std::jthread recorder([&] { snapshot->CopyTo(staging); });
+    recorder.join();
+    CHECK(std::equal(expected.begin(), expected.end(), staging.begin()));
+    CHECK(std::all_of(staging.begin() + host_size, staging.end(), [](u8 byte) { return byte == 0xa5; }));
+}
+
+TEST_CASE("Deferred texture snapshot admission stays bounded until command records release it",
+          "[texture_upload_snapshot]") {
+    using VideoCommon::TextureUploadSnapshot;
+    auto fixture = std::make_unique<ConstantDiagnosticFixture>(0x10000);
+    auto& f = *fixture;
+    VideoCommon::ImageInfo info;
+    info.type = VideoCommon::ImageType::e2D;
+    info.format = VideoCore::Surface::PixelFormat::A8B8G8R8_UNORM;
+    info.size = {128, 128, 1};
+    info.block = {0, 2, 0};
+    Common::ThreadWorker workers{0, "SnapshotBudgetTest"};
+    std::vector<std::shared_ptr<TextureUploadSnapshot>> held;
+    const size_t limit = TextureUploadSnapshot::BudgetBytes / (2 * 0x10000);
+    for (size_t i = 0; i < limit; ++i) {
+        auto snapshot = TextureUploadSnapshot::Capture(f.memory, f.Gpu, info, &workers);
+        REQUIRE(snapshot);
+        held.push_back(std::move(snapshot));
+    }
+    CHECK_FALSE(TextureUploadSnapshot::Capture(f.memory, f.Gpu, info, &workers));
+    held.pop_back();
+    CHECK(TextureUploadSnapshot::Capture(f.memory, f.Gpu, info, &workers));
+    held.clear();
+    info.size = {4096, 4096, 1};
+    CHECK_FALSE(TextureUploadSnapshot::Capture(f.memory, f.Gpu, info, &workers));
 }

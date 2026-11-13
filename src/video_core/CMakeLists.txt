@@ -419,6 +419,8 @@ add_library(video_core STATIC
     textures/texture.h
     textures/unswizzle_worker.cpp
     textures/unswizzle_worker.h
+    textures/upload_snapshot.cpp
+    textures/upload_snapshot.h
     textures/workers.cpp
     textures/workers.h
     transform_feedback.cpp

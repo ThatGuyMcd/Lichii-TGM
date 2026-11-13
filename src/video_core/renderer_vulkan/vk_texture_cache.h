@@ -33,6 +33,10 @@ namespace Settings {
 struct ResolutionScalingInfo;
 }
 
+namespace VideoCommon {
+class TextureUploadSnapshot;
+}
+
 namespace Vulkan {
 
 using Common::SlotVector;
@@ -90,6 +94,9 @@ public:
     void Finish();
 
     StagingBufferRef UploadStagingBuffer(size_t size, bool deferred = false);
+
+    void UploadSnapshot(const StagingBufferRef& staging,
+                        std::shared_ptr<VideoCommon::TextureUploadSnapshot> snapshot);
 
     StagingBufferRef DownloadStagingBuffer(size_t size, bool deferred = false);
 

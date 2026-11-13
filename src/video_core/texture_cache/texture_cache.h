@@ -52,6 +52,7 @@
 #include "video_core/texture_cache/texture_cache_base.h"
 #include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
+#include "video_core/textures/upload_snapshot.h"
 #include "video_core/vulkan_common/unbacked_image_policy.h"
 
 namespace VideoCommon {
@@ -2849,7 +2850,26 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
     if (!UploadInChunks(image)) {
         auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
-        UploadImageContents(image, staging);
+        bool queued = false;
+        if constexpr (requires { runtime.UploadSnapshot(staging, std::shared_ptr<TextureUploadSnapshot>{}); }) {
+            if (gpu_memory->UsesNativeTiling() && image.info.type != ImageType::Linear &&
+                False(image.flags & (ImageFlagBits::Converted | ImageFlagBits::AcceleratedUpload |
+                                     ImageFlagBits::Sparse | ImageFlagBits::SparseLayers |
+                                     ImageFlagBits::SparseTiles | ImageFlagBits::Unbacked)) &&
+                image.host_level_offset == 0 &&
+                image.guest_size_bytes == CalculateGuestSizeInBytes(image.info) &&
+                staging.mapped_span.size_bytes() >= CalculateUnswizzledSizeBytes(image.info)) {
+                if (auto snapshot = TextureUploadSnapshot::Capture(*gpu_memory, image.gpu_addr,
+                                                                   image.info)) {
+                    runtime.UploadSnapshot(staging, snapshot);
+                    image.UploadMemory(staging, snapshot->Copies());
+                    queued = true;
+                }
+            }
+        }
+        if (!queued) {
+            UploadImageContents(image, staging);
+        }
         runtime.InsertUploadMemoryBarrier();
     }
     // The host GPU has its own copy now and the guest rarely reads this memory again: TickFrame

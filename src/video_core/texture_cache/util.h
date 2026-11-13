@@ -108,6 +108,13 @@ void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan&
     std::span<const u8> input, std::span<u8> output,
     Tegra::Texture::UnswizzleWorker* worker = nullptr);
 
+[[nodiscard]] boost::container::small_vector<BufferImageCopy, 16> UnswizzleImageCopies(
+    const ImageInfo& info);
+
+/// Decodes owned bytes without consulting guest mappings or renderer state.
+void UnswizzleImageSnapshot(const ImageInfo& info, std::span<const u8> input,
+                            std::span<u8> output, bool native_tiling);
+
 /// For a single-layer 2D block-linear image of 1x1-texel blocks: the host sparse blocks
 /// (tile_width x tile_height texels) that the guest byte ranges (offset, size) touch, merged into
 /// runs along x. Levels from tail_level on (the host's mip tail) come whole.

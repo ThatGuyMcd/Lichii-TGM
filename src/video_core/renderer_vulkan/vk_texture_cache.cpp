@@ -59,6 +59,7 @@
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/textures/decoders.h"
+#include "video_core/textures/upload_snapshot.h"
 
 namespace Vulkan {
 
@@ -1383,6 +1384,14 @@ void TextureCacheRuntime::Finish() {
 
 StagingBufferRef TextureCacheRuntime::UploadStagingBuffer(size_t size, bool deferred) {
     return staging_buffer_pool.Request(size, MemoryUsage::Upload, deferred);
+}
+
+void TextureCacheRuntime::UploadSnapshot(
+    const StagingBufferRef& staging, std::shared_ptr<VideoCommon::TextureUploadSnapshot> snapshot) {
+    // Staging allocations remain leased through the current submission tick. Record the host
+    // copy before UploadMemory's commands: neither submission nor staging reuse can overtake it.
+    scheduler.Record([output = staging.mapped_span, snapshot = std::move(snapshot)](
+                         vk::CommandBuffer) { snapshot->CopyTo(output); });
 }
 
 StagingBufferRef TextureCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) {

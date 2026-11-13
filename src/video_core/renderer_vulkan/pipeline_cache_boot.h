@@ -26,7 +26,7 @@ public:
     }
 
     bool Begin() {
-        return !lock.Held() || Common::FS::NewFile(marker);
+        return !lock.Held() || Common::FS::IsFile(marker) || Common::FS::NewFile(marker);
     }
 
     void Complete() {

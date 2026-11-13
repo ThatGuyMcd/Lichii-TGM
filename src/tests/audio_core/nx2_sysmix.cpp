@@ -46,8 +46,11 @@ TEST_CASE("No microphone sysmix capture bypasses the host but output still opens
     REQUIRE(std::ranges::all_of(samples, [](s16 sample) { return sample == 0; }));
     REQUIRE(input.SetEngaged(false).IsSuccess());
     input.Close();
+    const u32 zero{};
+    REQUIRE(context.Memory().WriteBlock(Context::Base + 0x44, &zero, sizeof(zero)));
+    REQUIRE(context.Memory().WriteBlock(Context::Base + 0x1004, &zero, sizeof(zero)));
     SysmixOutput output{context.system, *context.process, context.sink, 3,
-                       Context::Base, Context::Size, 0, false};
+                       Context::Base, Context::Size, 0x24, false};
     REQUIRE(output.Open(2, 2, 48000, 1024, 0, 0).IsSuccess());
     REQUIRE(context.sink.streams.size() == 1);
     output.Close();

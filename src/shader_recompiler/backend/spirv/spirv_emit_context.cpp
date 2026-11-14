@@ -1112,9 +1112,11 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
             }
         }
         // Keep only the winning distance live on the native path, as before.
+        const Id native_offset{info.native_global_bounds ? OpUConvert(U32[1], best_distance)
+                                                        : Id{}};
         const auto offset_at = [&](size_t i) {
-            return OpUConvert(U32[1], info.native_global_bounds
-                                        ? best_distance : OpISub(U64, addr, bases[i]));
+            return info.native_global_bounds ? native_offset
+                                             : OpUConvert(U32[1], OpISub(U64, addr, bases[i]));
         };
         const bool has_value{result_type.value != void_id.value};
         if (routing != Routing::PerBuffer && profile.select_global_memory_buffer) {

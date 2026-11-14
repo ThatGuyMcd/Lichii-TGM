@@ -95,6 +95,137 @@ std::vector<std::vector<u32>> Instructions(const std::vector<u32>& code, u32 opc
     return result;
 }
 
+// Exercise the emitted return dataflow for every candidate and for no match. Routing arithmetic
+// is checked separately below; here each branch decision selects exactly one candidate, and its
+// atomic returns a distinctive old value. Phi inputs must follow the actual predecessor edges.
+void CheckAtomicOldValueReturns(const std::vector<u32>& code, u32 atomic_opcode) {
+    struct Op {
+        u32 opcode;
+        std::vector<u32> args;
+    };
+    std::vector<std::vector<Op>> functions;
+    std::map<u32, u32> constants;
+    std::map<u32, Op> definitions;
+    bool in_function = false;
+    for (size_t i = 5; i < code.size();) {
+        const u32 count = code[i] >> 16;
+        REQUIRE(count > 0);
+        REQUIRE(i + count <= code.size());
+        Op op{code[i] & 0xffff, {code.begin() + i + 1, code.begin() + i + count}};
+        if (op.opcode == 43 && op.args.size() == 3) { // OpConstant
+            constants[op.args[1]] = op.args[2];
+        } else if (op.opcode == 46) { // OpConstantNull
+            constants[op.args[1]] = 0;
+        } else if (op.opcode == 169 || op.opcode == 83) { // OpSelect / OpCopyObject
+            definitions.emplace(op.args[1], op);
+        }
+        if (op.opcode == 54) {
+            functions.emplace_back();
+            in_function = true;
+        }
+        if (in_function) {
+            functions.back().push_back(std::move(op));
+        }
+        if ((code[i] & 0xffff) == 56) {
+            in_function = false;
+        }
+        i += count;
+    }
+    size_t checked_functions{};
+    for (const auto& function : functions) {
+        if (std::ranges::none_of(function, [&](const Op& op) {
+                return op.opcode == atomic_opcode;
+            })) {
+            continue;
+        }
+        ++checked_functions;
+        std::map<u32, std::vector<Op>> blocks;
+        std::vector<u32> atomic_ids;
+        std::map<u32, u32> atomic_blocks;
+        u32 label{}, entry{};
+        for (const auto& op : function) {
+            if (op.opcode == 248) { // OpLabel
+                label = op.args[0];
+                if (entry == 0) entry = label;
+            } else if (label != 0 && op.opcode != 56) {
+                blocks[label].push_back(op);
+                if (op.opcode == atomic_opcode) {
+                    atomic_blocks[label] = op.args[1];
+                    atomic_ids.push_back(op.args[1]);
+                }
+            }
+        }
+        REQUIRE_FALSE(atomic_ids.empty());
+        for (size_t candidate = 0; candidate <= atomic_ids.size(); ++candidate) {
+            CAPTURE(candidate, atomic_ids.size());
+            const bool matched = candidate < atomic_ids.size();
+            const u32 selected = matched ? atomic_ids[candidate] : 0;
+            auto values = constants;
+            // Candidate guard true targets contain the respective atomic; all other guards
+            // are false. This also tests the zero fallback with every guard false.
+            for (const auto& [block, ops] : blocks) {
+                for (const auto& op : ops) {
+                    if (op.opcode == 250) {
+                        const auto target = atomic_blocks.find(op.args[1]);
+                        REQUIRE(target != atomic_blocks.end());
+                        values[op.args[0]] = matched && target->second == selected;
+                    }
+                }
+            }
+            std::function<u32(u32)> value = [&](u32 id) -> u32 {
+                if (const auto it = values.find(id); it != values.end()) return it->second;
+                const auto it = definitions.find(id);
+                REQUIRE(it != definitions.end());
+                const auto& op = it->second;
+                if (op.opcode == 83) return value(op.args[2]);
+                REQUIRE(op.opcode == 169);
+                return value(op.args[value(op.args[2]) ? 3 : 4]);
+            };
+            u32 current = entry, predecessor{};
+            size_t executed{};
+            bool returned = false;
+            for (size_t steps = 0; steps <= blocks.size() && !returned; ++steps) {
+                const auto& ops = blocks.at(current);
+                u32 next{};
+                for (const auto& op : ops) {
+                    const auto& a = op.args;
+                    if (op.opcode == atomic_opcode) {
+                        ++executed;
+                        REQUIRE(a[1] == selected);
+                        values[a[1]] = 0xa0000000U + a[1];
+                    } else if (op.opcode == 245) { // OpPhi
+                        bool incoming = false;
+                        for (size_t j = 2; j + 1 < a.size(); j += 2) {
+                            if (a[j + 1] == predecessor) {
+                                REQUIRE_FALSE(incoming);
+                                values[a[1]] = value(a[j]);
+                                incoming = true;
+                            }
+                        }
+                        REQUIRE(incoming);
+                    } else if (op.opcode == 249) { // OpBranch
+                        next = a[0];
+                    } else if (op.opcode == 250) { // OpBranchConditional
+                        next = a[value(a[0]) ? 1 : 2];
+                    } else if (op.opcode == 254) { // OpReturnValue
+                        REQUIRE(a.size() == 1);
+                        CHECK(value(a[0]) == (matched ? 0xa0000000U + selected : 0));
+                        returned = true;
+                    }
+                }
+                if (!returned) {
+                    REQUIRE(next != 0);
+                    predecessor = current;
+                    current = next;
+                }
+            }
+            CHECK(returned);
+            CHECK(executed == (matched ? 1 : 0));
+        }
+    }
+    REQUIRE(checked_functions != 0);
+}
+
 struct GlobalAtomicProgram : Program {
     explicit GlobalAtomicProgram(bool native, s64 displacement = 4, bool atomic = true) {
         TestEnvironment env{native};
@@ -471,15 +602,12 @@ TEST_CASE("Global atomic add preserves native candidate selection and atomic old
         for (const auto& op : Instructions(code, 71)) {
             if (op.size() == 3 && op[1] == 33) bindings[op[0]] = op[2];
         }
-        const auto returns = Instructions(code, 254);
+        CheckAtomicOldValueReturns(code, 234);
         std::set<u32> atomic_bindings;
         for (const auto& op : atomics) {
             REQUIRE(op.size() == 6);
             CHECK(constants.at(op[3]) == 1);
             CHECK(constants.at(op[4]) == 0);
-            CHECK(std::ranges::any_of(returns, [&](const auto& returned) {
-                return returned.size() == 1 && returned[0] == op[1];
-            }));
             atomic_bindings.insert(bindings.at(pointer_bases.at(op[2])));
         }
         CHECK(atomic_bindings == (native ? std::set<u32>{2, 3, 4} : std::set<u32>{3, 4}));
@@ -684,12 +812,9 @@ TEST_CASE("Global unsigned atomic max routes buffers and returns the old value",
             const auto atomics = Instructions(code, 239);
             REQUIRE(atomics.size() == (native ? 3U : 2U));
             CHECK(Instructions(code, 234).empty());
-            const auto returns = Instructions(code, 254);
+            CheckAtomicOldValueReturns(code, 239);
             for (const auto& atomic : atomics) {
                 REQUIRE(atomic.size() == 6);
-                CHECK(std::ranges::any_of(returns, [&](const auto& returned) {
-                    return returned.size() == 1 && returned[0] == atomic[1];
-                }));
             }
         }
     }
@@ -703,12 +828,7 @@ TEST_CASE("Global atomic routing works without descriptor aliases",
         const auto code = Backend::SPIRV::EmitSPIRV(fixture.profile, fixture.program);
         const auto atomics = Instructions(code, 234);
         REQUIRE(atomics.size() == (native ? 3U : 2U));
-        const auto returns = Instructions(code, 254);
-        for (const auto& op : atomics) {
-            CHECK(std::ranges::any_of(returns, [&](const auto& returned) {
-                return returned.size() == 1 && returned[0] == op[1];
-            }));
-        }
+        CheckAtomicOldValueReturns(code, 234);
     }
 }
 

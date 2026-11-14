@@ -29,7 +29,7 @@ TEST_CASE("Entries parsed without a pending acquire keep their submit-time snaps
 }
 
 TEST_CASE("Resumed command copies finish before publication and own their staging storage",
-          "[video_core][dma_pusher]") {
+          "[video_core][dma_pusher][command_snapshot_order]") {
     std::deque<Tegra::CommandList> lists(2);
     constexpr size_t Words = 16384;
     for (size_t i = 0; i < lists.size(); ++i) {
@@ -86,7 +86,7 @@ TEST_CASE("Resumed command copies finish before publication and own their stagin
 }
 
 TEST_CASE("Command snapshots reuse released storage without sharing live buffers",
-          "[video_core][dma_pusher]") {
+          "[video_core][dma_pusher][command_snapshot_order]") {
     Tegra::CommandWordsAllocator<u32> allocator;
     auto* first = allocator.allocate(1500);
     first[1499] = 0x1234;
@@ -100,4 +100,46 @@ TEST_CASE("Command snapshots reuse released storage without sharing live buffers
     allocator.deallocate(reused, 1500);
     REQUIRE_THROWS_AS(allocator.allocate(std::numeric_limits<size_t>::max()),
                       std::bad_array_new_length);
+}
+
+TEST_CASE("Oversized command metadata uses the ordered serial copy path",
+          "[video_core][dma_pusher][command_snapshot_order][snapshot_metadata_bound]") {
+    std::deque<Tegra::CommandList> lists;
+    SECTION("Many queued empty lists") {
+        lists.resize(257);
+    }
+    SECTION("Many headers in one queued list") {
+        lists.resize(2);
+        lists.back().command_lists.resize(65537);
+    }
+    lists.front().command_lists.resize(1);
+    lists.front().command_lists[0].raw = 0;
+    lists.front().command_lists[0].addr.Assign(GPUVAddr{0x1000});
+    lists.front().command_lists[0].size.Assign(u64{16384});
+    lists.front().submitted_words.resize(16384);
+    lists.front().submitted_offsets = {0};
+    if (lists.back().command_lists.empty()) {
+        lists.back().command_lists.resize(1);
+    }
+    lists.back().command_lists[0].raw = 0;
+    lists.back().command_lists[0].addr.Assign(GPUVAddr{0x2000});
+    lists.back().command_lists[0].size.Assign(u64{1});
+    lists.back().submitted_words.resize(1);
+    lists.back().submitted_offsets = {0};
+    const auto caller = std::this_thread::get_id();
+    std::atomic<bool> wrong_thread{};
+    std::atomic<unsigned> reads{};
+    Tegra::CommandSnapshotRefresher refresher;
+    refresher.Refresh(lists, 2, 0, [&](GPUVAddr, void* output, size_t bytes) {
+        if (std::this_thread::get_id() != caller) {
+            wrong_thread.store(true);
+        }
+        ++reads;
+        std::memset(output, 0x55, bytes);
+    });
+    CHECK_FALSE(wrong_thread.load());
+    REQUIRE(reads.load() == 2);
+    REQUIRE(lists.front().submitted_words.front().argument == 0x55555555);
+    REQUIRE(lists.back().submitted_words.front().argument == 0x55555555);
+    REQUIRE(lists.back().snapshot_suspensions == 2);
 }

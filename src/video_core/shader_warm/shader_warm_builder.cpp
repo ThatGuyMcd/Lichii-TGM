@@ -10,6 +10,7 @@
 #include <deque>
 #include <fstream>
 #include <future>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -443,7 +444,8 @@ std::optional<std::string> WarmFilesStale(const fs::path& warm_file) {
     u64 entries{}, size{};
     u32 builder{};
     std::string digest;
-    if (!(count >> entries >> size >> builder >> digest) || builder != WarmBuilderVersion) {
+    if (!(count >> entries >> size >> builder >> std::setw(65) >> digest) ||
+        builder != WarmBuilderVersion || digest.size() != 64) {
         return "built by an older version";
     }
     if (fs::file_size(warm_file, ec) != size || ec || digest != ContentHash(warm_file)) {

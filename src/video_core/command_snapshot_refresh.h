@@ -31,11 +31,20 @@ public:
 
     template <typename Read>
     void Refresh(std::deque<CommandList>& lists, u64 stamp, size_t first, const Read& read) {
+        if (lists.size() > 256) {
+            return Serial(lists, stamp, first, read);
+        }
         size_t words{};
+        size_t metadata{};
         for (const auto& list : lists) {
-            if (list.submitted_words.size() > MaxWords - words) {
+            const size_t entries = list.command_lists.size() + list.submitted_offsets.size() +
+                                   list.deferred_entries.size() + list.submit_hashes.size() +
+                                   list.prefetch_command_list.size();
+            if (entries > MaxMetadata - metadata ||
+                list.submitted_words.size() > MaxWords - words) {
                 return Serial(lists, stamp, first, read);
             }
+            metadata += entries;
             words += list.submitted_words.size();
         }
         if (lists.size() < 2 || words < 16384) {
@@ -76,6 +85,7 @@ public:
 
 private:
     static constexpr size_t MaxWords = 8 * 1024 * 1024 / sizeof(CommandHeader);
+    static constexpr size_t MaxMetadata = 65536;
     template <typename Read>
     static void Serial(std::deque<CommandList>& lists, u64 stamp, size_t first, const Read& read) {
         for (auto& list : lists) {

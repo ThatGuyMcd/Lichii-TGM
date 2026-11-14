@@ -17,11 +17,12 @@ TEST_CASE("Native pending draws are never discarded", "[video_core][async_draw]"
     }
 }
 
-/// EDEN_NX2_ASYNC_DISCARD=1: native draws use the legacy heuristic; non-native draws are unchanged.
-TEST_CASE("Native pending draws follow the async heuristic when opted in",
+/// Native atlas/resource draws remain intact even when the user opts into skipping scene draws.
+TEST_CASE("Opted-in native pending draws retain depthless resources",
           "[video_core][async_draw]") {
     REQUIRE(Vulkan::CanDiscardPendingDraw(true, true, 0, 0, true));
-    REQUIRE(Vulkan::CanDiscardPendingDraw(true, false, 7, 7, true));
+    REQUIRE_FALSE(Vulkan::CanDiscardPendingDraw(true, false, 7, 7, true));
+    REQUIRE_FALSE(Vulkan::CanDiscardPendingDraw(true, false, 65536, 65536, true));
     REQUIRE_FALSE(Vulkan::CanDiscardPendingDraw(true, false, 6, 100, true));
     REQUIRE_FALSE(Vulkan::CanDiscardPendingDraw(true, false, 0, 0, true));
     // The opt-in never changes non-native draws.

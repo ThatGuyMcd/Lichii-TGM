@@ -17,6 +17,7 @@
 
 #include "common/common_types.h"
 #include "common/fs/path_util.h"
+#include "common/fs/file_lock.h"
 #include "common/logging.h"
 
 namespace Vulkan {
@@ -36,8 +37,14 @@ class PrecacheJournal {
 public:
     PrecacheJournal(const std::filesystem::path& base, std::string stamp_, size_t slots,
                     const char* what)
-        : inflight_path{WithSuffix(base, ".inflight")}, poison_path{WithSuffix(base, ".poison")},
+        : file_lock{WithSuffix(base, ".lock")},
+          inflight_path{WithSuffix(base, ".inflight")}, poison_path{WithSuffix(base, ".poison")},
           stamp{std::move(stamp_)} {
+        if (!file_lock.Held()) {
+            LOG_WARNING(Render_Vulkan, "Shader precache: {} journal unavailable; another owner "
+                                      "or a filesystem error prevents crash recovery", what);
+            return;
+        }
         {
             std::ifstream in(poison_path);
             std::string line;
@@ -149,6 +156,8 @@ private:
         inflight.flush();
     }
 
+    // Release after streams close, including partially initialized and failed journals.
+    Common::FS::FileLock file_lock;
     std::filesystem::path inflight_path;
     std::filesystem::path poison_path;
     std::string stamp;

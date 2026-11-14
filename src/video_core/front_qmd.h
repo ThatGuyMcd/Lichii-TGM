@@ -59,6 +59,7 @@ namespace VideoCommon {
 ///   void NoteWriteAt(GpuSplit&, GPUVAddr, u64 size, u64 position);
 /// - const void* Id(): the address space's, the same for every Memory of it.
 class FrontQmdView {
+    friend struct Native60FrontQmdTestAccess;
 public:
     using Descriptor = Tegra::NativeQmdScheduler::Descriptor;
 
@@ -408,12 +409,9 @@ private:
                 return false; // Stops the scheduling, which is taken back
             }
             // A release this signal ran before writes into the QMD.
-            for (const Release& earlier : releases) {
-                if (earlier.address + 16 > qmd_address &&
-                    earlier.address < qmd_address + sizeof(descriptor)) {
-                    failure = Outcome{false, std::nullopt, Lost::ReleasedInto};
-                    return false;
-                }
+            if (ReleasedInto(memory, qmd_address)) {
+                failure = Outcome{false, std::nullopt, Lost::ReleasedInto};
+                return false;
             }
             attempt_reads.push_back(qmd_address);
             if (Nx2DrainCheck::g_enabled) {
@@ -432,7 +430,7 @@ private:
         };
         scheduler.BeginAttempt();
         scheduler.Signal(address, argument, read, release, [](const Descriptor&) { return true; });
-        if (!failure && late && ReleasesIntoLateReads()) {
+        if (!failure && late && ReleasesIntoLateReads(memory)) {
             failure = Outcome{false, std::nullopt, Lost::LateReleasedInto};
         }
         if (failure) {
@@ -443,7 +441,9 @@ private:
         scheduler.CommitAttempt();
         if (late) {
             for (const u64 read_address : attempt_reads) {
-                late_reads.insert(read_address >> 8);
+                if (const auto device = memory.Device(read_address)) {
+                    late_reads.insert(*device >> 8);
+                }
             }
             for (const Release& done : releases) {
                 memory.NoteWriteAt(split, done.address, (done.flags >> 30) == 0 ? 16 : 4, position);
@@ -456,18 +456,65 @@ private:
         return {true, std::nullopt, Lost::NotSynced};
     }
 
-    /// Late: whether a release of the signal writes a QMD it read, or one a signal valued late
-    /// before read. The back may have run the release before the front read that QMD.
-    [[nodiscard]] bool ReleasesIntoLateReads() const {
-        for (const Release& done : releases) {
-            const u64 first = done.address >> 8;
-            const u64 last = (done.address + 15) >> 8;
-            for (const u64 read_address : attempt_reads) {
-                if ((read_address >> 8) == first || (read_address >> 8) == last) {
-                    return true;
-                }
+    /// A release writes at most 16 bytes at its address (four words).
+    static constexpr u64 ReleaseBytes = 16;
+
+    /// Calls `func(device, size)` for the device memory of each piece of what a release at
+    /// `address` may write, a piece per 4 KiB GPU page, until it returns true; whether it did.
+    /// Releases and QMDs are compared there: the same device memory can be mapped at several GPU
+    /// addresses (NX2 maps CPU ranges twice). Where no device memory is mapped, nothing is written.
+    template <typename Memory, typename Func>
+    [[nodiscard]] static bool AnyReleasedPiece(const Memory& memory, GPUVAddr address,
+                                               Func&& func) {
+        constexpr GPUVAddr PageSize = 0x1000;
+        const GPUVAddr end = address + ReleaseBytes;
+        for (GPUVAddr begin = address; begin < end;) {
+            const GPUVAddr piece_end = (std::min)((begin & ~(PageSize - 1)) + PageSize, end);
+            const auto device = memory.Device(begin);
+            if (device && func(*device, piece_end - begin)) {
+                return true;
             }
-            if (late_reads.contains(first) || late_reads.contains(last)) {
+            begin = piece_end;
+        }
+        return false;
+    }
+
+    /// Whether a release the attempt ran writes into the QMD at `qmd_address`, through any GPU
+    /// address. A QMD (256 bytes at a 256-byte boundary) lies in one GPU page.
+    template <typename Memory>
+    [[nodiscard]] bool ReleasedInto(const Memory& memory, GPUVAddr qmd_address) const {
+        if (releases.empty()) {
+            return false;
+        }
+        const auto qmd = memory.Device(qmd_address);
+        if (!qmd) {
+            return false; // No device memory there: no release writes what is read
+        }
+        const u64 qmd_end = *qmd + sizeof(Descriptor);
+        for (const Release& release : releases) {
+            if (AnyReleasedPiece(memory, release.address, [&](u64 device, u64 size) {
+                    return device < qmd_end && *qmd < device + size;
+                })) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Late: whether a release of the signal writes a QMD it read, or one a signal valued late
+    /// before read (late_reads). The back may have run the release before the front read that QMD.
+    template <typename Memory>
+    [[nodiscard]] bool ReleasesIntoLateReads(const Memory& memory) const {
+        for (const u64 read_address : attempt_reads) {
+            if (ReleasedInto(memory, read_address)) {
+                return true;
+            }
+        }
+        for (const Release& done : releases) {
+            if (AnyReleasedPiece(memory, done.address, [this](u64 device, u64 size) {
+                    return late_reads.contains(device >> 8) ||
+                           late_reads.contains((device + size - 1) >> 8);
+                })) {
                 return true;
             }
         }
@@ -626,7 +673,7 @@ private:
     std::vector<u64> attempt_reads; ///< The QMDs the attempt read
     bool synced{};
     /// Signals that wait to be valued, oldest first; the first may be once the back ran
-    /// retry_after. late_reads: the granules of the QMDs read late since the waiting began.
+    /// retry_after. late_reads: the device granules of the QMDs read late since the waiting began.
     std::deque<WaitingSignal> waiting;
     u64 retry_after{};
     std::unordered_set<u64> late_reads;

@@ -3,10 +3,14 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <boost/container/small_vector.hpp>
@@ -40,7 +44,16 @@ public:
         if (entries.size() > MAX_ENTRIES) {
             entries.clear();
         }
+        if (size == 0 || gpu_addr > (std::numeric_limits<u64>::max)() - size) {
+            span_result.clear();
+            return &span_result;
+        }
         const size_t as_id = memory.GetID();
+        if (const auto address = FindSpan(as_id, gpu_addr, size)) {
+            span_result.clear();
+            span_result.push_back({gpu_addr, *address, size});
+            return &span_result;
+        }
         const u64 key = MakeKey(as_id, gpu_addr);
         const auto it = entries.find(key);
         if (it != entries.end() && it->second.as_id == as_id && it->second.gpu_addr == gpu_addr) {
@@ -78,10 +91,17 @@ public:
                 .device_addr = *device_addr,
                 .size = static_cast<u32>(range_size),
             });
+            if (range_size > gpu_addr + size - expected) {
+                contiguous = false;
+                break;
+            }
             expected += range_size;
         }
         if (!contiguous || expected != gpu_addr + size) {
             entry.segments.clear();
+        }
+        if (IsLinear(entry.segments, gpu_addr, size)) {
+            AddSpan(as_id, gpu_addr, size, entry.segments.front().device_addr);
         }
         const auto result = entries.insert_or_assign(key, std::move(entry));
         return &result.first->second.segments;
@@ -93,6 +113,12 @@ public:
         }
         {
             std::scoped_lock lock{deferred_mutex};
+            if (size > (std::numeric_limits<u64>::max)() - gpu_addr) {
+                deferred.clear();
+                deferred_overflow = true;
+                has_deferred.store(true, std::memory_order_release);
+                return;
+            }
             if (!deferred.empty()) {
                 DeferredUnmap& last = deferred.back();
                 if (last.as_id == as_id && last.gpu_addr + last.size == gpu_addr) {
@@ -129,6 +155,71 @@ private:
         u64 size;
     };
 
+    struct Span {
+        GPUVAddr end;
+        DAddr device_addr;
+    };
+    using SpanKey = std::pair<size_t, GPUVAddr>;
+
+    static bool IsLinear(const VirtualSegments& segments, GPUVAddr start, u32 size) {
+        if (segments.empty() ||
+            segments.front().device_addr > (std::numeric_limits<u64>::max)() - size) {
+            return false;
+        }
+        GPUVAddr expected = start;
+        const DAddr device = segments.front().device_addr;
+        for (const auto& segment : segments) {
+            if (segment.gpu_addr != expected ||
+                segment.device_addr != device + (expected - start)) {
+                return false;
+            }
+            expected += segment.size;
+        }
+        return expected == start + size;
+    }
+
+    std::optional<DAddr> FindSpan(size_t as_id, GPUVAddr address, u32 size) const {
+        auto it = spans.upper_bound({as_id, address});
+        if (it == spans.begin()) {
+            return std::nullopt;
+        }
+        --it;
+        if (it->first.first != as_id || it->second.end < address + size) {
+            return std::nullopt;
+        }
+        return it->second.device_addr + (address - it->first.second);
+    }
+
+    void AddSpan(size_t as_id, GPUVAddr address, u32 size, DAddr device) {
+        if (spans.size() >= MAX_ENTRIES) {
+            spans.clear();
+        }
+        GPUVAddr start = address;
+        GPUVAddr end = address + size;
+        DAddr first_device = device;
+        const auto same_offset = [&](const auto& entry) {
+            return entry.second.device_addr - entry.first.second == device - address;
+        };
+        auto it = spans.lower_bound({as_id, start});
+        if (it != spans.begin()) {
+            const auto previous = std::prev(it);
+            if (previous->first.first == as_id && previous->second.end >= start &&
+                same_offset(*previous)) {
+                it = previous;
+            }
+        }
+        while (it != spans.end() && it->first.first == as_id && it->first.second <= end &&
+               same_offset(*it)) {
+            if (it->first.second < start) {
+                start = it->first.second;
+                first_device = it->second.device_addr;
+            }
+            end = (std::max)(end, it->second.end);
+            it = spans.erase(it);
+        }
+        spans.insert_or_assign({as_id, start}, Span{end, first_device});
+    }
+
     static u64 MakeKey(size_t as_id, GPUVAddr gpu_addr) {
         return (static_cast<u64>(as_id) << 48) ^ gpu_addr;
     }
@@ -145,7 +236,19 @@ private:
         }
         if (overflow) {
             entries.clear();
+            spans.clear();
             return;
+        }
+        for (auto it = spans.begin(); it != spans.end();) {
+            bool overlaps = false;
+            for (const auto& unmap : pending) {
+                if (unmap.as_id == it->first.first && it->first.second < unmap.gpu_addr + unmap.size &&
+                    unmap.gpu_addr < it->second.end) {
+                    overlaps = true;
+                    break;
+                }
+            }
+            it = overlaps ? spans.erase(it) : std::next(it);
         }
         if (pending.empty() || entries.empty()) {
             return;
@@ -172,6 +275,8 @@ private:
     }
 
     ::Common::unordered_map<u64, Entry> entries;
+    std::map<SpanKey, Span> spans;
+    VirtualSegments span_result;
     std::vector<DeferredUnmap> deferred;
     std::mutex deferred_mutex;
     std::atomic<bool> has_deferred{false};

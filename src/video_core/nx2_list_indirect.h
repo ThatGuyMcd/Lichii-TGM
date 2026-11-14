@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/scope_exit.h"
 #include "video_core/gpu_split.h"
 #include "video_core/macro_turing.h"
 
@@ -67,11 +68,14 @@ static_assert((SlotCount << 2) <= 0x10000);
 [[nodiscard]] constexpr u32 Placeholder(u32 slot, u32 word) {
     return PlaceholderMagic | (slot << 2) | word;
 }
-[[nodiscard]] constexpr bool IsPlaceholder(u32 value) {
-    return (value & 0xFFFF0000U) == PlaceholderMagic && (value & 3) < SlotWords;
-}
 [[nodiscard]] constexpr u32 PlaceholderSlot(u32 value) {
     return (value & 0xFFFFU) >> 2;
+}
+/// The guest can write any word where placeholders go (a QMD's grid): one with the magic that
+/// names a slot past the last is none (the back indexes its holds and its slots by the slot).
+[[nodiscard]] constexpr bool IsPlaceholder(u32 value) {
+    return (value & 0xFFFF0000U) == PlaceholderMagic && (value & 3) < SlotWords &&
+           PlaceholderSlot(value) < SlotCount;
 }
 [[nodiscard]] constexpr u32 PlaceholderWord(u32 value) {
     return value & 3;
@@ -1090,6 +1094,29 @@ private:
     template <typename Context>
     void Commit(Context& ctx, DataRamWords& channel, const TaggedRun& run) {
         const auto release = [&ctx](u32 slot) { ctx.Release(slot); };
+        // Reserve before taking holds or changing guest state. Stores can move a slot's last
+        // holder before a later store or emit takes it again.
+        committing.clear();
+        committing.reserve(run.data_ram.size() + run.emits.size());
+        channel.words.reserve(channel.words.size() + run.data_ram.size());
+        registers.reserve(registers.size() + run.emits.size());
+        const auto keep = [this](const TaggedWrite& write) {
+            if (write.tagged &&
+                std::ranges::find(committing, PlaceholderSlot(write.value)) == committing.end()) {
+                committing.push_back(PlaceholderSlot(write.value));
+            }
+        };
+        std::ranges::for_each(run.data_ram, keep);
+        std::ranges::for_each(run.emits, keep);
+        for (const u32 slot : committing) {
+            ++FrontHolds()[slot];
+        }
+        SCOPE_EXIT {
+            for (const u32 slot : committing) {
+                DropHold(slot, release);
+            }
+            committing.clear();
+        };
         for (const TaggedWrite& store : run.data_ram) {
             ctx.data_ram[store.address] = store.value;
             Hold(channel.words, store.address, store.value, store.tagged, release);
@@ -1112,6 +1139,7 @@ private:
     std::vector<TuringMacroInterpreter::Decoded> decoded;
     std::vector<u8> params_tagged;
     std::vector<u64> owed;
+    std::vector<u32> committing; ///< Temporary holds while a run's writes are applied
     Reason place_reason{};
 };
 

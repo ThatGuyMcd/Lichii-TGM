@@ -264,6 +264,17 @@ bool DmaPusher::Step() {
 
     CommandList& command_list = dma_pushbuffer.front();
 
+    const bool resumed = suspensions.load(std::memory_order_acquire) != suspensions_before;
+    if ((dma_pushbuffer_subindex == 0 && command_resume_offset == 0) || resumed) {
+        // Contended CPU writes are collected instead of waiting for the back's cache locks.
+        // Order their invalidations before the first command that can consume them.
+        if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+            split.Defer([r = rasterizer] { r->InvalidateGPUCache(); });
+        } else {
+            rasterizer->InvalidateGPUCache();
+        }
+    }
+
     const size_t prefetch_size = command_list.prefetch_command_list.size();
     const size_t command_list_size = command_list.command_lists.size();
 
@@ -564,7 +575,12 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                             VideoCommon::Nx2FastDraw::BreakUnsplit(
                                 VideoCommon::Nx2FastDraw::Reason::OtherEngine);
                         }
+                        // The register shadows hold what every method sent left, split or not: a
+                        // split started later places copies and uploads from them.
+                        const auto engine_type = subchannel_type[dma_state.subchannel];
                         for (u32 i = 0; i < batch_count; ++i) {
+                            ShadowEngineMethod(engine_type, dma_state.method + i,
+                                               commands[index + i].argument);
                             subchannel->method_sink.emplace_back(dma_state.method + i, commands[index + i].argument);
                         }
                         dma_state.method += batch_count;

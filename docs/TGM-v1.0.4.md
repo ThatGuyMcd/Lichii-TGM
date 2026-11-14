@@ -1,5 +1,26 @@
 # Lichii-tgm-v1.0.4 integration candidate
 
+The native-performance test update adds linear mapping-span reuse for shifting
+buffer bindings, avoids texture-cache locking for pages that never held images,
+and gathers contended CPU writes before new or resumed command lists consume them.
+Image pages are published before write tracking is armed. It also validates every
+page of a requested guest span, preserves depthless native draws, and prevents
+competing processes from recovering or truncating a live shader-build journal.
+
+OOT's movie timeline and Scarecrow recording counters use fractional FPS-Unlock
+ticks. Their relocated caves retain the existing Photo Mode, aspect and extra-BSS
+layout. Exact base-game output signatures cover additional render resolutions.
+Shader work adds cooperative workgroup-memory ordering and capability-gated NVIDIA
+global-buffer routing, keeping guarded no-match reads and the existing atomic
+fallbacks. Narrow QMD-alias, indirect-list lifetime and parser-shadow fixes retain
+the current command ownership model. Syncpoint callbacks run outside the manager
+lock, with cancellation, join and exception cleanup.
+
+The Windows owner test profile has frame generation explicitly off. No resolution,
+quality or other saved graphics choice is silently changed. Actual native FPS
+and the remaining CPU/GPU bottleneck require repeated game-scene measurements;
+this candidate does not claim to guarantee 60 FPS throughout the game.
+
 This candidate combines compatible OOT Remake work from Lichii and Fritchii, including unmerged proposals and historical release branches. It is not a published release; v1.0.3 remains immutable. The [full audit](TGM-OOT-full-audit-2026-11-13.md) lists the captured candidates and deliberate exclusions.
 
 The [14 November follow-up](TGM-upstream-sync-2026-11-14.md) adds host-spill collection spacing,

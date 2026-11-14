@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 
 #include "video_core/page_filter.h"
 
@@ -54,4 +55,24 @@ TEST_CASE("Page filter answers conservatively outside its range", "[video_core][
     filter.Mark(Limit, Page);
     CHECK(filter.Any(Limit, Page));
     CHECK_FALSE(filter.Any(0, Page));
+}
+
+TEST_CASE("Wrapped page-filter ranges cannot bypass write invalidation", "[video_core][page_filter]") {
+    PageFilter filter;
+    constexpr u64 Last = (std::numeric_limits<u64>::max)();
+    CHECK(filter.Any(Last - 3, 8));
+    filter.Mark(Last - 3, 8);
+    CHECK_FALSE(filter.Any(0, Page));
+    CHECK_FALSE(filter.Any(Last, 0));
+    CHECK(filter.Any(Last, 1));
+}
+
+TEST_CASE("An image crossing the filter limit still marks its tracked prefix",
+          "[video_core][page_filter]") {
+    constexpr u64 Limit = u64{1} << 36;
+    PageFilter filter;
+    filter.Mark(Limit - 16, 32);
+    CHECK(filter.Any(Limit - 16, 1));
+    CHECK(filter.Any(Limit - Page, Page));
+    CHECK_FALSE(filter.Any(Limit - Page - 1, 1));
 }

@@ -195,6 +195,7 @@ public:
 
 private:
     friend struct DmaPusherTestAccess;
+    friend struct Native60DmaPusherTestAccess;
 
     static bool IsMemoryWriter(const Engines::EngineInterface& engine, Engines::EngineTypes type,
                                u32 method);

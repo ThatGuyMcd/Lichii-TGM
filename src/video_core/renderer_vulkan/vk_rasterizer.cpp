@@ -3332,9 +3332,15 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
             }
         };
         {
-            std::scoped_lock lock{buffer_cache.mutex};
+            std::unique_lock lock{buffer_cache.mutex, std::defer_lock};
             if (defer) {
+                if (!lock.try_lock()) {
+                    // Collected by the caller and gathered before new/resumed command lists.
+                    return true;
+                }
                 VideoCommon::t_deferred_page_caching = &deferred;
+            } else {
+                lock.lock();
             }
             SCOPE_EXIT {
                 if (defer) {
@@ -3361,7 +3367,7 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
             return true;
         }
     }
-    {
+    if (texture_cache.page_filter.Any(addr, size)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.WriteMemory(addr, size);
     }
@@ -4636,6 +4642,9 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
                                          : VideoCommon::ObtainBufferOperation::MarkAsWritten;
     const auto [buffer, offset] =
         buffer_cache.ObtainBuffer(buffer_operand.address, buffer_size, sync_info, post_op);
+    if (!IS_IMAGE_UPLOAD && buffer->IsNull()) {
+        return false;
+    }
 
     const auto [image, copy] = texture_cache.DmaBufferImageCopy(
         copy_info, buffer_operand, image_operand, image_id, IS_IMAGE_UPLOAD);

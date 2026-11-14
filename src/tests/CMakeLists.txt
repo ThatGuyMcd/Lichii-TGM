@@ -6,6 +6,14 @@
 
 add_executable(tests
     video_core/draw_template.cpp
+    video_core/native60_global_routing.cpp
+    video_core/native60_workgroup_memory.cpp
+    video_core/native60_qmd_alias.cpp
+    video_core/native60_list_lifetime.cpp
+    video_core/native60_dma_shadow.cpp
+    video_core/native60_dma_gather.cpp
+    video_core/native60_mapping_remap.cpp
+    video_core/native60_host1x_actions.cpp
     video_core/command_read_snapshots.cpp
     video_core/frame_gen_choice.cpp
     video_core/lsfg_model.cpp
@@ -73,6 +81,7 @@ add_executable(tests
     audio_core/hardware_audio_codec.cpp
     core/gpu_dirty_memory.cpp
     core/memory_acquire.cpp
+    core/oot_memory_span.cpp
     core/device_kept_memory.cpp
     core/nx2_movie_vsync.cpp
     core/builtin_patches.cpp

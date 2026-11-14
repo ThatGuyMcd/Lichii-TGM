@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <filesystem>
+#include <iterator>
 #include <random>
 #include <string>
 
@@ -34,10 +35,12 @@ TEST_CASE("A build left in flight is skipped by the next precache", "[video_core
         journal.Begin(1, 7);
         journal.End(1);
     }
-    Vulkan::PrecacheJournal next{base, "driver 1", 4, "pipeline"};
-    REQUIRE(next.Poisoned(42));
-    REQUIRE_FALSE(next.Poisoned(7));
-    REQUIRE(next.PoisonedCount() == 1);
+    {
+        Vulkan::PrecacheJournal next{base, "driver 1", 4, "pipeline"};
+        REQUIRE(next.Poisoned(42));
+        REQUIRE_FALSE(next.Poisoned(7));
+        REQUIRE(next.PoisonedCount() == 1);
+    }
     // Still skipped at the start after (the poison list is kept, the in-flight slots reset).
     Vulkan::PrecacheJournal third{base, "driver 1", 4, "pipeline"};
     REQUIRE(third.Poisoned(42));
@@ -63,9 +66,11 @@ TEST_CASE("Builds in flight with one driver are not skipped by the next",
         journal.Begin(0, 5); // ended by a kill or crash, then the driver is updated
     }
     // Recovered first by the new driver: its in-flight ids belong to driver 1.
-    Vulkan::PrecacheJournal updated{base, "driver 2", 2, "pipeline"};
-    REQUIRE_FALSE(updated.Poisoned(5));
-    REQUIRE(updated.PoisonedCount() == 0);
+    {
+        Vulkan::PrecacheJournal updated{base, "driver 2", 2, "pipeline"};
+        REQUIRE_FALSE(updated.Poisoned(5));
+        REQUIRE(updated.PoisonedCount() == 0);
+    }
     // Nor are they saved under driver 2 for later starts.
     REQUIRE_FALSE(Vulkan::PrecacheJournal{base, "driver 2", 2, "pipeline"}.Poisoned(5));
 }
@@ -162,10 +167,10 @@ TEST_CASE("Skip counts the poisoned builds and leaves the others", "[video_core]
         const Vulkan::DriverBuildJournal::Scope crashed{&journal, 77};
     }
     // The scope ended: nothing was left in flight.
-    Vulkan::DriverBuildJournal clean{base, "driver 1", 2, "pipeline"};
-    REQUIRE_FALSE(clean.Skip(77));
-    REQUIRE(clean.Skipped() == 0);
     {
+        Vulkan::DriverBuildJournal clean{base, "driver 1", 2, "pipeline"};
+        REQUIRE_FALSE(clean.Skip(77));
+        REQUIRE(clean.Skipped() == 0);
         const Vulkan::DriverBuildJournal::Scope crashed{&clean, 78};
         std::filesystem::copy_file(base.string() + ".inflight", base.string() + ".killed");
     }
@@ -198,4 +203,31 @@ TEST_CASE("A hash equal to the idle marker still gets recorded", "[video_core][p
 
 TEST_CASE("No journal records nothing", "[video_core][precache]") {
     const Vulkan::DriverBuildJournal::Scope scope{nullptr, 1};
+}
+
+TEST_CASE("A competing journal cannot poison or truncate a live owner's builds",
+          "[video_core][precache]") {
+    TempDir temp;
+    const auto base = temp.path / "driver-builds";
+    const auto contents = [](const std::filesystem::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>{in}, {});
+    };
+    {
+        Vulkan::PrecacheJournal owner{base, "driver 1", 2, "pipeline"};
+        owner.Begin(0, 123);
+        const auto inflight = contents(base.string() + ".inflight");
+        const auto poison = contents(base.string() + ".poison");
+        {
+            Vulkan::PrecacheJournal contender{base, "driver 2", 2, "pipeline"};
+            REQUIRE_FALSE(contender.Poisoned(123));
+            contender.Begin(0, 456);
+            contender.End(0);
+        }
+        REQUIRE(contents(base.string() + ".inflight") == inflight);
+        REQUIRE(contents(base.string() + ".poison") == poison);
+    }
+    Vulkan::PrecacheJournal recovered{base, "driver 1", 2, "pipeline"};
+    REQUIRE(recovered.Poisoned(123));
+    REQUIRE_FALSE(recovered.Poisoned(456));
 }

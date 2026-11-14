@@ -49,6 +49,10 @@ public:
         return *buffer;
     }
 
+    [[nodiscard]] bool IsNull() const noexcept {
+        return is_null || !buffer;
+    }
+
     [[nodiscard]] VkDeviceAddress DeviceAddress() const noexcept {
         return device_address;
     }
@@ -375,7 +379,8 @@ private:
         if (handle == VK_NULL_HANDLE) {
             guest_descriptor_queue.AddBuffer(handle, 0, 0, VK_WHOLE_SIZE);
         } else {
-            guest_descriptor_queue.AddBuffer(handle, buffer.DeviceAddress(), offset, size);
+            const VkDeviceSize range = buffer.IsNull() && size == 0 ? NullBufferSize() : size;
+            guest_descriptor_queue.AddBuffer(handle, buffer.DeviceAddress(), offset, range);
         }
     }
 
@@ -387,6 +392,7 @@ private:
 
     void ReserveNullBuffer();
     vk::Buffer CreateNullBuffer();
+    VkDeviceSize NullBufferSize() const;
 
     const Device& device;
     MemoryAllocator& memory_allocator;

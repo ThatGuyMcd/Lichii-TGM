@@ -200,6 +200,15 @@ constexpr std::array FPS_UNLOCK_RECORDS{
                        Core::OotFpsPatches::STEP_AMBIENT_ORIGINAL},
     BuiltinPatchRecord{0x3C46C00, Core::OotFpsPatches::STEP_AMBIENT_ROUTINE, {}, true},
     BuiltinPatchRecord{0x3C46B80, Core::OotFpsPatches::STEP_SHARED_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x3B5C7C8, Core::OotFpsPatches::MOVIE_FRAMES_HOOK,
+                       Core::OotFpsPatches::MOVIE_FRAMES_ORIGINAL},
+    BuiltinPatchRecord{0x3C46D00, Core::OotFpsPatches::MOVIE_FRAMES_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x3296B08, Core::OotFpsPatches::SCARECROW_RECORD_HOOK,
+                       Core::OotFpsPatches::SCARECROW_CUT_ORIGINAL},
+    BuiltinPatchRecord{0x3C46D40, Core::OotFpsPatches::SCARECROW_RECORD_ROUTINE, {}, true},
+    BuiltinPatchRecord{0x32926C8, Core::OotFpsPatches::SCARECROW_LAST_HOOK,
+                       Core::OotFpsPatches::SCARECROW_CUT_ORIGINAL},
+    BuiltinPatchRecord{0x3C46D68, Core::OotFpsPatches::SCARECROW_LAST_ROUTINE, {}, true},
 };
 
 constexpr std::array PHOTO_MODE_RECORDS{

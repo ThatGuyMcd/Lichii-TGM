@@ -358,11 +358,13 @@ void InitializeFpsHooks(std::vector<u8>& nso) {
     std::memcpy(nso.data() + TurnSpeedHookOffset, &TurnSpeedOriginalInstruction, sizeof(u32));
     std::memcpy(nso.data() + TurnSpeedHookOffset + 4, &TurnSpeedSecondInstruction, sizeof(u32));
 
-    constexpr std::array<std::pair<u32, u32>, 8> originals{{
+    constexpr std::array<std::pair<u32, u32>, 11> originals{{
         {0x475F8, 0x1E380009}, {0x4760C, 0x1B097D08},
         {0x415300, 0xD503237F}, {0x415334, 0xBD401100},
         {0xA68300, 0x1E38000C}, {0x3293410, 0x1E390008},
-        {0x53F914, 0x1100077A}, {0x6E6CC4, DynamicOriginalInstruction}}};
+        {0x53F914, 0x1100077A}, {0x6E6CC4, DynamicOriginalInstruction},
+        {0x3B5C7C8, 0x11000508}, {0x3296B08, 0x1E390008},
+        {0x32926C8, 0x1E390008}}};
     for (const auto& [offset, original] : originals) {
         std::memcpy(nso.data() + sizeof(Loader::NSOHeader) + offset, &original, sizeof(original));
     }
@@ -916,6 +918,9 @@ TEST_CASE("All OOT FPS fixes, Texture Pool, Photo Mode and aspects coexist",
         REQUIRE(branch_target(0x3293410) == 0x3C46B28);
         REQUIRE(branch_target(0x2F53268) == 0x3C46B50);
         REQUIRE(branch_target(0x53F914) == 0x3C46C00);
+        REQUIRE(branch_target(0x3B5C7C8) == 0x3C46D00);
+        REQUIRE(branch_target(0x3296B08) == 0x3C46D40);
+        REQUIRE(branch_target(0x32926C8) == 0x3C46D68);
         REQUIRE(std::all_of(patched.begin() + sizeof(Loader::NSOHeader) + Photo::StateOffset,
                             patched.begin() + sizeof(Loader::NSOHeader) + Photo::StateOffset +
                                 Photo::StateSize,
@@ -1073,5 +1078,56 @@ TEST_CASE("Unchecked add-on lists store off-by-default built-ins when checked", 
     SECTION("Other titles are stored as given") {
         REQUIRE(FileSys::StoredDisabledAddons(OtherTitleId, {Double}) ==
                 std::vector<std::string>{Double});
+    }
+}
+
+TEST_CASE("Movie and Scarecrow hooks preserve fractional-step timing and atomic patch guards",
+          "[patch_manager]") {
+    constexpr std::array<std::pair<u32, u32>, 3> hooks{{
+        {0x3B5C7C8, 0x3C46D00}, {0x3296B08, 0x3C46D40}, {0x32926C8, 0x3C46D68}}};
+    PatchManagerTestContext context;
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution},
+                                                      std::string{DynamicFps}};
+    const auto nso = MakeDynamicMain();
+    const auto patched = context.Manager().PatchNSO(nso, "main");
+    const auto destination = [](u32 pc, u32 word) {
+        return static_cast<u32>(pc + (static_cast<s32>(word << 6) >> 4));
+    };
+    for (size_t i = 0; i < hooks.size(); ++i) {
+        const auto [site, cave] = hooks[i];
+        const u32 size = i == 0 ? 56 : 40;
+        const u32 call = i == 0 ? 32 : 16;
+        REQUIRE(destination(site, WordAt(patched, sizeof(Loader::NSOHeader) + site)) == cave);
+        REQUIRE(destination(cave + call, WordAt(patched, sizeof(Loader::NSOHeader) + cave + call)) ==
+                0x3C46B80);
+        REQUIRE(destination(cave + size - 4,
+                            WordAt(patched, sizeof(Loader::NSOHeader) + cave + size - 4)) == site + 4);
+        for (const u32 offset : {site, cave + size - 1}) {
+            auto bad = nso;
+            bad[sizeof(Loader::NSOHeader) + offset] ^= 1;
+            REQUIRE(context.Manager().PatchNSO(bad, "main") == bad);
+        }
+    }
+    Settings::values.disabled_addons[OcarinaTitleId].push_back(std::string{FpsUnlock});
+    const auto disabled = context.Manager().PatchNSO(nso, "main");
+    for (const auto [site, cave] : hooks) {
+        REQUIRE(WordAt(disabled, sizeof(Loader::NSOHeader) + site) ==
+                WordAt(nso, sizeof(Loader::NSOHeader) + site));
+        REQUIRE(WordAt(disabled, sizeof(Loader::NSOHeader) + cave) == 0);
+    }
+}
+
+TEST_CASE("User modifications take precedence over new movie and recording patches",
+          "[patch_manager]") {
+    constexpr u32 word = 0x11223344;
+    for (const u32 site : {0x3B5C7C8, 0x3296B08, 0x32926C8, 0x3C46D00, 0x3C46D40, 0x3C46D68}) {
+        const size_t offset = sizeof(Loader::NSOHeader) + site;
+        PatchManagerTestContext context{word, offset};
+        Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution},
+                                                          std::string{DynamicFps}};
+        const auto nso = MakeDynamicMain();
+        auto expected = nso;
+        std::memcpy(expected.data() + offset, &word, sizeof(word));
+        REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
     }
 }

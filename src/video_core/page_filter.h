@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <limits>
 
 #include "common/common_types.h"
 
@@ -25,17 +26,19 @@ public:
             return;
         }
         const u64 first = address >> PageBits;
-        const u64 last = (address + size - 1) >> PageBits;
-        if (last >= NumWords * 64) {
+        if (first >= NumWords * 64) {
             return;
         }
+        const u64 last = size - 1 > (std::numeric_limits<u64>::max)() - address
+                             ? NumWords * 64 - 1
+                             : (std::min)((address + size - 1) >> PageBits, NumWords * 64 - 1);
         for (u64 page = first; page <= last;) {
             const u64 bit = page % 64;
             const u64 count = (std::min<u64>)(64 - bit, last - page + 1);
             const u64 mask = (count == 64 ? ~u64{0} : (u64{1} << count) - 1) << bit;
             auto& word = words[page / 64];
             if ((word.load(std::memory_order_relaxed) & mask) != mask) {
-                word.fetch_or(mask, std::memory_order_relaxed);
+                word.fetch_or(mask, std::memory_order_release);
             }
             page += count;
         }
@@ -46,6 +49,9 @@ public:
         if (size == 0) {
             return false;
         }
+        if (size - 1 > (std::numeric_limits<u64>::max)() - address) {
+            return true;
+        }
         const u64 first = address >> PageBits;
         const u64 last = (address + size - 1) >> PageBits;
         if (last >= NumWords * 64) {
@@ -55,7 +61,7 @@ public:
             const u64 bit = page % 64;
             const u64 count = (std::min<u64>)(64 - bit, last - page + 1);
             const u64 mask = (count == 64 ? ~u64{0} : (u64{1} << count) - 1) << bit;
-            if (words[page / 64].load(std::memory_order_relaxed) & mask) {
+            if (words[page / 64].load(std::memory_order_acquire) & mask) {
                 return true;
             }
             page += count;

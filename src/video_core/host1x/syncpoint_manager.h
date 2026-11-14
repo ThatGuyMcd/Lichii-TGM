@@ -10,6 +10,7 @@
 #include <list>
 #include <mutex>
 #include <optional>
+#include <thread>
 
 #include "common/common_types.h"
 
@@ -101,6 +102,15 @@ private:
 
     void Wait(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv, u32 expected_value);
 
+    /// An Increment owns this record until all its due actions settle. Linked under guard
+    /// without allocating, so moving actions out of storage cannot lose them on allocation failure.
+    struct DueActions {
+        std::list<RegisteredAction> pending;
+        ActionHandle running{};
+        std::thread::id thread{std::this_thread::get_id()};
+        DueActions* next{};
+    };
+
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_guest{};
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_host{};
 
@@ -111,8 +121,10 @@ private:
     u64 last_action_id{};
     GuestMirror guest_mirror; ///< Guarded by `guard`.
     const void* guest_mirror_owner{};
+    DueActions* due_actions{}; ///< Guarded by guard; records owned by active Increment calls.
     std::condition_variable wait_guest_cv;
     std::condition_variable wait_host_cv;
+    std::condition_variable action_done_cv;
 };
 
 } // namespace Host1x

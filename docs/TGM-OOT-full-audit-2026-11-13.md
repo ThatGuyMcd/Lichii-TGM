@@ -8,6 +8,18 @@ The fixed production review uses main `fc2ce2f64e9f1fab38303a2130ae2aac2910c2f8`
 
 The local component ledgers also reconcile 235 root footprints, 171 root branch/tag commits and 134 renderer branch/tag commits. These figures overlap and must not be summed as independent fixes. Classification completeness does not mean every proposed behavior is integrated.
 
+## Final landed-source recheck, 14 November
+
+The final compared main tip is `b55de0c1b20684e6bf7e9feb0f6f548edf35f9c7`. Its 15 new landed commits were compared against the adapted production code, including changes originally reviewed as open PRs. Fritchii's two compared tips above are unchanged.
+
+- Already covered: #1083 ASTC batching/reuse, #1137 OOT output, #1396 motion integral removal, #1639 guest-kernel frame waits, #1641 draw-state ownership, #1659 guest camera binding and #1672 OOT-only DLSS input sanitization. The Qualcomm LRZ behavior in #1682 was already present from #354.
+- #1663's four step-driven counters and #1679's moving-platform/Gohma fixes are retained through the relocated TGM patch layout. The two-instruction hook guard and user-mod precedence remain; importing the upstream cave addresses would overlap existing TGM code.
+- #1676's stereo/5.1 format support, bounded spans and device properties are present. TGM also tests alternating stereo/5.1 use of the shared no-output sink, avoiding a channel-layout regression while retaining silent-output pacing.
+- #1407 exposed a real omission in the earlier AMD-store classification: retaining the canonical store alone did not include its session retention policy. The final adaptation adds the bounded AMD session cap and the usage-order regression. Non-AMD defaults remain unchanged.
+- #1655's trace recorder still has the reviewed dirty-extent gap overwrite and device-page remapping gaps; its landed recorder subtree is unchanged from the reviewed proposal. It remains excluded. #1684's new Star Fox prepass and #1666's numeric networking resolver are outside the OOT integration scope.
+
+The ancestry record documents these reviewed snapshots and explicit exclusions. It is not a claim that every upstream file or proposed behavior is copied. Later upstream arrivals are next-audit candidates rather than silently included in the validated source.
+
 ## Retained contracts
 
 Forest Lantern dark/light, selected-game artwork, handheld touch targets, full-screen settings and all existing setting declarations remain. Existing data/save/keys/Eden/portable/XDG paths, Photo Mode, seven OOT aspect add-ons and guarded game patches remain. Frame generation stays off by default. Explicit shader preparation retains its pinned recipe, strong game/build/translator/GPU identity, owned worker, cancellation, locks and checkpoints.

@@ -29,6 +29,20 @@ const VkBaseInStructure* FindNext(const void* next, VkStructureType type) {
     return nullptr;
 }
 
+/// AMD's proprietary driver needs this store for dynamic-vertex-input pipeline binaries.
+/// Allow compaction to retain the session's used binaries up to a bounded 4 GiB instead of
+/// discarding them at the default target after a large shader preparation run (upstream #1407).
+ShaderCacheV2::DriverBlobOptions BlobOptions(const Device& device) {
+    ShaderCacheV2::DriverBlobOptions options{};
+    if (device.GetDriverID() == VK_DRIVER_ID_AMD_PROPRIETARY) {
+        options.max_bytes = u64{1} << 30;
+        options.target_bytes = options.max_bytes / 8 * 7;
+        options.session_cap_bytes = u64{4} << 30;
+        options.ceiling_bytes = options.session_cap_bytes;
+    }
+    return options;
+}
+
 /// Libraries, and create infos that already chain binaries or flags of their own, are left alone.
 template <typename CreateInfo>
 bool TakesBinaries(const CreateInfo& ci) {
@@ -214,7 +228,7 @@ std::unique_ptr<PipelineBinaries> PipelineBinaries::Open(const Device& device,
 
 PipelineBinaries::PipelineBinaries(const Device& device_, std::filesystem::path file,
                                    const ShaderCacheV2::DeviceIdentity& identity)
-    : device{device_}, store{std::move(file), identity} {}
+    : device{device_}, store{std::move(file), identity, BlobOptions(device_)} {}
 
 vk::Pipeline PipelineBinaries::CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci,
                                                       VkPipelineCache cache, u64 key) {

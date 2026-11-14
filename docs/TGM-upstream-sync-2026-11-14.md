@@ -34,6 +34,34 @@ production diffs and prior adaptations, rather than titles or ancestry, determin
   Concurrent destruction during an active directory/rename call remains outside
   this fix, as stated in the upstream proposal.
 
+## Reported shader preparation and launch failure
+
+The reported candidate completed its shader preparation phases before the guest
+SDK aborted while setting up a thread stack. Its log also records the final SDK
+page as unmapped. The loader's sizing pass omitted the extra 0x1000 bytes of OOT
+patch BSS that its real loading pass included, leaving the process reservation
+one page short. Both passes now use the same patch manager for sizing. Executable
+patching and dumping remain restricted to the real load, preserving NCE's existing
+dry-pass text analysis and avoiding duplicate patch side effects.
+
+A synthetic ExeFS/NPDM fixture runs the actual two-pass loader without executing
+guest code. The old source reproduces the missing final SDK page; the corrected
+source passes all 38 assertions under ASan/UBSan, including wrong-build gating,
+module placement, final-page read/write and dry-pass side-effect checks. This
+validates the allocation correction; the reported guest SDK abort still needs
+confirmation in an owner-run game session.
+
+The repeated shader screens represent separate CPU catalogue, native pipeline,
+cached pipeline, graphics-stage and mesh preparation phases. In the reported log,
+120124 native pipeline records were processed, graphics-stage warming took
+869.5 seconds with 36823 entries, and mesh preparation finished before the panic.
+The graphics warm-up reduced itself to three workers because available host
+commit memory was about 8407 MiB. Completed-stage markers were saved. The broad
+renderer source identity can legitimately invalidate native preparation between
+candidate builds, even when a source change concerns another GPU. The loader fix
+does not alter those identities, settings, journals or shader preparation policies.
+No cache is deleted or marked complete without matching coverage.
+
 ## Covered or deferred
 
 #1689's DLSS health-check registry excludes OOT; #1656 is optional trace tooling

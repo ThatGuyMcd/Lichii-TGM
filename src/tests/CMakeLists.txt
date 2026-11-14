@@ -76,6 +76,7 @@ add_executable(tests
     core/device_kept_memory.cpp
     core/nx2_movie_vsync.cpp
     core/builtin_patches.cpp
+    core/nso_layout.cpp
     core/oot_ultrawide.cpp
     video_core/oot_ultrawide.cpp
     core/builtin_font_glyphs.cpp

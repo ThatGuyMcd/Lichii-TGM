@@ -4,9 +4,11 @@ This candidate combines compatible OOT Remake work from Lichii and Fritchii, inc
 
 The [14 November follow-up](TGM-upstream-sync-2026-11-14.md) adds host-spill collection spacing,
 session speed-setting retention, the load-end driver cache read guard, short-I/O
-propagation and shared VFS reference lifetime. The owner's reported startup panic
-after completed shader preparation remains under investigation; this candidate
-does not claim to resolve it.
+propagation and shared VFS reference lifetime. It also corrects a two-pass loader
+reservation error that left the final SDK page unmapped after adding OOT patch
+storage. An actual-loader regression reproduces the old error and passes with
+the correction. The reported post-preparation guest abort still needs confirmation
+in a game session.
 
 - Renderer work includes command ownership, split-thread synchronization, draw/register reuse, tracked constant-buffer writes, sparse mapping and image invalidation, texture decoding/reuse and memory-pressure handling.
 - Shader work includes owned detached translation, bounded job scheduling, cache reuse/migration, AMD session pipeline-binary retention, graphics libraries and native preparation, strict cache identity and stale warm-file rebuilding.

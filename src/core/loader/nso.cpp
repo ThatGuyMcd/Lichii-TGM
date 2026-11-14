@@ -181,9 +181,10 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         codeset.segments[i].size = PageAlignSize(codeset.segments[i].size);
     }
 
-    // Apply patches if necessary
+    // Sizing needs the patched BSS extent, but must not apply or dump executable patches.
     const auto name = nso_file.GetName();
-    if (pm && (pm->HasNSOPatch(nso_header.build_id, name) || Settings::values.dump_nso)) {
+    if (load_into_process && pm &&
+        (pm->HasNSOPatch(nso_header.build_id, name) || Settings::values.dump_nso)) {
         std::span<u8> patchable_section(codeset.memory.data() + module_start, codeset.memory.size() - module_start);
         std::vector<u8> pi_header(sizeof(NSOHeader) + patchable_section.size());
         std::memcpy(pi_header.data(), &nso_header, sizeof(NSOHeader));

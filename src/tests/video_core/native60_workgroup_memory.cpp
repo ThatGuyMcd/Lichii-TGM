@@ -231,7 +231,8 @@ TEST_CASE("Native60: shared access widths and atomic fallbacks retain workgroup 
         static_cast<void>(ir.LoadShared(16, true, ir.Imm32(32)));
         static_cast<void>(ir.SharedAtomicInc(ir.Imm32(96), ir.Imm32(7)));
         static_cast<void>(ir.SharedAtomicDec(ir.Imm32(100), ir.Imm32(7)));
-        static_cast<void>(ir.SharedAtomicExchange(ir.Imm32(112), ir.Imm64(0x123456789abcdef0ULL)));
+        static_cast<void>(
+            ir.SharedAtomicExchange(ir.Imm32(112), ir.Imm64(u64{0x123456789abcdef0ULL})));
         ir.Barrier();
         const auto code = fixture.Emit(explicit_layout ? "workgroup-explicit-widths"
                                                         : "workgroup-word-widths");

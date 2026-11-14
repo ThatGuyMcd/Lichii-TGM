@@ -98,6 +98,8 @@ add_executable(tests
     frontend_common/data_manager.cpp
     frontend_common/mod_manager.cpp
     core/vfs_vector.cpp
+    core/vfs_real_lifetime.cpp
+    core/ncz_io_guards.cpp
     core/file_sys_parsers.cpp
     input_common/calibration_lifetime.cpp
     video_core/ampere_logged_numeric.cpp

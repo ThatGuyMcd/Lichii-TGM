@@ -18,6 +18,7 @@
 #include "common/game_presets.h"
 #include "core/core.h"
 #include "qt_common/config/qt_config.h"
+#include "qt_common/config/session_speed_limit.h"
 #include "qt_common/config/uisettings.h"
 #include "qt_common/util/game.h"
 #include "yuzu/configuration/configure_system.h"
@@ -53,6 +54,108 @@ class SystemSettingsTests : public QObject {
     }
 
 private slots:
+    void speedHotkeysRestoreTheConfiguredValueInEitherScope() {
+        Save(Settings::values.use_speed_limit);
+        const auto old_mode = Settings::values.current_speed_mode.GetValue();
+        SCOPE_EXIT { Settings::values.current_speed_mode = old_mode; };
+        for (const bool global : {true, false}) {
+            for (const bool configured : {false, true}) {
+                Settings::values.use_speed_limit.SetGlobal(global);
+                Settings::values.use_speed_limit.SetValue(configured);
+                Settings::values.current_speed_mode = Settings::SpeedMode::Standard;
+                QtCommon::SessionSpeedLimit session;
+                QVERIFY(!session.BeginHotkey(false));
+                QCOMPARE(Settings::values.use_speed_limit.GetValue(), configured);
+                QVERIFY(session.BeginHotkey(true));
+                Settings::ToggleStandardMode();
+                QVERIFY(session.BeginHotkey(true));
+                Settings::ToggleTurboMode();
+                QVERIFY(session.BeginHotkey(true));
+                Settings::ToggleSlowMode();
+                session.Restore(false);
+                QCOMPARE(Settings::values.use_speed_limit.GetValue(), configured);
+                QCOMPARE(Settings::values.use_speed_limit.UsingGlobal(), global);
+                QCOMPARE(Settings::values.current_speed_mode.GetValue(), Settings::SpeedMode::Standard);
+                // The stop-completion path may run after shutdown-begin already restored it.
+                Settings::values.use_speed_limit.SetValue(!configured);
+                session.Restore(false);
+                QCOMPARE(Settings::values.use_speed_limit.GetValue(), !configured);
+            }
+        }
+    }
+    void speedDialogApplyAndScopeChangesRemainAuthoritative() {
+        Save(Settings::values.use_speed_limit);
+        const auto old_mode = Settings::values.current_speed_mode.GetValue();
+        SCOPE_EXIT { Settings::values.current_speed_mode = old_mode; };
+        for (const bool dialog_still_open : {false, true}) {
+            Settings::values.use_speed_limit.SetValue(false);
+            QtCommon::SessionSpeedLimit session;
+            QVERIFY(session.BeginHotkey(true));
+            Settings::ToggleStandardMode();
+            Settings::values.use_speed_limit.SetValue(true);
+            if (!dialog_still_open) {
+                session.Reset();
+            }
+            session.Restore(dialog_still_open);
+            QVERIFY(Settings::values.use_speed_limit.GetValue());
+            session.Restore(false);
+            QVERIFY(Settings::values.use_speed_limit.GetValue());
+        }
+        Settings::values.use_speed_limit.SetValue(false);
+        QtCommon::SessionSpeedLimit session;
+        QVERIFY(session.BeginHotkey(true));
+        Settings::ToggleStandardMode();
+        Settings::values.use_speed_limit.SetGlobal(false);
+        Settings::values.use_speed_limit.SetValue(true);
+        session.Restore(false);
+        QVERIFY(Settings::values.use_speed_limit.GetValue());
+        QVERIFY(!Settings::values.use_speed_limit.UsingGlobal());
+        session.Reset();
+        Settings::values.use_speed_limit.SetValue(false);
+        session.Restore(false);
+        QVERIFY(!Settings::values.use_speed_limit.GetValue());
+    }
+    void speedLimitOffPersistsThroughActualQtConfigAfterSession() {
+        try {
+        Save(Settings::values.use_speed_limit);
+        const auto old_mode = Settings::values.current_speed_mode.GetValue();
+        const bool players_global = Settings::values.players.UsingGlobal();
+        const auto previous_root = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir);
+        const auto previous_config = Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir);
+        SCOPE_EXIT {
+            Settings::values.current_speed_mode = old_mode;
+            Settings::values.players.SetGlobal(players_global);
+            Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir, previous_root);
+            Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir, previous_config);
+        };
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QVERIFY(QDir(directory.path()).mkdir(QStringLiteral("profile")));
+        Common::FS::SetEdenPath(Common::FS::EdenPath::EdenDir,
+                               std::filesystem::path{directory.filePath(QStringLiteral("profile")).toStdString()});
+        Common::FS::ProfileMigration::MarkFresh(
+            std::filesystem::path{directory.filePath(QStringLiteral("profile.migration")).toStdString()});
+        Common::FS::SetEdenPath(Common::FS::EdenPath::ConfigDir,
+                               std::filesystem::path{directory.path().toStdString()});
+        {
+            QtConfig config("session-speed");
+            Settings::values.use_speed_limit.SetGlobal(true);
+            Settings::values.use_speed_limit.SetValue(false);
+            QtCommon::SessionSpeedLimit session;
+            QVERIFY(session.BeginHotkey(true));
+            Settings::ToggleStandardMode();
+            session.Restore(false);
+            config.SaveAllValues();
+        }
+        Settings::values.use_speed_limit.SetValue(true);
+        {
+            QtConfig config("session-speed");
+            QVERIFY(!Settings::values.use_speed_limit.GetValue());
+        }
+        } catch (const std::exception& error) {
+            QFAIL(error.what());
+        }
+    }
     void adventureScriptBoundsNativeReportLoops() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());

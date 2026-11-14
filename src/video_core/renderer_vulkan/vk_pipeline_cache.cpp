@@ -2355,7 +2355,9 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
         PreparePrecompiled(pipeline_cache_filename.parent_path(), precache, stop_loading, callback);
     }
 
-    if (use_vulkan_pipeline_cache) {
+    // Background or cancelled prebuilds can still be building into the driver cache here.
+    // Drivers that cannot read concurrently retain the session-end save after worker shutdown.
+    if (use_vulkan_pipeline_cache && device.CanReadPipelineCacheDuringBuilds()) {
         SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
                                      CACHE_VERSION);
         size_t size = 0;

@@ -1502,16 +1502,25 @@ void MainWindow::InitializeHotkeys() {
     connect_shortcut(QStringLiteral("Audio Volume Up"), &MainWindow::OnIncreaseVolume);
 
     connect_shortcut(QStringLiteral("Toggle Framerate Limit"), [this] {
+        if (!session_speed_limit.BeginHotkey(emulation_running)) {
+            return;
+        }
         Settings::ToggleStandardMode();
         SetFPSSuffix();
     });
 
     connect_shortcut(QStringLiteral("Toggle Turbo Speed"), [this] {
+        if (!session_speed_limit.BeginHotkey(emulation_running)) {
+            return;
+        }
         Settings::ToggleTurboMode();
         SetFPSSuffix();
     });
 
     connect_shortcut(QStringLiteral("Toggle Slow Speed"), [this] {
+        if (!session_speed_limit.BeginHotkey(emulation_running)) {
+            return;
+        }
         Settings::ToggleSlowMode();
         SetFPSSuffix();
     });
@@ -2442,6 +2451,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     }
 
     PrepareShaderPrecache(title_id, std::filesystem::path{filename.toStdU16String()});
+    session_speed_limit.Reset();
     Settings::LogSettings();
 
     if (UISettings::values.select_user_on_boot && !user_flag_cmd_line) {
@@ -2712,9 +2722,7 @@ bool MainWindow::OnShutdownBegin() {
 
     AllowOSSleep();
 
-    // Disable unlimited frame rate and turbo/slow modes
-    Settings::values.use_speed_limit.SetValue(true);
-    Settings::values.current_speed_mode = Settings::SpeedMode::Standard;
+    session_speed_limit.Restore(UISettings::values.configuration_applied);
 
     // Before the shutdown guard, and deleted now rather than later: the panel's module stops
     // following the game, and a heap search it started ends, before the game's memory goes away.
@@ -2838,6 +2846,7 @@ void MainWindow::OnEmulationStopped() {
     if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
         return;
     }
+    session_speed_limit.Restore(UISettings::values.configuration_applied);
     shutdown_timer.stop();
     emu_terminate_timer.stop();
     if (QtCommon::emu_thread) {
@@ -4398,7 +4407,9 @@ void MainWindow::OnConfigure() {
         // Runs if the user hit Cancel or closed the window, and did not ever press the Apply button
         // or `Reset to Defaults` button
         return;
-    } else if (result == QDialog::Accepted) {
+    }
+    session_speed_limit.Reset();
+    if (result == QDialog::Accepted) {
         // Only apply new changes if user hit Okay
         // This is here to avoid applying changes if the user hit Apply, made some changes, then hit
         // Cancel
@@ -4698,7 +4709,9 @@ void MainWindow::OpenPerGameConfiguration(u64 title_id, const std::string& file_
         }
         Settings::RestoreGlobalState(QtCommon::system->IsPoweredOn());
         return;
-    } else if (result == QDialog::Accepted) {
+    }
+    session_speed_limit.Reset();
+    if (result == QDialog::Accepted) {
         dialog.ApplyConfiguration();
     }
 

@@ -584,8 +584,6 @@ void TextureCache<P>::TickFrame() {
                 if (native_thresholds_applied) {
                     constexpr u64 SpillWindowFrames = 120;
                     constexpr u64 SpillGraceFrames = 60;
-                    constexpr u64 SpillCollectSpacing = 15;
-                    constexpr u32 MaxSpillCollects = 4;
                     constexpr u64 SpillDecayFrames = 240;
                     constexpr u64 SpillEpisodeEndFrames = 300;
                     const u64 spilled = runtime.TakeSpilledBytes();
@@ -604,9 +602,8 @@ void TextureCache<P>::TickFrame() {
                         // episode may still have some left after the grace period: use them
                         // all before raising the margin.
                         const u64 since = frame_tick + 1 - spill_collect_tick;
-                        if (spill_forced_collects < MaxSpillCollects) {
-                            if (since >= spill_forced_collects * SpillCollectSpacing) {
-                                ++spill_forced_collects;
+                        if (spill_collections.Count() < HostSpillCollections::Limit) {
+                            if (spill_collections.TryCollect(frame_tick)) {
                                 ++spill_log_collects;
                                 spill_collect = true;
                             }
@@ -618,14 +615,14 @@ void TextureCache<P>::TickFrame() {
                                 LOG_WARNING(HW_GPU,
                                             "Still spilling to host memory after {} forced "
                                             "collects: keeping {} MiB more free",
-                                            spill_forced_collects, spill_margin >> 20);
+                                            spill_collections.Count(), spill_margin >> 20);
                             }
                         }
                     } else {
                         ++spill_quiet_frames;
                         if (spill_quiet_frames == SpillEpisodeEndFrames) {
                             spill_collect_tick = 0;
-                            spill_forced_collects = 0;
+                            spill_collections.Reset();
                         }
                         if (spill_margin != 0 && spill_quiet_frames % SpillDecayFrames == 0) {
                             spill_margin -= (std::min)(spill_margin, 128_MiB);

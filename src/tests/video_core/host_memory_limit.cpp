@@ -3,11 +3,46 @@
 
 #include <limits>
 #include <optional>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "common/memory_detect.h"
 #include "video_core/texture_cache/host_memory_limit.h"
+
+TEST_CASE("Sparse host spills cannot bunch forced collections after a quiet gap",
+          "[video_core][texture_cache][host_memory_limit][host_spill_spacing]") {
+    VideoCommon::HostSpillCollections collections;
+    std::vector<u64> collected;
+    for (const u64 frame : {1ULL, 100ULL, 101ULL, 102ULL, 114ULL, 115ULL, 116ULL,
+                            129ULL, 130ULL, 145ULL, 1000ULL}) {
+        if (collections.TryCollect(frame)) {
+            collected.push_back(frame);
+        }
+    }
+    REQUIRE(collected == std::vector<u64>{1, 100, 115, 130});
+    REQUIRE(collections.Count() == 4);
+
+    // TextureCache resets the episode after 300 quiet frames, including its four-collect cap.
+    collections.Reset();
+    REQUIRE(collections.Count() == 0);
+    REQUIRE(collections.TryCollect(1001));
+    REQUIRE_FALSE(collections.TryCollect(1015));
+    REQUIRE(collections.TryCollect(1016));
+}
+
+TEST_CASE("Continuous host spills keep the existing four-collect budget",
+          "[video_core][texture_cache][host_memory_limit][host_spill_spacing]") {
+    VideoCommon::HostSpillCollections collections;
+    std::vector<u64> collected;
+    for (u64 frame = 0; frame < 120; ++frame) {
+        if (collections.TryCollect(frame)) {
+            collected.push_back(frame);
+        }
+    }
+    REQUIRE(collected == std::vector<u64>{0, 15, 30, 45});
+    REQUIRE(collections.Count() == 4);
+}
 
 TEST_CASE("Native texture ceilings change continuously with the device budget",
           "[video_core][texture_cache][host_memory_limit]") {

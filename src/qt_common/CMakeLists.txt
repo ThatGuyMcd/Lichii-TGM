@@ -22,6 +22,7 @@ add_library(qt_common STATIC
     config/uisettings.h
     config/qt_config.cpp
     config/qt_config.h
+    config/session_speed_limit.h
     config/shared_translation.cpp
     config/shared_translation.h
 

@@ -43,6 +43,7 @@
 #include "video_core/surface.h"
 #include "video_core/texture_cache/descriptor_table.h"
 #include "video_core/texture_cache/draw_template.h"
+#include "video_core/texture_cache/host_memory_limit.h"
 #include "video_core/texture_cache/image_base.h"
 #include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -190,7 +191,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 spill_window_start{};     ///< frame_tick the current window began at
     u64 spill_quiet_frames{};     ///< Frames since the last spill
     u64 spill_collect_tick{};     ///< frame_tick of the first forced collect of this episode + 1
-    u32 spill_forced_collects{};  ///< Forced collects in this episode
+    HostSpillCollections spill_collections; ///< Forced collects in this episode
     u64 spill_log_bytes{};        ///< Spilled since the last spill log line
     u32 spill_log_collects{};     ///< Forced collects since the last spill log line
     std::chrono::steady_clock::time_point spill_log_time{};

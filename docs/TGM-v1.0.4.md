@@ -2,6 +2,12 @@
 
 This candidate combines compatible OOT Remake work from Lichii and Fritchii, including unmerged proposals and historical release branches. It is not a published release; v1.0.3 remains immutable. The [full audit](TGM-OOT-full-audit-2026-11-13.md) lists the captured candidates and deliberate exclusions.
 
+The [14 November follow-up](TGM-upstream-sync-2026-11-14.md) adds host-spill collection spacing,
+session speed-setting retention, the load-end driver cache read guard, short-I/O
+propagation and shared VFS reference lifetime. The owner's reported startup panic
+after completed shader preparation remains under investigation; this candidate
+does not claim to resolve it.
+
 - Renderer work includes command ownership, split-thread synchronization, draw/register reuse, tracked constant-buffer writes, sparse mapping and image invalidation, texture decoding/reuse and memory-pressure handling.
 - Shader work includes owned detached translation, bounded job scheduling, cache reuse/migration, AMD session pipeline-binary retention, graphics libraries and native preparation, strict cache identity and stale warm-file rebuilding.
 - Guarded OOT fixes cover moving platforms, water updates, sound-manager cadence, step counters, Gohma turn speed, optional text speeds and output/camera handling. Their code/state layout coexists with Photo Mode and all aspect add-ons.

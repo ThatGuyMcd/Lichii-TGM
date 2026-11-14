@@ -10,6 +10,34 @@
 
 namespace VideoCommon {
 
+/// Space the four forced collections of a host-spill episode from actual collections.
+class HostSpillCollections {
+public:
+    static constexpr u32 Limit = 4;
+
+    bool TryCollect(u64 frame) {
+        if (count == Limit || (count != 0 && frame - last_frame < 15)) {
+            return false;
+        }
+        last_frame = frame;
+        ++count;
+        return true;
+    }
+
+    u32 Count() const noexcept {
+        return count;
+    }
+
+    void Reset() noexcept {
+        count = 0;
+        last_frame = 0;
+    }
+
+private:
+    u64 last_frame{};
+    u32 count{};
+};
+
 /// Native titles refresh their device budget every 30 frames. Ramp their cache ceiling across
 /// 8--10 GiB rather than making a large step when a changing budget crosses 10 GiB.
 constexpr u64 TextureGcDeviceCeiling(u64 budget, u64 base_ceiling, bool native) {

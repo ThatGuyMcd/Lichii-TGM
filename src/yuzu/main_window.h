@@ -27,6 +27,7 @@
 #include "frontend_common/content_manager.h"
 #include "input_common/drivers/tas_input.h"
 #include "qt_common/config/qt_config.h"
+#include "qt_common/config/session_speed_limit.h"
 #include "qt_common/qt_common.h"
 #include "qt_common/util/game.h"
 #include "yuzu/compatibility_report.h"
@@ -618,6 +619,8 @@ private:
     bool fullscreen_saved_toolbar = true;
     QToolBar* playback_toolbar = nullptr;
     QAction* play_library_action = nullptr;
+
+    QtCommon::SessionSpeedLimit session_speed_limit;
 
     // Stores what suffix to add to the FPS counter, e.g. Unlocked.
     QString m_fpsSuffix{};

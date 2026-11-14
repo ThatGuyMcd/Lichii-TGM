@@ -25,6 +25,7 @@
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
 #include "video_core/renderer_vulkan/vk_query_cache.h"
 #include "video_core/renderer_vulkan/vk_query_budget.h"
+#include "video_core/renderer_vulkan/query_pool_reset.h"
 #include "video_core/renderer_vulkan/vk_query_copy.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -47,14 +48,14 @@ public:
     explicit SamplesQueryBank(const Device& device_, Scheduler& scheduler_, size_t index_)
         : BankBase(BANK_SIZE), device{device_}, scheduler{scheduler_}, index{index_} {
         const auto& dev = device.GetLogical();
-        query_pool = dev.CreateQueryPool({
+        query_pool = std::make_shared<vk::QueryPool>(dev.CreateQueryPool({
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
             .queryType = VK_QUERY_TYPE_OCCLUSION,
             .queryCount = BANK_SIZE,
             .pipelineStatistics = 0,
-        });
+        }));
         Reset();
     }
 
@@ -64,13 +65,16 @@ public:
         ASSERT(References() == 0);
         VideoCommon::BankBase::Reset();
         if (device.IsHostQueryResetSupported()) {
-            const auto& dev = device.GetLogical();
-            dev.ResetQueryPool(*query_pool, 0, BANK_SIZE);
+            scheduler.Record(MakeQueryPoolReset(query_pool,
+                [logical = &device.GetLogical()](const vk::QueryPool& pool, vk::CommandBuffer) {
+                    logical->ResetQueryPool(*pool, 0, BANK_SIZE);
+                }));
         } else {
             scheduler.RequestOutsideRenderPassOperationContext();
-            scheduler.Record([pool = *query_pool](vk::CommandBuffer cmdbuf) {
-                cmdbuf.ResetQueryPool(pool, 0, BANK_SIZE);
-            });
+            scheduler.Record(MakeQueryPoolReset(query_pool,
+                [](const vk::QueryPool& pool, vk::CommandBuffer cmdbuf) {
+                    cmdbuf.ResetQueryPool(*pool, 0, BANK_SIZE);
+                }));
         }
         host_results.fill(0ULL);
         next_bank = 0;
@@ -92,7 +96,7 @@ public:
         if (device.GetDriverID() == VK_DRIVER_ID_AMD_PROPRIETARY) {
             std::array<std::pair<u64, u64>, BANK_SIZE> values{};
             const VkResult query_result = dev.GetQueryResults(
-                *query_pool, static_cast<u32>(start), static_cast<u32>(size),
+                **query_pool, static_cast<u32>(start), static_cast<u32>(size),
                 sizeof(values[0]) * size, values.data(), sizeof(values[0]),
                 VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
             if (query_result == VK_ERROR_DEVICE_LOST) {
@@ -108,7 +112,7 @@ public:
             return;
         }
         const VkResult query_result = dev.GetQueryResults(
-            *query_pool, static_cast<u32>(start), static_cast<u32>(size), sizeof(u64) * size,
+            **query_pool, static_cast<u32>(start), static_cast<u32>(size), sizeof(u64) * size,
             &host_results[start], sizeof(u64), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
         switch (query_result) {
         case VK_SUCCESS:
@@ -122,7 +126,7 @@ public:
     }
 
     VkQueryPool GetInnerPool() {
-        return *query_pool;
+        return **query_pool;
     }
 
     size_t GetIndex() const {
@@ -139,7 +143,7 @@ private:
     const Device& device;
     Scheduler& scheduler;
     const size_t index;
-    vk::QueryPool query_pool;
+    std::shared_ptr<vk::QueryPool> query_pool;
     /// The fencing thread writes the results (Sync): on lines of their own, away from the
     /// members the GPU thread reads at every report.
     alignas(64) std::array<u64, BANK_SIZE> host_results;
@@ -241,25 +245,70 @@ public:
     void CloseCounter() override {
         PauseCounter();
         // A title that counts without resetting or reporting grows the query by a slot at every
-        // submission and render pass, and the query keeps every bank it touches alive. Ocarina of
-        // Time's title screen and file select reached 16,384 slots over 64 banks, while gameplay
-        // windows in Hyrule Field, Kakariko Village, and the Shooting Gallery reach up to 346
-        // slots; Water Temple room A3 reports windows past 1,024 slots (#1142).
-        // Allow up to 8 banks (2,048 slots), still bounded far below the 64-bank menu
-        // case. Larger windows need a count-preserving rollover, not a larger cap.
-        static_assert(SamplesQueryBank::BANK_SIZE == OcclusionQueryBudget::SlotsPerBank);
-        if (current_query && OcclusionQueryBudget::MustDrop(current_query->size_slots)) {
-            // It drops a real count. Logged on the 1st, 2nd, 4th, 8th... drop, so a window this
-            // long during gameplay doesn't go unnoticed and a title screen doesn't flood the log.
-            ++bank_bound_resets;
-            if ((bank_bound_resets & (bank_bound_resets - 1)) == 0) {
-                LOG_WARNING(Render_Vulkan,
-                            "Samples query ran {} slots with no reset or report, dropped its "
-                            "count (drop {})",
-                            current_query->size_slots, bank_bound_resets);
-            }
-            ResetCounter();
+        // submission and render pass, and the query keeps every bank it touches alive (Ocarina of
+        // Time's title screen and file select reached 16,384 slots over 64 banks). Past the bound
+        // the query is synced as a report would sync it, and its count carries into
+        // the next query. Dropping the count instead made a report in that window read too low,
+        // and Ocarina's gameplay windows pass 1,024 slots.
+        // With a report pending, its sync carries the query; its guest writes aren't made here,
+        // in the middle of a submission.
+        if (!current_query || !OcclusionQueryBudget::ShouldCarry(current_query->size_slots) ||
+            !pending_sync.empty()) {
+            return;
         }
+        // Logged on the 1st, 2nd, 4th, 8th... carry, so a title screen doesn't flood the log.
+        ++carried_queries;
+        if ((carried_queries & (carried_queries - 1)) == 0) {
+            LOG_INFO(Render_Vulkan,
+                     "Samples query ran {} slots with no reset or report, carried its count into "
+                     "a new query (carry {})",
+                     current_query->size_slots, carried_queries);
+        }
+        const size_t carry = BuildQuery();
+        auto* query = GetQuery(carry);
+        query->guest_address = 0;
+        query->value = 0;
+        query->flags &= ~VideoCommon::QueryFlagBits::IsOrphan;
+        query->start_bank_id = current_query->start_bank_id;
+        query->size_banks = current_query->size_banks;
+        query->start_slot = current_query->start_slot;
+        query->size_slots = current_query->size_slots;
+        ApplyBankOp(query, [](SamplesQueryBank* bank, size_t start, size_t amount) {
+            bank->AddReference(amount);
+        });
+        pending_sync.push_back(carry);
+        if (SkipsHostSync()) {
+            ReplicateCurrentQueryIfNeeded();
+            rasterizer->SyncOperation([this] { amend_value = accumulation_value; });
+            AbandonCurrentQuery();
+            pending_sync.clear();
+        } else {
+            // The running query holds every slot since the last reset or sync, so the resolve
+            // covers only its slots. After a reset it starts from zero, not from the accumulation
+            // the last sync left.
+            if (first_accumulation_checkpoint <= num_slots_used) {
+                scheduler.RequestOutsideRenderPassOperationContext();
+                scheduler.Record([buffer = *accumulation_buffer](vk::CommandBuffer cmdbuf) {
+                    // After the last prefix scan's write to it.
+                    static constexpr VkMemoryBarrier scan_barrier{
+                        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                        .pNext = nullptr,
+                        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    };
+                    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, scan_barrier);
+                    cmdbuf.FillBuffer(buffer, 0, 8, 0);
+                });
+            }
+            num_slots_used = current_query->size_slots;
+            first_accumulation_checkpoint = (std::numeric_limits<size_t>::max)();
+            last_accumulation_checkpoint = 0;
+            // Resolves the count into the accumulation buffer and amend value; with no report
+            // pending, nothing is written to guest memory.
+            PresyncWrites();
+        }
+        Free(carry);
     }
 
     bool HasPendingSync() const override {
@@ -285,8 +334,7 @@ public:
         }
         PauseCounter();
         const auto driver_id = device.GetDriverID();
-        if (driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
-            driver_id == VK_DRIVER_ID_ARM_PROPRIETARY || driver_id == VK_DRIVER_ID_MESA_TURNIP) {
+        if (SkipsHostSync()) {
             pending_sync.clear();
             sync_values_stash.clear();
             return;
@@ -482,6 +530,10 @@ public:
                 sync_value_slot = 1;
             }
             query->flags |= VideoCommon::QueryFlagBits::IsHostSynced;
+            if (query->guest_address == 0) {
+                // A carry (CloseCounter) syncs only the accumulated count.
+                continue;
+            }
             auto loc_data = offsets[query->start_bank_id];
             sync_values_stash[sync_value_slot].emplace_back(HostSyncValues{
                 .address = query->guest_address,
@@ -605,6 +657,13 @@ public:
     }
 
 private:
+    // These drivers don't sync reports on the GPU.
+    bool SkipsHostSync() const {
+        const auto driver_id = device.GetDriverID();
+        return driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
+               driver_id == VK_DRIVER_ID_ARM_PROPRIETARY || driver_id == VK_DRIVER_ID_MESA_TURNIP;
+    }
+
     template <typename Func>
     void ApplyBankOp(VideoCommon::HostQueryBase* query, Func&& func) {
         size_t size_slots = query->size_slots;
@@ -819,7 +878,7 @@ private:
     bool accumulation_since_last_sync{};
     VideoCommon::HostQueryBase* current_query;
     bool has_started{};
-    u64 bank_bound_resets{}; ///< Counts CloseCounter dropped once a query outgrew the bank bound.
+    u64 carried_queries{}; ///< Queries CloseCounter carried once they outgrew the bank bound.
     std::mutex flush_guard;
     std::optional<QueriesPrefixScanPass> queries_prefix_scan_pass;
     /// AMD: results copied with availability (16 bytes a slot) before QueryAvailabilityResolvePass.

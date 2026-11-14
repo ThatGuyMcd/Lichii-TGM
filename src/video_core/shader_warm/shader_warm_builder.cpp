@@ -331,7 +331,8 @@ void WriteWarmCount(const fs::path& warm_file, u64 entries) {
         return;
     }
     std::ofstream out(WarmCountPath(warm_file), std::ios::trunc);
-    out << entries << ' ' << size << '\n';
+    out << entries << ' ' << size << ' ' << WarmBuilderVersion << ' '
+        << ContentHash(warm_file) << '\n';
 }
 
 } // Anonymous namespace
@@ -423,6 +424,32 @@ u64 ReadWarmCount(const fs::path& warm_file) {
     std::error_code ec;
     const auto actual = fs::file_size(warm_file, ec);
     return !ec && actual == size ? entries : 0;
+}
+
+std::optional<std::string> WarmFilesStale(const fs::path& warm_file) {
+    std::error_code ec;
+    if (!fs::is_regular_file(warm_file, ec)) {
+        return "none built yet";
+    }
+    std::ifstream file(warm_file, std::ios::binary);
+    std::array<char, 8> magic{};
+    u32 version{};
+    file.read(magic.data(), magic.size()).read(reinterpret_cast<char*>(&version), sizeof(version));
+    if (!file || magic != VideoCommon::PipelineCacheMagic ||
+        !IsReadableRuntimeCacheVersion(version)) {
+        return "built for another cache version";
+    }
+    std::ifstream count(WarmCountPath(warm_file));
+    u64 entries{}, size{};
+    u32 builder{};
+    std::string digest;
+    if (!(count >> entries >> size >> builder >> digest) || builder != WarmBuilderVersion) {
+        return "built by an older version";
+    }
+    if (fs::file_size(warm_file, ec) != size || ec || digest != ContentHash(warm_file)) {
+        return "changed since it was built";
+    }
+    return std::nullopt;
 }
 
 u64 EmissionStamp() {

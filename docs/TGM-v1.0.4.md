@@ -1,30 +1,16 @@
 # Lichii-tgm-v1.0.4 integration candidate
 
-This is an in-progress integration of the OOT Remake work reviewed from
-zortos293/Lichii and Frizti/Fritchii. It is not a published release.
+This candidate combines compatible OOT Remake work from Lichii and Fritchii, including unmerged proposals and historical release branches. It is not a published release; v1.0.3 remains immutable. The [full audit](TGM-OOT-full-audit-2026-11-13.md) lists the captured candidates and deliberate exclusions.
 
-The first checkpoint includes renderer lifetime, cache scheduling and register
-batching changes; OOT render-resolution and moving-platform corrections; memory
-pressure and mapping fixes; shutdown cancellation; and six-channel audio support.
-Regression tests cover the production paths and retained TGM behavior.
+- Renderer work includes command ownership, split-thread synchronization, draw/register reuse, tracked constant-buffer writes, sparse mapping and image invalidation, texture decoding/reuse and memory-pressure handling.
+- Shader work includes owned detached translation, bounded job scheduling, cache reuse/migration, graphics libraries and native preparation, strict cache identity and stale warm-file rebuilding.
+- Guarded OOT fixes cover moving platforms, water updates, sound-manager cadence, step counters, Gohma turn speed, optional text speeds and output/camera handling. Their code/state layout coexists with Photo Mode and all aspect add-ons.
+- Optional upscalers and frame-generation backends retain explicit user choices and platform capability checks. OOT movie scaling gains Automatic, Bilinear and Game choices. Frame generation remains off by default.
+- Audio retains microphone/None/silent input and six-channel PCM, with bounded host-queue refill. Empty saved input values survive serialization. Self-installing existing key files no longer invokes a throwing self-copy.
+- Adventure Notes gains bounded script output, timeout recovery, safe missing-save/state handling and miniboss progress corrections. Per-game recommendations can be remembered, skipped or reset without overwriting global choices.
 
-Forest Lantern, handheld layouts, every existing setting, data paths, aspect
-ratios, Photo Mode and explicit shader preparation remain requirements throughout
-integration. Frame generation is not enabled automatically. No native 60 FPS,
-twofold performance improvement or crash cure is claimed by this candidate.
+Forest Lantern dark/light, selected-game artwork, handheld layouts, full-screen settings, every original setting and existing data paths remain. New settings do not replace old controls or renumber saved enum values. Shader preparation retains its pinned recipe, explicit worker, cancellation, locks, checkpoints and strict game/build/GPU identity.
 
-The second checkpoint adds shader reuse and binding caches, frame-generation
-lifecycle/model choices and optional DLSS Frame Generation on Windows and Linux.
-It preserves the prior LSFG Performance choice and keeps frame generation off by
-default. DLSS Frame Generation needs compatible hardware and a separate runtime.
+The optional Linux FSR4 runtime is built from unchanged pinned source, with licenses, corresponding source and provenance in the AppImage. API-load validation is separate from AMD rendering validation. Protected dependencies and Dynarmic sources are unchanged.
 
-OOT water, sound and step-counter fixes use a dedicated appended state page to
-coexist with Photo Mode and all aspect add-ons. Optional text speeds are available
-in Add-Ons. The library stores custom artwork and names outside the game archive.
-Linux NVIDIA cache defaults honor user overrides. Optional SDL trigger rumble
-preserves the separate RenHDrum controller settings. New present-fence changes
-include lifetime and bounded-queue regression coverage.
-
-Additional overlapping OOT branches are still being reconciled. Protected
-dependencies and Dynarmic are not modified. The final integration audit will list
-accepted, equivalent, superseded and blocked source changes individually.
+Exact source, package checksums and Windows/Linux validation results accompany the local artifacts. No native60, twofold performance improvement or crash cure is claimed by this integration. Further game-scene testing remains separate from automated validation.

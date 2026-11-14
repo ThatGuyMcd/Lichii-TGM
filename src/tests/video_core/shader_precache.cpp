@@ -22,6 +22,7 @@
 #include "video_core/shader_warm/shader_archives.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
 #include "video_core/shader_warm/warm_records.h"
+#include "video_core/shader_warm/prepared_store.h"
 
 namespace {
 
@@ -48,6 +49,38 @@ void WriteBytes(const std::filesystem::path& file, std::string_view bytes) {
 }
 
 } // Anonymous namespace
+
+TEST_CASE("ShaderPrecache: stale files rebuild even after a same-size replacement",
+          "[video_core][shader_warm_stale]") {
+    TempDir dir;
+    const auto warm = dir.path / "warm.bin";
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+    std::string bytes(VideoCommon::PipelineCacheMagic.begin(), VideoCommon::PipelineCacheMagic.end());
+    const u32 version = VideoCommon::VulkanPipelineCacheVersion;
+    bytes.append(reinterpret_cast<const char*>(&version), sizeof(version));
+    bytes += "payload";
+    WriteBytes(warm, bytes);
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+    const auto write_count = [&] {
+        WriteBytes(ShaderWarm::WarmCountPath(warm), "1 " + std::to_string(bytes.size()) + " " +
+                   std::to_string(ShaderWarm::WarmBuilderVersion) + " " +
+                   ShaderWarm::ContentHash(warm) + "\n");
+    };
+    write_count();
+    REQUIRE_FALSE(ShaderWarm::WarmFilesStale(warm).has_value());
+    bytes.back() ^= 1;
+    WriteBytes(warm, bytes);
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+    write_count();
+    REQUIRE_FALSE(ShaderWarm::WarmFilesStale(warm).has_value());
+    WriteBytes(ShaderWarm::WarmCountPath(warm), "1 " + std::to_string(bytes.size()) + "\n");
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+    write_count();
+    bytes[0] ^= 1;
+    WriteBytes(warm, bytes);
+    write_count();
+    REQUIRE(ShaderWarm::WarmFilesStale(warm).has_value());
+}
 
 TEST_CASE("ShaderPrecache: the setting decides whether the boot precaches", "[video_core]") {
     STATIC_REQUIRE_FALSE(ShaderWarm::PrecacheBeforeStart(PrecacheShaders::Off, false));

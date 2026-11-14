@@ -12,7 +12,7 @@ namespace Vulkan::OcclusionQueryBudget {
 inline constexpr std::size_t SlotsPerBank = 256;
 inline constexpr std::size_t MaxRunningSlots = 8 * SlotsPerBank;
 
-[[nodiscard]] constexpr bool MustDrop(std::size_t running_slots) noexcept {
+[[nodiscard]] constexpr bool ShouldCarry(std::size_t running_slots) noexcept {
     return running_slots > MaxRunningSlots;
 }
 

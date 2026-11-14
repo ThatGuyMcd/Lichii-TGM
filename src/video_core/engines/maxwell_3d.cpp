@@ -408,6 +408,8 @@ bool Maxwell3D::IsFastDrawReportOperand(u32 method) {
     case MAXWELL3D_REG_INDEX(report_semaphore.address_high):
     case MAXWELL3D_REG_INDEX(report_semaphore.address_low):
     case MAXWELL3D_REG_INDEX(report_semaphore.payload):
+    case MAXWELL3D_REG_INDEX(render_enable.address_high):
+    case MAXWELL3D_REG_INDEX(render_enable.address_low):
         return true;
     default:
         return false;
@@ -448,9 +450,14 @@ bool Maxwell3D::IsFastDrawDeltaMethod(u32 method) {
 }
 
 void Maxwell3D::ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call) {
-    if (!DrawManager::IsInstanceLoopMethod(method) && !IsFastDrawDeltaMethod(method) &&
-        !IsFastDrawNeutralMethod(method)) {
-        VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Method, method);
+    if (!DrawManager::IsInstanceLoopMethod(method) && !IsFastDrawDeltaMethod(method)) {
+        const bool neutral = IsFastDrawNeutralMethod(method) &&
+            !(method == MAXWELL3D_REG_INDEX(report_semaphore.query) &&
+              regs.report_semaphore.query.operation == Regs::ReportSemaphore::Operation::Release &&
+              regs.report_semaphore.query.short_query != 0);
+        if (!neutral) {
+            VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Method, method);
+        }
     }
     if (GetNativeMacroEngine().native_turing && method == MAXWELL3D_REG_INDEX(clear_surface)) {
         LOG_DEBUG(HW_GPU, "Native GPU surface clear: value={:#x}", argument);

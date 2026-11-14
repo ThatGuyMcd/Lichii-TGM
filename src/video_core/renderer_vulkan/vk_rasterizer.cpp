@@ -702,21 +702,27 @@ GraphicsPipeline* RasterizerVulkan::TakeReusableDraw(bool is_indexed, bool is_in
         if ((delta.binds[stage] & handles[stage]) != 0) {
             return full(FullDraw::HandleBind);
         }
-        if (delta.num_writes == 0) {
+        if (delta.num_writes == 0 && delta.num_device_writes == 0) {
             continue;
         }
         const auto& cbufs = maxwell3d->state.shader_stages[stage].const_buffers;
         for (u32 mask = handles[stage]; mask != 0; mask &= mask - 1) {
             const u32 slot = std::countr_zero(mask);
             const auto& cbuf = cbufs[slot];
+            // Only the words the handles are read from: draws write their own data next to them.
+            const auto [begin, end] = draw.pipeline->HandleRange(stage, slot);
             FastDraw::DeviceSpans& spans = handle_spans[stage][slot];
-            spans.Update(*gpu_memory, cbuf.address, cbuf.size);
-            if (delta.Reaches(cbuf.address, cbuf.size, spans)) {
-                if ((VideoCommon::Nx2Profile::Enabled() || FastDraw::VerifyEnabled()) &&
-                    delta.diagnostic_has_data && delta.diagnostic_all_known_equal) {
-                    ++FastDraw::t_constant_write_diagnostics.handle_data_equal_only;
+            spans.Update(*gpu_memory, cbuf.address + begin, end - begin);
+            if (delta.Reaches(cbuf.address + begin, end - begin, spans)) {
+                if (delta.ReachesWords(cbuf.address, draw.pipeline->HandleWords(stage, slot),
+                                       spans)) {
+                    if ((VideoCommon::Nx2Profile::Enabled() || FastDraw::VerifyEnabled()) &&
+                        delta.diagnostic_has_data && delta.diagnostic_all_known_equal) {
+                        ++FastDraw::t_constant_write_diagnostics.handle_data_equal_only;
+                    }
+                    return full(FullDraw::HandleData);
                 }
-                return full(FullDraw::HandleData);
+                taken_delta.no_uniform_keeps = true;
             }
         }
     }
@@ -744,6 +750,10 @@ bool RasterizerVulkan::DeltaStillHolds(u64 serial, u64 map_serial) {
     // alias to copy in (a render target aliasing it, written by the draw before) needs Configure.
     if (taken_draw.pipeline->DeltaImagesChange()) {
         return full(FullDraw::SampledImages);
+    }
+    // Handles computed at draw time come from memory the delta doesn't track (storage buffers).
+    if (taken_draw.pipeline->ComputedHandlesChanged()) {
+        return full(FullDraw::ComputedHandles);
     }
     return true;
 }
@@ -813,14 +823,14 @@ void RasterizerVulkan::ReportFastDraws() {
              "Fast draw per second: {:.0f} delta | full: {:.0f} after an ineligible draw, {:.0f} "
              "different kind, {:.0f} state changed, {:.0f} after a submit, {:.0f} render pass or "
              "pipeline changed, {:.0f} pipeline takes no delta draws, {:.0f} handle buffer bound, "
-             "{:.0f} handle data written, {:.0f} sampled image to prepare, "
-             "{:.0f} vertex attribute types changed",
+             "{:.0f} handle data written, {:.0f} sampled image to prepare, {:.0f} computed handle "
+             "changed, {:.0f} vertex attribute types changed",
              static_cast<double>(stats.delta) / seconds, per_second(FullDraw::NoCandidate),
              per_second(FullDraw::Kind), per_second(FullDraw::StateChanged),
              per_second(FullDraw::Submitted), per_second(FullDraw::RenderPass),
              per_second(FullDraw::DeltaPipeline), per_second(FullDraw::HandleBind),
              per_second(FullDraw::HandleData), per_second(FullDraw::SampledImages),
-             per_second(FullDraw::VertexInput));
+             per_second(FullDraw::ComputedHandles), per_second(FullDraw::VertexInput));
     static constexpr std::array<const char*, static_cast<size_t>(Ineligible::Count)>
         ineligible_names{"indirect",       "mesh",          "not built",     "writes images",
                          "transform feedback", "inline index", "quads",       "repacked vertices",
@@ -865,13 +875,15 @@ void RasterizerVulkan::ReportFastDraws() {
         }
         LOG_INFO(Render_Vulkan,
                  "Fast draw verify per second: {:.0f} checked, {:.0f} pipeline mismatches, {:.0f} "
-                 "view or sampler mismatches, {:.0f} kept buffer binding mismatches (totals {} {} "
-                 "{} {})",
+                 "view or sampler mismatches, {:.0f} kept buffer binding mismatches, {:.0f} "
+                 "vertex input mismatches (totals {} {} {} {} {})",
                  static_cast<double>(stats.verified) / seconds,
                  static_cast<double>(stats.pipeline_mismatches) / seconds,
                  static_cast<double>(stats.view_mismatches) / seconds,
-                 static_cast<double>(stats.binding_mismatches) / seconds, stats.verified,
-                 stats.pipeline_mismatches, stats.view_mismatches, stats.binding_mismatches);
+                 static_cast<double>(stats.binding_mismatches) / seconds,
+                 static_cast<double>(stats.vertex_input_mismatches) / seconds, stats.verified,
+                 stats.pipeline_mismatches, stats.view_mismatches, stats.binding_mismatches,
+                 stats.vertex_input_mismatches);
     }
     const auto cb = std::exchange(VideoCommon::Nx2FastDraw::t_constant_write_diagnostics, {});
     LOG_INFO(Render_Vulkan,
@@ -1464,6 +1476,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         fast_draw_stats.pipeline_mismatches += verify_pipeline != pipeline ? 1 : 0;
     }
     const DrawPath path = delta_holds && !verify_pipeline ? DrawPath::Delta : DrawPath::Full;
+    // EDEN_NX2_FAST_DRAW_VERIFY compares only draws that would have taken the delta path.
+    const bool verify_kept = verify_views && delta_holds;
+    verify_vertex_input = verify_kept;
     // Every draw keeps the uniform buffers no write reached since they were streamed.
     buffer_cache.BeginGraphicsUniforms(fast_draw_on && !uniform_writes_lost ? &taken_delta
                                                                             : nullptr);
@@ -1478,19 +1493,19 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     } else {
         // What the delta draw would have kept: the texture buffer bindings.
         const u64 kept_bindings =
-            verify_views ? buffer_cache.KeptGraphicsBindingsHash(false, false, true) : 0;
+            verify_kept ? buffer_cache.KeptGraphicsBindingsHash(false, false, true) : 0;
         if (fast_draw_on) {
-            pipeline->CaptureNextDelta(verify_views);
+            pipeline->CaptureNextDelta(verify_kept);
         }
         if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
             report_failure("configure failed");
             TraceRenderState(is_indexed, "configure-failed", nullptr);
             return;
         }
-        if (verify_views && pipeline->DeltaMismatch()) {
+        if (verify_kept && pipeline->DeltaMismatch()) {
             ++fast_draw_stats.view_mismatches;
         }
-        if (verify_views &&
+        if (verify_kept &&
             kept_bindings != buffer_cache.KeptGraphicsBindingsHash(false, false, true)) {
             ++fast_draw_stats.binding_mismatches;
         }
@@ -1540,6 +1555,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         Profile::Scope scope{Profile::Zone::DynamicState};
         UpdateOcarinaJitter();
         UpdateDynamicStates(pipeline);
+        verify_vertex_input = false;
     }
 
     {

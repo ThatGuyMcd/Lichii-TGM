@@ -6,6 +6,14 @@
 
 namespace VideoCommon {
 
+[[nodiscard]] constexpr bool OotMovieUsesGameUpscaler(Settings::OotMovieUpscale mode,
+                                                    bool cooperative_hmma,
+                                                    bool tensor_programs_permitted) noexcept {
+    return tensor_programs_permitted &&
+           (mode == Settings::OotMovieUpscale::Game ||
+            (mode == Settings::OotMovieUpscale::Automatic && cooperative_hmma));
+}
+
 [[nodiscard]] constexpr bool EmulatesNativeTensorPrograms(Settings::TensorPrograms mode,
                                                          u64 program_id,
                                                          bool cooperative_hmma) noexcept {

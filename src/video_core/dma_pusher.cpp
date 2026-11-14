@@ -21,6 +21,7 @@
 #include "core/memory.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/dma_pusher.h"
+#include "video_core/command_snapshot_refresh.h"
 #include "video_core/command_fetch_order.h"
 #include "video_core/command_read_scope.h"
 #include "video_core/control/channel_state.h"
@@ -247,12 +248,18 @@ bool DmaPusher::Step() {
     if (ResnapshotEnabled() && suspensions.load(std::memory_order_relaxed) != suspensions_before) {
         const u64 now = suspensions.load(std::memory_order_acquire);
         size_t first_entry = dma_pushbuffer_subindex + (command_resume_offset != 0 ? 1 : 0);
-        for (CommandList& list : dma_pushbuffer) {
-            if (!list.submitted_offsets.empty()) {
-                RefreshSnapshot(list, now, first_entry);
-            }
-            first_entry = 0;
+        if (!snapshot_refresher) {
+            snapshot_refresher = std::make_unique<CommandSnapshotRefresher>();
         }
+        VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Resnapshot};
+        std::atomic<u64> copied_words{};
+        snapshot_refresher->Refresh(dma_pushbuffer, now, first_entry,
+                                   [this, &copied_words](GPUVAddr address, void* output, size_t bytes) {
+            memory_manager.ReadBlockUnsafe(address, output, bytes);
+            copied_words.fetch_add(bytes / sizeof(u32), std::memory_order_relaxed);
+        });
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::ResnapshotWords,
+                                    copied_words.load(std::memory_order_relaxed));
     }
 
     CommandList& command_list = dma_pushbuffer.front();
@@ -887,20 +894,12 @@ void DmaPusher::NoteEngineWrites(Engines::EngineTypes type, u32 method) {
 
 void DmaPusher::RefreshSnapshot(CommandList& list, u64 now, size_t first_entry) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Resnapshot}; // TEST
-    list.snapshot_suspensions = now;
-    for (size_t i = first_entry; i < list.command_lists.size() && i < list.submitted_offsets.size();
-         ++i) {
-        const CommandListHeader& entry = list.command_lists[i];
-        const u32 offset = list.submitted_offsets[i];
-        if (offset + entry.size > list.submitted_words.size()) {
-            continue;
-        }
-        memory_manager.ReadBlockUnsafe(entry.addr, list.submitted_words.data() + offset,
-                                       entry.size * sizeof(u32));
+    CommandSnapshotRefresher::Copy(list, now, first_entry,
+                                  [this](GPUVAddr address, void* output, size_t bytes) {
+        memory_manager.ReadBlockUnsafe(address, output, bytes);
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::ResnapshotWords,
-                                     entry.size); // TEST
-    }
-    list.deferred_entries.clear();
+                                     bytes / sizeof(u32));
+    });
 }
 
 void DmaPusher::RefreshDeferredEntries(CommandList& list) {

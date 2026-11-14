@@ -251,6 +251,8 @@ public:
      */
     void WaitFreeSpace(std::stop_token stop_token);
 
+    virtual u32 SysmixQueueLimit() const;
+
 protected:
     /**
      * Unblocks the ADSP if the stream is paused.
@@ -273,8 +275,6 @@ protected:
     std::string name{};
 
 private:
-    u32 SysmixQueueLimit() const;
-
     /// Ring buffer of the samples waiting to be played or consumed
     static constexpr std::size_t SampleRingCapacity = 0x10000;
     Common::RingBuffer<s16, SampleRingCapacity> samples_buffer;
@@ -290,6 +290,10 @@ private:
     /// EDEN_NX2_AUDIO_LEVEL meter state.
     s32 level_peak{};
     u64 level_frames{};
+    u64 level_rendered_frames{};
+    u64 level_callbacks{};
+    u64 level_underrun_callbacks{};
+    u64 level_max_missing_frames{};
     /// Number of buffers waiting to be played
     std::atomic<u32> queued_buffers{};
     /// Largest active host callback, used to keep a complete callback of sysmix audio queued.

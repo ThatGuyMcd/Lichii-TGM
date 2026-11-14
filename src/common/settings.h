@@ -65,6 +65,7 @@ SETTING(u16, false);
 SWITCHABLE(AnisotropyMode, true);
 SWITCHABLE(AntiAliasing, false);
 SWITCHABLE(OotAntiAliasing, false);
+SWITCHABLE(OotMovieUpscale, false);
 SWITCHABLE(OcarinaDlssMode, false);
 SWITCHABLE(DlssPreset, false);
 SWITCHABLE(NvidiaDlssQuality, false);
@@ -489,6 +490,8 @@ struct Values {
     // DLSS (4K Quality) / DLAA (4K) in its place (video_core/oot_dlss.h).
     SwitchableSetting<OotAntiAliasing> oot_anti_aliasing{linkage, OotAntiAliasing::Game,
                                                          "oot_anti_aliasing", Category::Renderer};
+    SwitchableSetting<OotMovieUpscale> oot_movie_upscale{linkage, OotMovieUpscale::Automatic,
+                                                         "oot_movie_upscale", Category::Renderer};
 
     SwitchableSetting<std::string> post_shader_chain{linkage,
                                                      std::string(),

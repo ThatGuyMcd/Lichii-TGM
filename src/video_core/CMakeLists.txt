@@ -44,6 +44,8 @@ add_library(video_core STATIC
     dirty_flags.h
     dma_pusher.cpp
     dma_pusher.h
+    command_snapshot_refresh.h
+    command_words_pool.h
     engines/sw_blitter/blitter.cpp
     engines/sw_blitter/blitter.h
     engines/sw_blitter/converter.cpp
@@ -283,6 +285,7 @@ add_library(video_core STATIC
     renderer_vulkan/vk_present_manager.cpp
     renderer_vulkan/vk_present_manager.h
     renderer_vulkan/vk_query_cache.cpp
+    renderer_vulkan/query_pool_reset.h
     renderer_vulkan/vk_query_copy.h
     renderer_vulkan/vk_query_cache.h
     renderer_vulkan/vk_query_budget.h

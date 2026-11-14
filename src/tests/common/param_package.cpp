@@ -27,4 +27,17 @@ TEST_CASE("ParamPackage", "[common]") {
     REQUIRE(copy.Get("abc", 42) == 42);
 }
 
+TEST_CASE("ParamPackage preserves explicit empty values and escaped separators", "[common]") {
+    ParamPackage original{{"empty", ""}, {"escaped", ":,$"}};
+    ParamPackage copy{original.Serialize()};
+    REQUIRE(copy.Has("empty"));
+    REQUIRE(copy.Get("empty", "fallback").empty());
+    REQUIRE(copy.Get("escaped", "") == ":,$");
+    ParamPackage malformed{"bad:a:b,missing,valid:"};
+    REQUIRE_FALSE(malformed.Has("bad"));
+    REQUIRE_FALSE(malformed.Has("missing"));
+    REQUIRE(malformed.Has("valid"));
+    REQUIRE(malformed.Get("valid", "fallback").empty());
+}
+
 } // namespace Common

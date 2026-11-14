@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstdlib>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -182,11 +183,26 @@ public:
     /// Whether [begin, end) of device memory overlaps the range's.
     [[nodiscard]] bool Intersects(DAddr begin, DAddr end) const;
 
+    /// The GPU address the range starts at.
+    [[nodiscard]] GPUVAddr Address() const noexcept {
+        return address;
+    }
+
+    /// Whether the range maps to one run of device memory in GPU order, starting at LinearBase.
+    [[nodiscard]] bool IsLinear() const noexcept {
+        return linear;
+    }
+    [[nodiscard]] DAddr LinearBase() const noexcept {
+        return linear_base;
+    }
+
 private:
     const Tegra::MemoryManager* memory{};
     GPUVAddr address{};
     u64 size{};
     u64 map_serial{};
+    bool linear{};
+    DAddr linear_base{};
     std::vector<std::pair<DAddr, DAddr>> spans; ///< Sorted, disjoint [begin, end) pairs
 };
 
@@ -212,7 +228,8 @@ struct Delta {
     bool diagnostic_all_known_equal{true};
 
     [[nodiscard]] bool Empty() const {
-        return num_writes == 0 && (binds[0] | binds[1] | binds[2] | binds[3] | binds[4]) == 0;
+        return num_writes == 0 && num_device_writes == 0 &&
+               (binds[0] | binds[1] | binds[2] | binds[3] | binds[4]) == 0;
     }
 
     /// Whether data written reaches [address, address + size), whose device memory is spans: at
@@ -226,6 +243,36 @@ struct Delta {
         for (u32 write = 0; write < num_device_writes; ++write) {
             if (spans.Intersects(device_begin[write], device_end[write])) {
                 return true;
+            }
+        }
+        return false;
+    }
+
+    /// Reaches for only the bytes [base + first, base + second) of each of words, all inside the
+    /// range spans was updated with. Device writes are compared word by word when that range maps
+    /// linearly, else with the whole range.
+    [[nodiscard]] bool ReachesWords(GPUVAddr base, std::span<const std::pair<u32, u32>> words,
+                                    const DeviceSpans& spans) const {
+        for (u32 write = 0; write < num_writes; ++write) {
+            for (const auto& [first, second] : words) {
+                if (write_begin[write] < base + second && base + first < write_end[write]) {
+                    return true;
+                }
+            }
+        }
+        for (u32 write = 0; write < num_device_writes; ++write) {
+            if (!spans.Intersects(device_begin[write], device_end[write])) {
+                continue;
+            }
+            if (!spans.IsLinear()) {
+                return true;
+            }
+            for (const auto& [first, second] : words) {
+                const DAddr begin = spans.LinearBase() + (base + first - spans.Address());
+                const DAddr end = begin + (second - first);
+                if (device_begin[write] < end && begin < device_end[write]) {
+                    return true;
+                }
             }
         }
         return false;

@@ -94,6 +94,7 @@ add_executable(tests
     core/nup_validation.cpp
     core/nx_archive.cpp
     frontend_common/nx_archive.cpp
+    frontend_common/install_keys.cpp
     frontend_common/data_manager.cpp
     frontend_common/mod_manager.cpp
     core/vfs_vector.cpp

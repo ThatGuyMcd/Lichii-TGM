@@ -179,6 +179,7 @@ ENUM(FrameGenType, Lsfg, Fsr3, Dlssg);
 ENUM(MeshShaderMode, Automatic, Native, Compute);
 ENUM(FrameGenMotion, Auto, Shader);
 ENUM(FrameGenFlowQuality, Fast, Medium, Best);
+ENUM(OotMovieUpscale, Automatic, Bilinear, Game);
 
 template <typename Type>
 inline std::string_view CanonicalizeEnum(Type id) {

@@ -480,6 +480,17 @@ TEST_CASE("Handle tables are read for every element at once", "[video_core][text
     CHECK(handles == std::vector<u32>{0x100, 0x101, 0x102, 0x103});
     // The entry size and the storage buffer address, once each for all the elements.
     CHECK(cbuf_reads == 2);
+    CHECK(VideoCommon::TextureHandlesMatch(info, 0, memory, cbuf_address, 0, handles));
+    memory.words[0x2000 + 0x10 + 2 * 0x60] ^= 1;
+    CHECK_FALSE(VideoCommon::TextureHandlesMatch(info, 0, memory, cbuf_address, 0, handles));
+    memory.words[0x2000 + 0x10 + 2 * 0x60] ^= 1;
+    memory.words[cbuf + 0x10] = 0x3000;
+    CHECK_FALSE(VideoCommon::TextureHandlesMatch(info, 0, memory, cbuf_address, 0, handles));
+    for (u32 element = 0; element < 4; ++element) {
+        memory.words[0x3000 + 0x10 + element * 0x60] = handles[element];
+    }
+    CHECK(VideoCommon::TextureHandlesMatch(info, 0, memory, cbuf_address, 0, handles));
+    memory.words[cbuf + 0x10] = 0x2000;
     for (u32 element = 0; element < 4; ++element) {
         CHECK(VideoCommon::EvaluateTextureHandle(info, 0, memory, cbuf_address, 0, element) ==
               0x100 + element);

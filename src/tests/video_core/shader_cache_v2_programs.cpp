@@ -48,6 +48,19 @@
 #include "video_core/shader_environment.h"
 #include "video_core/tensor_program_policy.h"
 
+TEST_CASE("Movie upscaler choice respects device capability and tensor permission",
+          "[video_core][movie_upscale_policy]") {
+    using Mode = Settings::OotMovieUpscale;
+    for (const bool cooperative : {false, true}) {
+        for (const bool permitted : {false, true}) {
+            CHECK_FALSE(VideoCommon::OotMovieUsesGameUpscaler(Mode::Bilinear, cooperative, permitted));
+            CHECK(VideoCommon::OotMovieUsesGameUpscaler(Mode::Automatic, cooperative, permitted) ==
+                  (cooperative && permitted));
+            CHECK(VideoCommon::OotMovieUsesGameUpscaler(Mode::Game, cooperative, permitted) == permitted);
+        }
+    }
+}
+
 namespace {
 
 namespace V2 = VideoCommon::ShaderCacheV2;

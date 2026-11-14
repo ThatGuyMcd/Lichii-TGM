@@ -26,7 +26,12 @@ public:
     void AppendBuffer(SinkBuffer&, std::span<s16>) override {}
     bool TryAppendOutputBlock(SinkBuffer& buffer, std::span<s16> samples) override {
         return buffer.frames == TargetSampleCount && buffer.frames_played == 0 &&
-               !buffer.consumed && samples.size() == TargetSampleCount * 2;
+               !buffer.consumed && (system_channels == 2 || system_channels == 6) &&
+               samples.size() == TargetSampleCount * system_channels;
+    }
+    /// Without host callbacks, retain one block per 5 ms guest pump.
+    u32 SysmixQueueLimit() const override {
+        return 1;
     }
     bool IsReady() const override {
         return true;
@@ -50,12 +55,13 @@ public:
     explicit NullSink(std::string_view) {}
     ~NullSink() override = default;
 
-    SinkStream* AcquireSinkStream(Core::System& system, u32, const std::string&,
+    SinkStream* AcquireSinkStream(Core::System& system, u32 channels, const std::string&,
                                   StreamType type) override {
         if (null_sink == nullptr) {
             null_sink = std::make_unique<NullSinkStreamImpl>(system, type);
             null_sink->SetDeviceVolume(device_volume);
         }
+        null_sink->SetSystemChannels(channels);
         return null_sink.get();
     }
 

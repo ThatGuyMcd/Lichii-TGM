@@ -10,6 +10,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "common/common_types.h"
 #include "common/scratch_buffer.h"
 #include "video_core/engines/engine_interface.h"
+#include "video_core/command_words_pool.h"
 #include "video_core/engines/puller.h"
 
 namespace Core {
@@ -35,6 +37,7 @@ struct ChannelState;
 
 class GPU;
 class MemoryManager;
+class CommandSnapshotRefresher;
 
 enum class SubmissionMode : u32 {
     IncreasingOld = 0,
@@ -122,7 +125,7 @@ struct CommandList final {
     std::vector<u64> submit_hashes;
     /// The entries' words when they were submitted (NX2), each entry's at submitted_offsets[i]:
     /// executed instead of the memory, which the game may already be refilling for a later frame.
-    std::vector<CommandHeader> submitted_words;
+    std::vector<CommandHeader, CommandWordsAllocator<CommandHeader>> submitted_words;
     std::vector<u32> submitted_offsets;
     /// Entries (ascending) not copied when submitted, because a GPU map still queued covers them:
     /// DmaPusher::Push copies them after the map, and until then they read memory.
@@ -271,6 +274,7 @@ public:
     Common::ScratchBuffer<CommandHeader> command_headers; ///< Buffer for list of commands fetched at once
 
     std::deque<CommandList> dma_pushbuffer; ///< Queue of command lists to be processed
+    std::unique_ptr<CommandSnapshotRefresher> snapshot_refresher;
     std::size_t dma_pushbuffer_subindex{};  ///< Index within a command list within the pushbuffer
 
     struct DmaState {

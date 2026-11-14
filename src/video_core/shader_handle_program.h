@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstdlib>
+#include <limits>
 #include <mutex>
 #include <span>
 #include <string>
@@ -146,6 +147,21 @@ void EvaluateTextureHandles(const Shader::Info& info, u32 program, Memory& gpu_m
                                                       read_storage, element)
                             .value_or(0U));
     }
+}
+
+/// Re-evaluate a captured descriptor table against its current buffers before reusing a draw.
+template <typename Memory, typename CbufAddress>
+bool TextureHandlesMatch(const Shader::Info& info, u32 program, Memory& gpu_memory,
+                         CbufAddress&& cbuf_address, u64 storage_alignment,
+                         std::span<const u32> expected) {
+    if (expected.size() > std::numeric_limits<u32>::max()) {
+        return false;
+    }
+    bool matches = true;
+    EvaluateTextureHandles(info, program, gpu_memory, std::forward<CbufAddress>(cbuf_address),
+                           storage_alignment, static_cast<u32>(expected.size()),
+                           [&](u32 element, u32 value) { matches &= value == expected[element]; });
+    return matches;
 }
 
 /// Logs what the elements of a descriptor array of handle program results (a table of per-light

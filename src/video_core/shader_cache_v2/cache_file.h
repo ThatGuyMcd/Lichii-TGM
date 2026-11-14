@@ -5,12 +5,18 @@
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/fs/file.h"
 #include "video_core/shader_cache_v2/cache_format.h"
+
+namespace Common::FS {
+class FileLock;
+}
 
 namespace VideoCommon::ShaderCacheV2 {
 
@@ -67,9 +73,27 @@ struct CompactLimit {
 [[nodiscard]] WriteResult CompactLog(const std::filesystem::path& file,
                                      const CompactLimit& limit = {});
 
-/// Creates the log with these encoded records the same way, unless it exists.
-[[nodiscard]] WriteResult CreateLog(const std::filesystem::path& file,
-                                    std::span<const u8> records);
+/// Produces a log one record at a time under its lock, publishing only after Commit.
+class LogBuilder {
+public:
+    LogBuilder();
+    ~LogBuilder();
+    LogBuilder(const LogBuilder&) = delete;
+    LogBuilder& operator=(const LogBuilder&) = delete;
+
+    [[nodiscard]] WriteResult Start(const std::filesystem::path& file);
+    bool Append(RecordKind kind, u64 key, std::span<const u8> payload);
+    [[nodiscard]] WriteResult Commit();
+    void Discard();
+
+private:
+    std::filesystem::path file;
+    std::filesystem::path temporary;
+    std::unique_ptr<Common::FS::FileLock> lock;
+    Common::FS::IOFile target;
+    std::vector<u8> buffer;
+    bool written{true};
+};
 
 [[nodiscard]] u64 UnixNow();
 

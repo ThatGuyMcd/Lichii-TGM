@@ -49,13 +49,16 @@ std::filesystem::path FindNativeRecipe(u64 title_id);
 std::filesystem::path WarmMarkerPath(const std::filesystem::path& warm_file);
 
 /// Entry count of a precache file, written by the builder next to it (extension .count): the
-/// entry count and the file's size. The file format has no count, so the loading screen shows
-/// exact progress only with this.
+/// entry count, file size, builder version and content digest. The loading screen reads the
+/// first two fields; rebuild validation also checks the version and digest.
 std::filesystem::path WarmCountPath(const std::filesystem::path& warm_file);
 
 /// The entry count recorded for `warm_file`, or 0 when there is none or it was written for a
 /// file of another size.
 u64 ReadWarmCount(const std::filesystem::path& warm_file);
+
+/// Why the extracted warm file needs rebuilding, independent of its driver compilation marker.
+std::optional<std::string> WarmFilesStale(const std::filesystem::path& warm_file);
 
 /// What a marker records: the precache file's size and content hash, its entry count, the GPU
 /// driver version and device ID, the pipeline cache version and whether shared shader functions

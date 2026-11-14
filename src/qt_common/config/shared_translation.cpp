@@ -287,6 +287,14 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "and DLSS only anti-aliases it. Sharper, but slower.\nBoth DLSS modes need \"Use "
               "NVIDIA DLSS\" on and set the resolution scale to 1.5x for the game.\nTakes effect "
               "when the game starts."));
+    INSERT(Settings, oot_movie_upscale, tr("Ocarina of Time movies:"),
+           tr("How title-screen and cutscene videos are scaled.\n"
+              "Automatic uses the game's upscaler when this device supports its native matrix "
+              "operations, and a bilinear copy otherwise.\n"
+              "Bilinear uses a simple stretch. Game's own upscaler keeps the game's video "
+              "processing when Tensor Programs permits it, and uses bilinear otherwise. "
+              "On devices without native matrix support, Tensor Programs must be set to Native "
+              "to permit the game's path; emulating that math can cost more."));
     INSERT(Settings, post_shader_chain, QString(), QString());
     INSERT(Settings, post_shader_preset, QString(), QString());
     INSERT(Settings, post_shader_enabled, tr("Enable post-processing effects"),
@@ -815,6 +823,12 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(OotAntiAliasing, NoSharpening, tr("No sharpening")),
                               PAIR(OotAntiAliasing, NvidiaDlss, tr("NVIDIA DLSS (4K Quality)")),
                               PAIR(OotAntiAliasing, NvidiaDlaa, tr("NVIDIA DLAA (4K)")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::OotMovieUpscale>::Index(),
+                          {
+                              PAIR(OotMovieUpscale, Automatic, tr("Automatic")),
+                              PAIR(OotMovieUpscale, Bilinear, tr("Bilinear")),
+                              PAIR(OotMovieUpscale, Game, tr("Game's own upscaler")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::OcarinaDlssMode>::Index(),
                           {

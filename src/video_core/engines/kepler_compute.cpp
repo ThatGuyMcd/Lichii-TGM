@@ -667,6 +667,9 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     // network is left alone: its pair (+0xc0 -> +0xd0) carries the tonemap.
     if (!native_upscale_disabled && !dlss_chain.active &&
         Settings::GetCurrentProgramID() == VideoCommon::OotNetwork::ProgramId &&
+        !VideoCommon::OotMovieUsesGameUpscaler(Settings::values.oot_movie_upscale.GetValue(),
+                                             rasterizer->EmulatesNativeTensorPrograms(),
+                                             EmulatesNativeTensorPrograms()) &&
         (launch_description.const_buffer_enable_mask & 1)) {
         const auto& cbuf = launch_description.const_buffer_config[0];
         const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;

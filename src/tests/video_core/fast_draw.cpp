@@ -699,6 +699,38 @@ TEST_CASE("Fast draw finds texture handle data written through another mapping",
     CHECK_FALSE(reaches(handles, alias + 0x1000, 0x10, {1}));
 }
 
+TEST_CASE("Fast draw compares texture handle data word by word", "[fast_draw]") {
+    DeltaFixture f;
+    f.memory.BindRasterizer(&f.rasterizer);
+    constexpr GPUVAddr handles = 0x100000; // handles at 0x10 and 0x80, draw data between
+    constexpr GPUVAddr alias = 0x300000;
+    constexpr GPUVAddr split = 0x500000; // two pages that map device memory apart
+    constexpr auto Kind = Tegra::PTEKind::PITCH;
+    f.memory.Map(handles, 0x200000, 0x1000, Kind, false);
+    f.memory.Map(alias, 0x200000, 0x1000, Kind, false);
+    const std::array<std::pair<u32, u32>, 2> words{{{0x10, 0x14}, {0x80, 0x84}}};
+    FastDraw::DeviceSpans spans;
+    const auto reaches = [&](GPUVAddr handle_buffer, GPUVAddr buffer, u32 offset) {
+        FastDraw::g_delta = {};
+        f.SetConstantBuffer(buffer, 0x2000, offset);
+        f.Write(MAXWELL3D_REG_INDEX(const_buffer.buffer), 1);
+        spans.Update(f.memory, handle_buffer + 0x10, 0x74);
+        return FastDraw::g_delta.Reaches(handle_buffer + 0x10, 0x74, spans) &&
+               FastDraw::g_delta.ReachesWords(handle_buffer, words, spans);
+    };
+    CHECK(reaches(handles, handles, 0x10));
+    CHECK(reaches(handles, handles, 0x80));
+    CHECK_FALSE(reaches(handles, handles, 0x40)); // draw data between the handles
+    CHECK(reaches(handles, alias, 0x80));
+    CHECK_FALSE(reaches(handles, alias, 0x40));
+
+    // Not one run of device memory: a device write anywhere in the range counts.
+    f.memory.Map(split, 0x401000, 0x1000, Kind, false);
+    f.memory.Map(split + 0x1000, 0x400000, 0x1000, Kind, false);
+    f.memory.Map(alias, 0x401000, 0x1000, Kind, false);
+    CHECK(reaches(split + 0xf80, alias, 0xfc0));
+}
+
 TEST_CASE("Fast draw records and breaks nothing while switched off", "[fast_draw]") {
     DeltaFixture f;
     FastDrawFixture::SetSwitch(false);
@@ -771,6 +803,20 @@ TEST_CASE("Fast draw keeps the vertex id base as a draw parameter", "[fast_draw]
     f.Write(MAXWELL3D_REG_INDEX(vertex_id_base), f.Reg(MAXWELL3D_REG_INDEX(vertex_id_base)) + 3);
     f.DrawArrays(3, 3);
     CHECK(f.Reusable());
+}
+
+TEST_CASE("Fast draw keeps conditional operands but invalidates a fenced release", "[fast_draw]") {
+    DeltaFixture f;
+    f.DrawArrays(0, 3);
+    const u64 serial = FastDraw::Serial();
+    f.Write(MAXWELL3D_REG_INDEX(render_enable.address_high), 0);
+    f.Write(MAXWELL3D_REG_INDEX(render_enable.address_low), 0x30000);
+    CHECK(FastDraw::Serial() == serial);
+    f.Write(MAXWELL3D_REG_INDEX(report_semaphore.address_high), 0);
+    f.Write(MAXWELL3D_REG_INDEX(report_semaphore.address_low), 0x30000);
+    f.Write(MAXWELL3D_REG_INDEX(report_semaphore.payload), 1);
+    f.Write(MAXWELL3D_REG_INDEX(report_semaphore.query), 1U << 28);
+    CHECK(FastDraw::Serial() != serial);
 }
 
 TEST_CASE("Fast draw keeps vertex stream addresses and sizes light", "[fast_draw]") {

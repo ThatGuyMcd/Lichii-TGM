@@ -523,6 +523,7 @@ private:
         HandleBind,
         HandleData,
         SampledImages,
+        ComputedHandles,
         VertexInput,
         Count,
     };

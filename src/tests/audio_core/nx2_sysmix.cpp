@@ -666,3 +666,19 @@ TEST_CASE("sysmix does not report successful disengage after backend stop failur
     stream.Pump();
     REQUIRE(stream.GetCounters().admitted_blocks == 0);
 }
+
+TEST_CASE("Null output accepts stereo after a surround stream is acquired", "[sysmix][null_output]") {
+    Context context;
+    AudioCore::Sink::NullSink sink{std::string_view{}};
+    auto* stereo = sink.AcquireSinkStream(context.system, 2, "stereo", AudioCore::Sink::StreamType::Sysmix);
+    auto* surround = sink.AcquireSinkStream(context.system, 6, "surround", AudioCore::Sink::StreamType::Sysmix);
+    REQUIRE(stereo != nullptr);
+    REQUIRE(surround != nullptr);
+    std::array<s16, 480> stereo_samples{};
+    std::array<s16, 1440> surround_samples{};
+    AudioCore::Sink::SinkBuffer stereo_block{240, 0, 0, false};
+    AudioCore::Sink::SinkBuffer surround_block{240, 0, 1, false};
+    REQUIRE(stereo->TryAppendOutputBlock(stereo_block, stereo_samples));
+    REQUIRE(surround->TryAppendOutputBlock(surround_block, surround_samples));
+    REQUIRE(stereo->TryAppendOutputBlock(stereo_block, stereo_samples));
+}

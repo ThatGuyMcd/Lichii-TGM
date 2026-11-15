@@ -6103,7 +6103,11 @@ void MainWindow::UpdateStatusBar() {
     emit statsUpdated(results, shader_notify);
 
     if (shaders_building > 0) {
-        shader_building_label->setText(tr("Building: %n shader(s)", "", shaders_building));
+        const int left = (std::max)(shader_notify.ShadersLeft(), 0);
+        shader_building_label->setText(
+            left != shaders_building
+                ? tr("Building: %n shader(s), %1 left", "", shaders_building).arg(left)
+                : tr("Building: %n shader(s)", "", shaders_building));
         shader_building_label->setVisible(true);
     } else {
         shader_building_label->setVisible(false);

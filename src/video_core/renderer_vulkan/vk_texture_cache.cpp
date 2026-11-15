@@ -23,6 +23,7 @@
 #include "common/bit_util.h"
 #include "common/div_ceil.h"
 #include "common/literals.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/byte_addressed_image.h"
 #include "shader_recompiler/exception.h"
@@ -5687,7 +5688,12 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         });
         total += size;
     }
-    const auto output = staging_buffer_pool.Request(total, MemoryUsage::DeviceLocal);
+    // The final decode submits before the encode and image copy. Keep the output reserved
+    // across that submission, then stamp the tick containing its last recorded use.
+    auto output = staging_buffer_pool.Request(total, MemoryUsage::DeviceLocal, true);
+    SCOPE_EXIT {
+        staging_buffer_pool.FreeDeferred(output);
+    };
 
     const u64 layer_stride = info.layer_stride;
     const size_t guest_size = image.guest_size_bytes;
@@ -5711,10 +5717,12 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             ASTCDecoderPass::Target{
                 .image = *pending.image,
                 .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
-                // A later batch overwrites what the previous batch's encode read: wait for it.
+                // The compute barrier orders the previous encode's reads before this overwrite.
                 .initialized = base != 0,
                 .level_view = [&pending](s32 level) { return *pending.views[level]; },
-                .wait = true,
+                // The upload is stamped with the current tick: submit only once all batches
+                // have recorded their reads from it.
+                .wait = base + count >= layers,
                 .levels = levels,
             },
             batch_map, swizzles);

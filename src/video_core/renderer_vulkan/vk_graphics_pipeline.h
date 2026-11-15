@@ -31,6 +31,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_library.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/shader_notify.h"
 #include "video_core/texture_cache/draw_template.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -724,6 +725,8 @@ private:
     std::array<MeshEmulationBuffer, 4> mesh_task_buffers{};
     u32 mesh_capacity{};
 
+    /// Build owners are destroyed first, joining jobs before balancing an unstarted build.
+    VideoCore::ShaderBuildNotification build_notification;
     /// Declared before `build`: destroyed after it, so the first build (which starts this one)
     /// has finished when this one is waited for.
     std::optional<PipelineBuild> optimized_build;

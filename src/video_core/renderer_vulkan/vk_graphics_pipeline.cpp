@@ -535,10 +535,7 @@ GraphicsPipeline::GraphicsPipeline(
       libraries_only{library_params.library_cache && library_params.libraries_only},
       spirv_hashes{library_params.spirv_hashes}, build_jobs{build_queue.jobs},
       worker_only_build{build_queue.jobs && static_cast<bool>(emit_stages)},
-      mesh_emulation{std::move(mesh_emulation_)} {
-    if (shader_notify) {
-        shader_notify->MarkShaderBuilding();
-    }
+      mesh_emulation{std::move(mesh_emulation_)}, build_notification{shader_notify} {
     for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
         const Shader::Info* const info{infos[stage]};
         if (!info) {
@@ -784,31 +781,25 @@ GraphicsPipeline::GraphicsPipeline(
     // Shader cache v2: the emission is the CPU stage of the build's job.
     std::function<void()> emit;
     if (build_queue.jobs && emit_stages) {
-        emit = [this, shader_notify, emit_stages = std::exchange(emit_stages, {})] {
+        emit = [this, emit_stages = std::exchange(emit_stages, {})] {
             try {
                 spv_modules = emit_stages(spirv_hashes, spirv);
             } catch (const Shader::Exception& exception) {
                 LOG_ERROR(Render_Vulkan, "Graphics pipeline {:016x}: {}", key.Hash(),
                           exception.what());
-                if (shader_notify) {
-                    shader_notify->MarkShaderComplete();
-                }
+                build_notification.Complete();
                 throw;
             } catch (...) {
-                if (shader_notify) {
-                    shader_notify->MarkShaderComplete();
-                }
+                build_notification.Complete();
                 throw;
             }
         };
     }
-    auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics,
+    auto func{[this, &render_pass_cache, pipeline_statistics,
                 emit_stages = std::move(emit_stages)] {
         const auto begin = std::chrono::steady_clock::now();
         SCOPE_EXIT {
-            if (shader_notify) {
-                shader_notify->MarkShaderComplete();
-            }
+            build_notification.Complete();
         };
         try {
             if (emit_stages) {

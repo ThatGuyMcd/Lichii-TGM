@@ -1,5 +1,21 @@
 # Lichii-tgm-v1.0.4 integration candidate
 
+The 15 November follow-up adapts [#1796](https://github.com/zortos293/Lichii/pull/1796)
+to keep ASTC-to-BC staging buffers reserved through their final recorded GPU use.
+Intermediate decode batches retain their compute barriers and submit together;
+deferred output reservations are released even if command recording throws.
+Actual GPU image-content and staging-reuse validation still requires a gameplay
+or Vulkan-backed capture; unit tests alone do not establish that result.
+
+[#1799](https://github.com/zortos293/Lichii/pull/1799) and
+[#1800](https://github.com/zortos293/Lichii/pull/1800) supply balanced shader-build
+notifications and the remaining-build count. The local adaptation also balances
+constructor failures and unexpected build exceptions. Build owners join their
+jobs before destroying the notification; completion is counted once. Actual
+shader-job cancellation, failure and concurrent-completion regressions cover the
+counter lifetime. The existing status label now shows how many builds remain,
+without changing settings, forms, artwork or handheld layouts.
+
 The native-performance test update adds linear mapping-span reuse for shifting
 buffer bindings, avoids texture-cache locking for pages that never held images,
 and gathers contended CPU writes before new or resumed command lists consume them.

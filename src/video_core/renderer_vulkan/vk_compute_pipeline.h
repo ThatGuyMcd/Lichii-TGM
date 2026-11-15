@@ -25,6 +25,7 @@
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+#include "video_core/shader_notify.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace VideoCore {
@@ -173,6 +174,7 @@ private:
     vk::Pipeline retired_pipeline;
     std::atomic_bool optimized_ready{};
     bool optimized_bound{};
+    VideoCore::ShaderBuildNotification build_notification;
     /// The optimized build of a fast first build, a Background job of `jobs`
     std::optional<PipelineBuild> optimized_build;
 

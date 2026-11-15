@@ -26,6 +26,7 @@
 #include "video_core/renderer_vulkan/precache_journal.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache_prebuild.h"
 #include "video_core/shader_jobs.h"
+#include "video_core/shader_notify.h"
 
 namespace {
 using namespace std::chrono_literals;
@@ -1151,4 +1152,100 @@ TEST_CASE("A prebuild records its driver stage in the journal",
     REQUIRE(next.PoisonedCount() == 0);
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
+}
+
+namespace {
+struct NotifiedBuildOwner {
+    VideoCore::ShaderBuildNotification notification;
+    std::optional<Vulkan::PipelineBuild> build;
+
+    NotifiedBuildOwner(VideoCore::ShaderNotify& notify, const Vulkan::PipelineBuildQueue& queue,
+                       std::function<void()> work)
+        : notification{&notify} {
+        build.emplace(queue, [this, work = std::move(work)] {
+            SCOPE_EXIT {
+                notification.Complete();
+            };
+            work();
+        });
+    }
+};
+} // namespace
+
+TEST_CASE("Cancelled pipeline builds balance shader notifications",
+          "[video_core][shader_jobs][shader_notify]") {
+    ShaderJobScheduler scheduler{Config(1, 1)};
+    Gate gate;
+    const auto blocker = Block(scheduler, gate);
+    SCOPE_EXIT {
+        gate.Open();
+        blocker.Wait();
+    };
+    VideoCore::ShaderNotify notify;
+    std::atomic<int> ran{};
+    {
+        NotifiedBuildOwner pipeline{notify, {.jobs = &scheduler}, [&] { ++ran; }};
+        CHECK(notify.ShadersLeft() == 1);
+    }
+    CHECK(ran == 0);
+    CHECK(notify.ShadersLeft() == 0);
+}
+
+TEST_CASE("Finished and failed pipeline builds notify exactly once before destruction",
+          "[video_core][shader_jobs][shader_notify]") {
+    for (const bool fail : {false, true}) {
+        ShaderJobScheduler scheduler{Config(1, 1)};
+        VideoCore::ShaderNotify notify;
+        std::atomic<int> ran{};
+        {
+            NotifiedBuildOwner pipeline{notify, {.jobs = &scheduler}, [&] {
+                ++ran;
+                if (fail) {
+                    throw std::runtime_error{"driver build failed"};
+                }
+            }};
+            pipeline.build->Wait();
+            CHECK(pipeline.build->Failed() == fail);
+            CHECK(ran == 1);
+            CHECK(notify.ShadersLeft() == 0);
+            pipeline.notification.Complete();
+            CHECK(notify.ShadersLeft() == 0);
+        }
+        CHECK(notify.ShadersLeft() == 0);
+    }
+}
+
+TEST_CASE("Pipeline construction failure balances an already started notification",
+          "[video_core][shader_jobs][shader_notify]") {
+    struct FailedOwner {
+        VideoCore::ShaderBuildNotification notification;
+        explicit FailedOwner(VideoCore::ShaderNotify& notify) : notification{&notify} {
+            throw std::runtime_error{"pipeline setup failed"};
+        }
+    };
+    VideoCore::ShaderNotify notify;
+    CHECK_THROWS_AS(FailedOwner{notify}, std::runtime_error);
+    CHECK(notify.ShadersLeft() == 0);
+}
+
+TEST_CASE("Concurrent notification completion cannot consume another build's progress",
+          "[video_core][shader_jobs][shader_notify]") {
+    VideoCore::ShaderNotify notify;
+    {
+        VideoCore::ShaderBuildNotification still_queued{&notify};
+        {
+            VideoCore::ShaderBuildNotification completed{&notify};
+            std::vector<std::jthread> workers;
+            for (int index = 0; index < 16; ++index) {
+                workers.emplace_back([&] { completed.Complete(); });
+            }
+            workers.clear();
+            CHECK(notify.ShadersLeft() == 1);
+        }
+        CHECK(notify.ShadersLeft() == 1);
+    }
+    CHECK(notify.ShadersLeft() == 0);
+    VideoCore::ShaderBuildNotification disabled{nullptr};
+    disabled.Complete();
+    CHECK(notify.ShadersLeft() == 0);
 }

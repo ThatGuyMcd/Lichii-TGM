@@ -35,6 +35,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
 
@@ -292,10 +293,8 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
       pipeline_cache(pipeline_cache_), binaries{binaries_}, binary_key{binary_key_},
       guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
-      shader_hash{shader_hash_}, spv_module(std::move(spv_module_)) {
-    if (shader_notify) {
-        shader_notify->MarkShaderBuilding();
-    }
+      shader_hash{shader_hash_}, spv_module(std::move(spv_module_)),
+      build_notification{shader_notify} {
     std::copy_n(info.constant_buffer_used_sizes.begin(), uniform_buffer_sizes.size(),
                 uniform_buffer_sizes.begin());
     num_descriptor_entries = NumDescriptorEntries(info);
@@ -329,7 +328,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         }
     }
 
-    auto func{[this, shader_notify, pipeline_statistics,
+    auto func{[this, pipeline_statistics,
                driver_bytes = build_queue.driver_bytes] {
         try {
             if (FastFirstBuildEnabled() && jobs) {
@@ -383,9 +382,6 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();
-            if (shader_notify) {
-                shader_notify->MarkShaderComplete();
-            }
             return;
         }
 
@@ -407,9 +403,6 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         std::scoped_lock lock{build_mutex};
         is_built = true;
         build_condvar.notify_one();
-        if (shader_notify) {
-            shader_notify->MarkShaderComplete();
-        }
     }};
     build_task = std::move(func);
     if (build_queue.jobs) {
@@ -421,7 +414,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         };
         if (emit) {
             // The SPIR-V is emitted first, in the job's CPU stage (shader cache v2)
-            build_job.cpu = [this, shader_notify, emit = std::move(emit)](
+            build_job.cpu = [this, emit = std::move(emit)](
                                 VideoCommon::ShaderJobContext&) -> VideoCommon::ShaderDriverStage {
                 // A pipeline that fails here is built without a VkPipeline: its dispatches are
                 // skipped, as for one the driver rejects
@@ -433,9 +426,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                     std::scoped_lock lock{build_mutex};
                     is_built = true;
                     build_condvar.notify_one();
-                    if (shader_notify) {
-                        shader_notify->MarkShaderComplete();
-                    }
+                    build_notification.Complete();
                 };
                 try {
                     spv_module = emit();
@@ -471,6 +462,9 @@ void ComputePipeline::RunBuild() {
     if (build_claimed.exchange(true)) {
         return;
     }
+    SCOPE_EXIT {
+        build_notification.Complete();
+    };
     build_task();
     build_task = nullptr;
 }

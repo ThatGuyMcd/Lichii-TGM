@@ -1176,7 +1176,16 @@ TEST_CASE("Cancelled pipeline builds balance shader notifications",
           "[video_core][shader_jobs][shader_notify]") {
     ShaderJobScheduler scheduler{Config(1, 1)};
     Gate gate;
-    const auto blocker = Block(scheduler, gate);
+    auto entered = std::make_shared<std::promise<void>>();
+    auto started = entered->get_future();
+    ShaderJob blocking_job;
+    blocking_job.priority = NeedNow;
+    blocking_job.driver = [&gate, entered] {
+        entered->set_value();
+        gate.Wait();
+    };
+    const auto blocker = scheduler.Submit(std::move(blocking_job));
+    started.wait();
     SCOPE_EXIT {
         gate.Open();
         blocker.Wait();

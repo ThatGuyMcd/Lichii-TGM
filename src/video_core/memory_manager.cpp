@@ -856,7 +856,7 @@ const MemoryManager::MappingSnapshot& MemoryManager::CurrentSnapshot() const {
         auto next = std::make_shared<MappingSnapshot>();
         next->runs.reserve(continuous_runs.size());
         for (const auto& [begin, run] : continuous_runs) {
-            next->runs.push_back({begin, run.end});
+            next->runs.push_back({begin, run.end, run.device_addr});
         }
         {
             std::unique_lock<std::mutex> kind_lock(guard);
@@ -1055,7 +1055,9 @@ bool MemoryManager::IsFullyMappedRange(GPUVAddr gpu_addr, std::size_t size) cons
 boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32>
 MemoryManager::GetSubmappedRange(GPUVAddr gpu_addr, std::size_t size) const {
     boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32> result{};
-    GetSubmappedRangeImpl<true>(gpu_addr, size, result);
+    if (size != 0 && IsWithinGPUAddressRange(gpu_addr) && size <= address_space_size - gpu_addr) {
+        SubmappedRangeFromRuns<true>(gpu_addr, size, result);
+    }
     return result;
 }
 
@@ -1063,8 +1065,54 @@ boost::container::small_vector<std::pair<DAddr, std::size_t>, 32>
 MemoryManager::GetSubmappedDeviceRange(GPUVAddr gpu_addr, std::size_t size) const {
     boost::container::small_vector<std::pair<DAddr, std::size_t>, 32> result{};
     if (IsWithinGPUAddressRange(gpu_addr)) {
-        GetSubmappedRangeImpl<false>(
+        SubmappedRangeFromRuns<false>(
             gpu_addr, (std::min<u64>)(size, address_space_size - gpu_addr), result);
+    }
+    return result;
+}
+
+template <bool is_gpu_address>
+void MemoryManager::SubmappedRangeFromRuns(
+    GPUVAddr gpu_addr, std::size_t size,
+    boost::container::small_vector<
+        std::pair<std::conditional_t<is_gpu_address, GPUVAddr, DAddr>, std::size_t>, 32>& result) const {
+    if (size == 0) {
+        return;
+    }
+    const GPUVAddr end = gpu_addr + size;
+    const auto& runs = CurrentSnapshot().runs;
+    auto it = std::upper_bound(runs.begin(), runs.end(), gpu_addr,
+                              [](GPUVAddr address, const MappingSnapshot::Run& run) {
+                                  return address < run.begin;
+                              });
+    if (it != runs.begin() && std::prev(it)->end > gpu_addr) {
+        --it;
+    }
+    for (; it != runs.end() && it->begin < end; ++it) {
+        const GPUVAddr begin = (std::max)(it->begin, gpu_addr);
+        const GPUVAddr run_end = (std::min)(it->end, end);
+        if (begin < run_end) {
+            const auto address = is_gpu_address ? begin : it->device_addr + (begin - it->begin);
+            result.emplace_back(address, static_cast<std::size_t>(run_end - begin));
+        }
+    }
+}
+
+boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32>
+MemoryManager::GetSubmappedRangeUncached(GPUVAddr gpu_addr, std::size_t size) const {
+    boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32> result;
+    if (size != 0 && IsWithinGPUAddressRange(gpu_addr) && size <= address_space_size - gpu_addr) {
+        GetSubmappedRangeImpl<true>(gpu_addr, size, result);
+    }
+    return result;
+}
+
+boost::container::small_vector<std::pair<DAddr, std::size_t>, 32>
+MemoryManager::GetSubmappedDeviceRangeUncached(GPUVAddr gpu_addr, std::size_t size) const {
+    boost::container::small_vector<std::pair<DAddr, std::size_t>, 32> result;
+    if (size != 0 && IsWithinGPUAddressRange(gpu_addr)) {
+        GetSubmappedRangeImpl<false>(gpu_addr,
+                                    (std::min<u64>)(size, address_space_size - gpu_addr), result);
     }
     return result;
 }

@@ -63,6 +63,12 @@ public:
 
     using BindCommand = std::function<void(vk::CommandBuffer)>;
 
+    void PrepareDescriptorMemory(Scheduler& scheduler) {
+        if (uses_descriptor_buffer && descriptor_set_layout) {
+            descriptor_buffer_ring.PrepareAllocation(scheduler, descriptor_buffer_layout.size);
+        }
+    }
+
     [[nodiscard]] bool Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                  Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
                                  BufferCache& buffer_cache, TextureCache& texture_cache,
@@ -77,7 +83,7 @@ public:
     /// The same upscale to 2560x1440 when the scene renders below it (ocarina_dlss_mode).
     static constexpr u64 Ocarina1440pScaledShader = 0x4c1ae2fe58f30a97ULL;      // menus
     static constexpr u64 Ocarina1440pScaledFieldShader = 0x9302bc0d6d1d9bc1ULL; // gameplay
-    [[nodiscard]] bool CanReplaceOcarinaUpscale() const;
+    [[nodiscard]] bool CanReplaceOcarinaUpscale(u64 native_key) const;
 
     bool IsBound() const noexcept {
         return static_cast<bool>(pipeline);

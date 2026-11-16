@@ -8,6 +8,7 @@
 
 #include "common/alignment.h"
 #include "common/common_types.h"
+#include "video_core/renderer_vulkan/descriptor_frame_cursor.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -44,6 +45,9 @@ public:
 
     void TickFrame();
 
+    /// Called after pipeline selection, before any resources or bindings of the draw are recorded.
+    void PrepareAllocation(Scheduler& scheduler, VkDeviceSize size);
+
     [[nodiscard]] Allocation Allocate(Scheduler& scheduler, VkDeviceSize size);
 
     [[nodiscard]] VkDescriptorBufferBindingInfoEXT BindingInfo(u32 chunk) const noexcept;
@@ -61,8 +65,7 @@ private:
     VkDeviceSize chunk_capacity{};
     size_t chunks_per_frame{};
     size_t frame_index{};
-    size_t chunk_cursor{};
-    VkDeviceSize cursor{};
+    DescriptorFrameCursor frame_cursor;
     u64 generation{1};
     std::array<u64, FRAMES_IN_FLIGHT> frame_ticks{};
     bool frame_reused{};

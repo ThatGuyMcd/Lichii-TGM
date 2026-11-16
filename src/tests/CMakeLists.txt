@@ -6,6 +6,14 @@
 
 add_executable(tests
     video_core/draw_template.cpp
+    video_core/oot_perf_texture_landing.cpp
+    video_core/oot_perf_stream_wrap.cpp
+    video_core/oot_perf_submapped_runs.cpp
+    video_core/oot_perf_upload_lifetime.cpp
+    video_core/oot_perf_deferred_staging.cpp
+    video_core/oot_perf_network_input.cpp
+    video_core/oot_perf_descriptor_boundary.cpp
+    video_core/oot_perf_retirement_ownership.cpp
     video_core/native60_global_routing.cpp
     video_core/native60_workgroup_memory.cpp
     video_core/native60_qmd_alias.cpp

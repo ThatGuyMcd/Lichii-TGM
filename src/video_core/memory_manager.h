@@ -203,6 +203,12 @@ public:
     /// MaxContinuousRange by walking the page tables (the answer with Nx2Perf off).
     size_t MaxContinuousRangeUncached(GPUVAddr gpu_addr, size_t size) const;
 
+    /// Page-table oracle for validating the immutable run snapshot.
+    boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32>
+    GetSubmappedRangeUncached(GPUVAddr gpu_addr, std::size_t size) const;
+    boost::container::small_vector<std::pair<DAddr, std::size_t>, 32>
+    GetSubmappedDeviceRangeUncached(GPUVAddr gpu_addr, std::size_t size) const;
+
     bool IsWithinGPUAddressRange(GPUVAddr gpu_addr) const {
         return gpu_addr < address_space_size;
     }
@@ -236,6 +242,7 @@ private:
         struct Run {
             GPUVAddr begin;
             GPUVAddr end;
+            DAddr device_addr;
         };
         std::vector<Run> runs;
         std::vector<std::pair<s64, PTEKind>> kinds;
@@ -244,6 +251,13 @@ private:
     /// Rebuilds the runs through the big pages a page table operation touched.
     void UpdateContinuousRuns(GPUVAddr gpu_addr, size_t size);
     const MappingSnapshot& CurrentSnapshot() const;
+
+    template <bool is_gpu_address>
+    void SubmappedRangeFromRuns(
+        GPUVAddr gpu_addr, std::size_t size,
+        boost::container::small_vector<
+            std::pair<std::conditional_t<is_gpu_address, GPUVAddr, DAddr>, std::size_t>, 32>&
+            result) const;
 
     void ReadBlockImpl(GPUVAddr gpu_src_addr, void* dest_buffer, std::size_t size, VideoCommon::CacheType which, bool unsafe,
                        std::source_location caller) const;

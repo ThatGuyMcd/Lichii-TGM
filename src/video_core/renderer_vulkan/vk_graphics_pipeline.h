@@ -337,6 +337,12 @@ public:
 
     void AddTransition(GraphicsPipeline* transition);
 
+    void PrepareDescriptorMemory(Scheduler& scheduler) {
+        if (uses_descriptor_buffer && descriptor_set_layout) {
+            descriptor_buffer_ring.PrepareAllocation(scheduler, descriptor_buffer_layout.size);
+        }
+    }
+
     bool Configure(bool is_indexed) {
         return configure_func(this, is_indexed);
     }

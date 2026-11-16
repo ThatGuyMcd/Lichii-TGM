@@ -5,6 +5,7 @@
 #include <mutex>
 #include <utility>
 
+#include "video_core/renderer_vulkan/retirement_ownership.h"
 #include "video_core/renderer_vulkan/vk_multi_range_buffer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -172,38 +173,19 @@ void MultiRangeBufferCache::RetireEntry(Scheduler& scheduler, Entry& entry) {
     if (!entry.sparse_handle && !entry.gathered) {
         return;
     }
-    if (retired.size() == retired.capacity()) {
-        DrainRetired(scheduler);
-    }
-    if (retired.size() == retired.capacity()) {
-        u64 oldest = retired.front().tick;
-        for (const Retired& item : retired) {
-            if (item.tick < oldest) {
-                oldest = item.tick;
-            }
-        }
-        scheduler.Wait(oldest);
-        DrainRetired(scheduler);
-    }
-    retired.push_back(Retired{
-        .handle = std::move(entry.sparse_handle),
-        .gathered = std::move(entry.gathered),
-        .tick = scheduler.CurrentTick(),
+    // This can run between bindings and their draw. Query completion without submitting the
+    // partially configured command buffer, and reserve storage before moving either live handle.
+    RetireOwnership(retired, [&](u64 tick) { return scheduler.IsFree(tick); }, [&]() noexcept {
+        return Retired{
+            .handle = std::move(entry.sparse_handle),
+            .gathered = std::move(entry.gathered),
+            .tick = scheduler.CurrentTick(),
+        };
     });
 }
 
 void MultiRangeBufferCache::DrainRetired(Scheduler& scheduler) {
-    size_t index = 0;
-    while (index < retired.size()) {
-        if (scheduler.IsFree(retired[index].tick)) {
-            if (index + 1 != retired.size()) {
-                retired[index] = std::move(retired.back());
-            }
-            retired.pop_back();
-        } else {
-            ++index;
-        }
-    }
+    DrainRetiredOwnership(retired, [&](u64 tick) { return scheduler.IsFree(tick); });
 }
 
 void MultiRangeBufferCache::TickFrame(Scheduler& scheduler) {

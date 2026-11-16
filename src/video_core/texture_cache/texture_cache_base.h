@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -300,6 +301,11 @@ public:
     VideoCommon::PageFilter page_filter;
 
     explicit TextureCache(Runtime&, Tegra::MaxwellDeviceMemoryManager&);
+
+    void SetPendingCpuWrites(
+        std::function<void(const std::function<void(DAddr, size_t)>&)> callback) {
+        pending_cpu_writes = std::move(callback);
+    }
 
     /// Notify the cache that a new frame has been queued
     void TickFrame();
@@ -819,6 +825,7 @@ private:
     ::Common::unordered_map<GPUVAddr, ImageAllocId> image_allocs_table;
 
     Common::ScratchBuffer<u8> swizzle_data_buffer;
+    std::function<void(const std::function<void(DAddr, size_t)>&)> pending_cpu_writes;
     Common::ScratchBuffer<u8> unswizzle_data_buffer;
     Tegra::Texture::UnswizzleWorker unswizzle_worker;
 

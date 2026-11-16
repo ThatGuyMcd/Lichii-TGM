@@ -5,11 +5,9 @@
 
 #include <array>
 #include <atomic>
-#include <mutex>
 
 #include "common/common_types.h"
 #include "common/settings.h"
-#include "video_core/engines/maxwell_3d.h"
 
 // The Legend of Zelda: Ocarina of Time's anti-aliasing. After tonemapping, the game runs a
 // single-frame tensor network on the tonemapped image and an output pass that sharpens the result
@@ -43,6 +41,9 @@ constexpr std::array BaseOutputPrograms{
     BaseOutputProgram{0x00017919, 0x6250, 0x58bdd5733e364169ULL},
 };
 
+/// Constant buffer 0 texture handle for the tonemapped image sampled by this output pass.
+constexpr u32 InputImageHandleOffset = 0xc0;
+
 /// Constant buffer 0 offset of the output pass's texture handle for the B10G11R11 image it writes
 /// (the scene image the rest of the frame uses).
 constexpr u32 OutputImageHandleOffset = 0xd0;
@@ -55,13 +56,10 @@ constexpr bool IsTonemapShader(u64 hash) {
            hash == 0x3ac011bd2d772994ULL;   // outdoors at another time of day
 }
 
-/// Owned by the rasterizer: the tonemap pass draws on the 3D engine, and the network's passes do
-/// not all run on the same compute engine.
+/// Owned by the rasterizer: the network's passes do not all run on the same compute engine.
 struct BypassState {
-    std::mutex mutex;
-    /// Render target 0 of the latest tonemap draw (address 0 until one is seen), under mutex.
-    Tegra::Engines::Maxwell3D::Regs::RenderTargetConfig tonemapped{};
     std::atomic<bool> output_replaced{}; ///< the latest output pass was replaced
+    std::atomic<bool> output_pending{}; ///< a skipped prepass has no replacement output yet
 };
 
 inline bool BypassEnabled(u64 program_id) {

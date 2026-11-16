@@ -23,6 +23,7 @@
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+#include "video_core/ocarina_upscale.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "video_core/renderer_vulkan/vk_frame_dump.h"
 #include "video_core/renderer_vulkan/vk_pipeline_binaries.h"
@@ -469,12 +470,10 @@ void ComputePipeline::RunBuild() {
     build_task = nullptr;
 }
 
-bool ComputePipeline::CanReplaceOcarinaUpscale() const {
+bool ComputePipeline::CanReplaceOcarinaUpscale(u64 native_key) const {
     const bool known_shader =
-        shader_hash == 0xe40f5efb5480e692ULL || shader_hash == 0xef542df87cacfe9eULL ||
-        shader_hash == Ocarina1440pShader ||
-        shader_hash == OcarinaFullSizeShader ||
-        shader_hash == Ocarina1440pScaledShader || shader_hash == Ocarina1440pScaledFieldShader;
+        VideoCommon::FindOcarinaUpscalePass(native_key, shader_hash) !=
+        VideoCommon::OcarinaUpscalePass::None;
     return known_shader && !info.stores_global_memory &&
            info.image_buffer_descriptors.empty() && info.image_descriptors.size() == 1 &&
            info.image_descriptors.front().count == 1 && info.image_descriptors.front().is_written &&

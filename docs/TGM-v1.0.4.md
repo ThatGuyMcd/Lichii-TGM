@@ -37,6 +37,27 @@ quality or other saved graphics choice is silently changed. Actual native FPS
 and the remaining CPU/GPU bottleneck require repeated game-scene measurements;
 this candidate does not claim to guarantee 60 FPS throughout the game.
 
+The 16 November performance pass retires native upload provenance after dispatch, corrects
+stream-buffer wrap ownership, and answers submapped-range queries from mapping runs. Deferred
+staging buffers stay outside reuse scans, with allocation-free return during cleanup. Descriptor
+capacity is prepared before draw/dispatch resource setup; multi-range retirement preserves
+in-flight resources without submitting in the middle of setup. These adapt Lichii #1908,
+#1835, #1820, #1906 and #1812 while retaining the local lifetime and invalidation guards.
+
+OOT output recognition accepts stable native program keys as well as existing translated
+variants (#1871). NoSharpening reads the image actually sampled by the output pass and clears
+a stale skip latch when an output is missing (#1875). Healthy temporal DLSS still excludes
+this bypass; the missing-output repair takes effect on the next prepass and does not replay
+passes already skipped in the current frame. Texture collection preserves pending CPU writes
+and publishes independent per-image landing guards (#1897). The GOB-order CPU swizzle proposal
+(#1898) was evaluated but is not enabled: direct production-code comparisons found regressions
+on larger layouts. The existing swizzle implementation is retained. Bit-exact layout tests and
+CPU kernel measurements are separate from game FPS.
+
+Reactive flushing, readback limits, output resolution, DLSS model policy and compiler defaults
+are retained. Further changes to these policies require current gameplay measurements. The
+candidate makes no claim of native 60 FPS everywhere; frame generation remains off for testing.
+
 This candidate combines compatible OOT Remake work from Lichii and Fritchii, including unmerged proposals and historical release branches. It is not a published release; v1.0.3 remains immutable. The [full audit](TGM-OOT-full-audit-2026-11-13.md) lists the captured candidates and deliberate exclusions.
 
 The [14 November follow-up](TGM-upstream-sync-2026-11-14.md) adds host-spill collection spacing,

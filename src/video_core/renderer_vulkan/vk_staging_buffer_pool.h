@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "video_core/renderer_vulkan/deferred_buffer_cache.h"
+#include "video_core/renderer_vulkan/stream_buffer_cursor.h"
 
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -31,14 +33,14 @@ struct StagingBufferRef {
 
 class StagingBufferPool {
 public:
-    static constexpr size_t NUM_SYNCS = 16;
+    static constexpr size_t NUM_SYNCS = StreamBufferCursor::NumRegions;
 
     explicit StagingBufferPool(const Device& device, MemoryAllocator& memory_allocator,
                                Scheduler& scheduler);
     ~StagingBufferPool();
 
     StagingBufferRef Request(size_t size, MemoryUsage usage, bool deferred = false);
-    void FreeDeferred(StagingBufferRef& ref);
+    void FreeDeferred(StagingBufferRef& ref) noexcept;
     /// Make a completed deferred download visible to the CPU, including non-coherent memory.
     void InvalidateDeferredDownload(const StagingBufferRef& ref);
 
@@ -81,7 +83,7 @@ private:
     };
 
     struct StagingBuffers {
-        std::vector<StagingBuffer> entries;
+        DeferredBufferCache<StagingBuffer> buffers;
         size_t delete_index = 0;
         size_t iterate_index = 0;
     };
@@ -90,8 +92,6 @@ private:
     using StagingBuffersCache = std::array<StagingBuffers, NUM_LEVELS>;
 
     StagingBufferRef GetStreamBuffer(size_t size);
-
-    bool AreRegionsActive(size_t region_begin, size_t region_end) const;
 
     StagingBufferRef GetStagingBuffer(size_t size, MemoryUsage usage, bool deferred = false);
 
@@ -105,10 +105,6 @@ private:
     void ReleaseCache(MemoryUsage usage);
 
     void ReleaseLevel(StagingBuffersCache& cache, size_t log2);
-    size_t Region(size_t iter) const noexcept {
-        return iter / region_size;
-    }
-
     const Device& device;
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
@@ -119,10 +115,7 @@ private:
     VkDeviceSize stream_buffer_size;
     VkDeviceSize region_size;
 
-    size_t iterator = 0;
-    size_t used_iterator = 0;
-    size_t free_iterator = 0;
-    std::array<u64, NUM_SYNCS> sync_ticks{};
+    StreamBufferCursor stream_cursor;
 
     StagingBuffersCache device_local_cache;
     StagingBuffersCache upload_cache;

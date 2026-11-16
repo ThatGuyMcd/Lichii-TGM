@@ -43,6 +43,7 @@
 #include "video_core/nx2_profile.h"
 #include "video_core/render_trace.h"
 #include "video_core/texture_cache/conversion.h"
+#include "video_core/texture_cache/download_landing.h"
 #include "video_core/texture_cache/host_memory_limit.h"
 #include "video_core/texture_cache/eviction_age.h"
 #include "video_core/texture_cache/host_mip_limits.h"
@@ -229,9 +230,24 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         ++gc_download_waits;
         for (PendingDownload& entry : pending) {
             Image& image = slot_images[entry.image_id];
-            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, entry.copies,
-                         entry.map.mapped_span, swizzle_data_buffer);
+            const bool sparse = True(image.flags & ImageFlagBits::Sparse);
+            const DAddr begin = sparse ? 0 : image.cpu_addr;
+            const DAddr end = sparse ? ~DAddr{0} : image.cpu_addr_end;
+            const bool landed = LandTextureDownload(
+                begin, end,
+                [&](const auto& visit) {
+                    if (pending_cpu_writes) {
+                        pending_cpu_writes(visit);
+                    }
+                },
+                [&] {
+                    SwizzleImage(*gpu_memory, image.gpu_addr, image.info, entry.copies,
+                                 entry.map.mapped_span, swizzle_data_buffer);
+                });
             runtime.FreeDeferredStagingBuffer(entry.map);
+            if (!landed) {
+                continue;
+            }
             ++gc_download_deletes;
             ClearStaleImage(image);
             Evict(entry.image_id);

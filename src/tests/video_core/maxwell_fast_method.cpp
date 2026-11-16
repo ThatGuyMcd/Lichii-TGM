@@ -406,7 +406,7 @@ TEST_CASE("Ocarina base network copies a smaller tonemap and restores fallback o
     cb.address_low = 0x100000;
     cb.size.Assign(0x100);
     compute.regs.tic.address_low = 0x100200;
-    compute.regs.tic.limit = 0;
+    compute.regs.tic.limit = 1;
     Tegra::Texture::TICEntry output{};
     output.format.Assign(Tegra::Texture::TextureFormat::B10G11R11);
     output.header_version.Assign(Tegra::Texture::TICHeaderVersion::BlockLinear);
@@ -414,11 +414,13 @@ TEST_CASE("Ocarina base network copies a smaller tonemap and restores fallback o
     output.width_minus_one.Assign(1919);
     output.height_minus_1.Assign(1079);
     std::memcpy(backing + 0x200, &output, sizeof(output));
-    auto& source = rasterizer.network.tonemapped;
+    auto source = output;
     source.address_low = 0x300000;
-    source.format = Tegra::RenderTargetFormat::B10G11R11_FLOAT;
-    source.width = 1280;
-    source.height = 720;
+    source.width_minus_one.Assign(1279);
+    source.height_minus_1.Assign(719);
+    std::memcpy(backing + 0x200 + sizeof(source), &source, sizeof(source));
+    const u32 input_handle = 1;
+    std::memcpy(backing + InputImageHandleOffset, &input_handle, sizeof(input_handle));
     auto& setting = Settings::values.oot_anti_aliasing;
     const auto previous = setting.GetValue();
     SCOPE_EXIT { setting.SetValue(previous); };
@@ -444,7 +446,8 @@ TEST_CASE("Ocarina base network copies a smaller tonemap and restores fallback o
     const u32 copies = rasterizer.copies;
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, 0));
     REQUIRE_FALSE(compute.BypassOotNetwork(0, BaseOutputPrograms[0].key));
-    source.width = 2048;
+    source.width_minus_one.Assign(2047);
+    std::memcpy(backing + 0x200 + sizeof(source), &source, sizeof(source));
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, BaseOutputPrograms[0].key));
     REQUIRE(rasterizer.copies == copies);
 }

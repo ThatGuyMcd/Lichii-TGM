@@ -82,8 +82,7 @@ void DescriptorBufferRing::TickFrame() {
     if (++frame_index >= FRAMES_IN_FLIGHT) {
         frame_index = 0;
     }
-    chunk_cursor = 0;
-    cursor = 0;
+    frame_cursor.Reset();
     ++generation;
     frame_reused = true;
 }
@@ -92,33 +91,35 @@ void DescriptorBufferRing::TouchFrame(Scheduler& scheduler) {
     frame_ticks[frame_index] = scheduler.CurrentTick();
 }
 
-DescriptorBufferRing::Allocation DescriptorBufferRing::Allocate(Scheduler& scheduler,
-                                                                VkDeviceSize size) {
+void DescriptorBufferRing::PrepareAllocation(Scheduler& scheduler, VkDeviceSize size) {
     ASSERT(!chunks.empty());
     if (!CanAllocate(size)) {
         LOG_DEBUG(Render_Vulkan, "Descriptor set of {} bytes exceeds chunk capacity {}", size,
                   chunk_capacity);
-        return Allocation{};
+        return;
     }
     const VkDeviceSize needed{Common::AlignUp(size, alignment)};
     if (frame_reused) {
         frame_reused = false;
         scheduler.Wait(frame_ticks[frame_index]);
     }
-    if (cursor + needed > chunk_capacity) {
-        if (chunk_cursor + 1 < chunks_per_frame) {
-            ++chunk_cursor;
-        } else {
-            LOG_DEBUG(Render_Vulkan, "Descriptor buffer frame exhausted, stalling on the GPU");
-            scheduler.Finish();
-            chunk_cursor = 0;
-            ++generation;
-        }
-        cursor = 0;
+    if (!frame_cursor.Fits(needed, chunk_capacity, chunks_per_frame)) {
+        LOG_DEBUG(Render_Vulkan, "Descriptor buffer frame exhausted, waiting at draw boundary");
+        scheduler.Finish();
+        frame_cursor.Reset();
+        ++generation;
     }
-    const size_t chunk{frame_index * chunks_per_frame + chunk_cursor};
-    const VkDeviceSize offset{cursor};
-    cursor += needed;
+}
+
+DescriptorBufferRing::Allocation DescriptorBufferRing::Allocate(Scheduler& scheduler,
+                                                                VkDeviceSize size) {
+    ASSERT(!chunks.empty() && !frame_reused && CanAllocate(size));
+    const auto allocation = frame_cursor.Allocate(Common::AlignUp(size, alignment), chunk_capacity,
+                                                  chunks_per_frame);
+    // Each configured draw/dispatch allocates at most one set, prepared before resource setup.
+    ASSERT_MSG(allocation.has_value(), "Descriptor allocation was not prepared at draw boundary");
+    const size_t chunk{frame_index * chunks_per_frame + allocation->chunk};
+    const VkDeviceSize offset{allocation->offset};
     frame_ticks[frame_index] = scheduler.CurrentTick();
     return Allocation{
         .host = chunk_hosts[chunk] + offset,

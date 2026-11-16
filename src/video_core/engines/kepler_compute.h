@@ -305,6 +305,7 @@ public:
     bool FrontTakeListWords(VideoCommon::GpuSplit& split, u32 method, u32 count, u32 slot);
 
 private:
+    friend struct KeplerUploadLifetimeTestAccess;
     struct FrontState;
     FrontState& Front(VideoCommon::GpuSplit& split);
     void ReleaseFront();

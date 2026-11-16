@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <random>
 #include <vector>
 
@@ -217,6 +219,16 @@ TEST_CASE("Block linear swizzle matches the GOB layout", "[block_linear_swizzle]
             CheckLayout({64, 24, 1, 16, 3, 0, alignment}, native);
         }
     }
+    // Partial GOBs in every dimension, with padded rows and depth blocks spanning slices.
+    for (const u32 width : {1U, 3U, 5U, 33U}) {
+        for (const u32 height : {1U, 9U, 17U}) {
+            for (const u32 block_depth : {0U, 1U, 3U}) {
+                for (const bool native : {false, true}) {
+                    CheckLayout({width, height, 3, 16, 2, block_depth, 3}, native);
+                }
+            }
+        }
+    }
 }
 
 TEST_CASE("Block linear subrect swizzle microbenchmark", "[.block_linear_swizzle_benchmark]") {
@@ -256,5 +268,90 @@ TEST_CASE("Block linear unswizzle microbenchmark", "[.block_linear_swizzle_bench
         std::printf("1024x1024 RGBA8 unswizzle%s: %.3f ms, %.2f GB/s\n",
                     native ? " (native tiling)" : "", seconds * 1e3 / iterations,
                     LinearBytes(layout) * iterations / seconds / 1e9);
+    }
+}
+
+// The old row-order algorithm compiled as a local reference. Its object code differs from the
+// production template, so performance acceptance also needs a direct old/new production build.
+static void RowOrderSwizzle16(std::span<u8> output, std::span<const u8> input,
+                             const Layout& layout, bool native) {
+    const u32 pitch = layout.width * 16;
+    const u32 stride = Common::AlignUpLog2(layout.width, layout.alignment) * 16;
+    const u32 block_size = Common::DivCeil(stride, GOB_SIZE_X)
+                           << (GOB_SIZE_SHIFT + layout.block_height + layout.block_depth);
+    const u32 slice_size = Common::DivCeil(layout.height, GOB_SIZE_Y << layout.block_height) *
+                           block_size;
+    std::array<u32, 32> offsets;
+    for (u32 y = 0; y < 8; ++y) {
+        for (u32 x = 0; x < 4; ++x) {
+            u32 within = (x & 1) * 32 + (x >> 1) * 256 + (y & 1) * 16 +
+                         ((y >> 1) & 1) * 64 + (y >> 2) * 128;
+            if (native) {
+                const u32 swap = ((within >> 5) ^ (within >> 6)) & 1;
+                within ^= (swap << 5) | (swap << 6);
+            }
+            offsets[y * 4 + x] = within;
+        }
+    }
+    for (u32 z = 0; z < layout.depth; ++z) {
+        const u32 offset_z = (z >> layout.block_depth) * slice_size +
+                             ((z & ((1U << layout.block_depth) - 1))
+                              << (GOB_SIZE_SHIFT + layout.block_height));
+        for (u32 y = 0; y < layout.height; ++y) {
+            const u32 gob_y = y >> GOB_SIZE_Y_SHIFT;
+            const u32 offset_y = (gob_y >> layout.block_height) * block_size +
+                                 ((gob_y & ((1U << layout.block_height) - 1)) << GOB_SIZE_SHIFT);
+            for (u32 gob_x = 0; gob_x < Common::DivCeil(layout.width, 4U); ++gob_x) {
+                const u32 base = offset_z + offset_y +
+                                 (gob_x << (GOB_SIZE_SHIFT + layout.block_height + layout.block_depth));
+                for (u32 unit = 0; unit < (std::min)(4U, layout.width - gob_x * 4); ++unit) {
+                    std::memcpy(output.data() + base + offsets[(y & 7) * 4 + unit],
+                                input.data() + (z * layout.height + y) * pitch +
+                                    (gob_x * 4 + unit) * 16,
+                                16);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("Full texture swizzle compares row and GOB write order", "[.oot_perf_swizzle_bench]") {
+    for (const Layout layout : {Layout{128, 128, 1, 16, 4, 0, 0},
+                                Layout{512, 512, 1, 16, 4, 0, 0},
+                                Layout{1024, 512, 1, 16, 4, 0, 0},
+                                Layout{513, 257, 3, 16, 2, 1, 3}}) {
+        const auto source = RandomBytes(LinearBytes(layout), 123);
+        for (const bool native : {false, true}) {
+            std::vector<u8> control(GuestBytes(layout), 0xcd);
+            std::vector<u8> candidate(control);
+            RowOrderSwizzle16(control, source, layout, native);
+            const auto run = [&] {
+                SwizzleTexture(candidate, source, 16, layout.width, layout.height, layout.depth,
+                               layout.block_height, layout.block_depth, layout.alignment, native);
+            };
+            run();
+            REQUIRE(candidate == control);
+            constexpr u32 iterations = 32;
+            for (u32 round = 0; round < 6; ++round) {
+                double times[2]{};
+                for (u32 order = 0; order < 2; ++order) {
+                    const u32 version = (round + order) % 2;
+                    const auto start = std::chrono::steady_clock::now();
+                    for (u32 i = 0; i < iterations; ++i) {
+                        if (version == 0) {
+                            RowOrderSwizzle16(control, source, layout, native);
+                        } else {
+                            run();
+                        }
+                    }
+                    times[version] = std::chrono::duration<double, std::milli>(
+                                         std::chrono::steady_clock::now() - start).count() / iterations;
+                }
+                REQUIRE(candidate == control);
+                std::printf("SWIZZLE_BENCH %ux%ux%u native=%u round=%u row_ms=%.6f gob_ms=%.6f\n",
+                            layout.width, layout.height, layout.depth, static_cast<u32>(native),
+                            round, times[0], times[1]);
+            }
+        }
     }
 }

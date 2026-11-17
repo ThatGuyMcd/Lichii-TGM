@@ -63,6 +63,26 @@ u64 UnixNow() {
                                 .count());
 }
 
+size_t ReadLogBytes(std::istream& stream, std::span<u8> bytes, size_t chunk_size) {
+    constexpr size_t MaxChunk = size_t{256} << 20;
+    if (chunk_size == 0) {
+        return 0;
+    }
+    chunk_size = std::min(chunk_size, MaxChunk);
+    size_t done = 0;
+    while (done < bytes.size()) {
+        const size_t want = std::min(chunk_size, bytes.size() - done);
+        stream.read(reinterpret_cast<char*>(bytes.data() + done),
+                    static_cast<std::streamsize>(want));
+        const auto read = static_cast<size_t>(stream.gcount());
+        done += read;
+        if (read != want) {
+            break;
+        }
+    }
+    return done;
+}
+
 LogFile ReadLogFile(const std::filesystem::path& file, const ForEach& for_each) {
     LogFile log;
     std::ifstream stream(file, std::ios::binary | std::ios::ate);
@@ -71,9 +91,9 @@ LogFile ReadLogFile(const std::filesystem::path& file, const ForEach& for_each) 
         if (size > 0) {
             log.bytes.resize(static_cast<size_t>(size));
             stream.seekg(0);
-            stream.read(reinterpret_cast<char*>(log.bytes.data()), size);
-            // Cut short when the file shrank since (a compaction replaced it)
-            log.bytes.resize(static_cast<size_t>(stream.gcount()));
+            // MinGW's CRT rejects a single read above INT_MAX.
+            const size_t read = ReadLogBytes(stream, log.bytes);
+            log.bytes.resize(read);
         }
     }
     log.parsed = ParseLog(log.bytes, for_each);

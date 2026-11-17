@@ -37,6 +37,7 @@
 #include "qt_common/forest_theme.h"
 #include "qt_common/touch_ui.h"
 #include "ui_main.h"
+#include "yuzu/couch/couch_mode.h"
 
 // Other Yuzu stuff //
 #include "debugger/console.h"
@@ -590,6 +591,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 #endif
 
     SetupPrepareForSleep();
+    InitializeCouchMode();
 
     // Some moron added a race condition to the status bar
     // so now we have to make this completely unnecessary call
@@ -597,6 +599,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     UpdateUITheme();
 
     if (QStringList args = QApplication::arguments(); args.size() >= 2) {
+        args.removeAll(QStringLiteral("--couch"));
         QList<QByteArray> qba{};
         for (auto const& e : args)
             qba.push_back(e.toUtf8());
@@ -630,6 +633,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 }
 
 MainWindow::~MainWindow() {
+    couch_mode.reset();
     if (nup_cancel) {
         nup_cancel->store(true);
     }
@@ -2930,6 +2934,8 @@ void MainWindow::OnEmulationStopped() {
     } else if (!boot_in_progress) {
         game_list->SetScanEnabled(true);
         game_list->PopulateAsync(UISettings::values.game_dirs);
+        if (couch_enabled)
+            ShowCouchMode();
     }
 }
 
@@ -4415,36 +4421,7 @@ void MainWindow::OnConfigure() {
         // Cancel
         configure_dialog.ApplyConfiguration();
     } else if (UISettings::values.reset_to_defaults) {
-        LOG_INFO(Frontend, "Resetting all settings to defaults");
-        if (!Common::FS::RemoveFile(config->GetConfigFilePath())) {
-            LOG_WARNING(Frontend, "Failed to remove configuration file");
-        }
-        if (!Common::FS::RemoveDirContentsRecursively(
-                Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "custom")) {
-            LOG_WARNING(Frontend, "Failed to remove custom configuration files");
-        }
-        if (!Common::FS::RemoveDirRecursively(
-                Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "game_list")) {
-            LOG_WARNING(Frontend, "Failed to remove game metadata cache files");
-        }
-
-        // Explicitly save the game directories, since reinitializing config does not explicitly do
-        // so.
-        QVector<UISettings::GameDir> old_game_dirs = std::move(UISettings::values.game_dirs);
-        QVector<u64> old_favorited_ids = std::move(UISettings::values.favorited_ids);
-
-        Settings::values.disabled_addons.clear();
-
-        config = std::make_unique<QtConfig>();
-        UISettings::values.reset_to_defaults = false;
-
-        UISettings::values.game_dirs = std::move(old_game_dirs);
-        UISettings::values.favorited_ids = std::move(old_favorited_ids);
-
-        InitializeRecentFileMenuActions();
-
-        SetDefaultUIGeometry();
-        RestoreUIState();
+        ResetConfigurationDefaults();
     }
     InitializeHotkeys();
 
@@ -6587,6 +6564,10 @@ bool MainWindow::ConfirmClose() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    if (couch_mode && !couch_close_approved && !couch_mode->RequestClose()) {
+        event->ignore();
+        return;
+    }
     if (!close_pending && !ConfirmClose()) {
         event->ignore();
         return;
@@ -6610,10 +6591,14 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
     LOG_INFO(Frontend, "Closing frontend after emulation cleanup");
 
+    RestoreCouchFullscreen();
     UpdateUISettings();
     game_list->SaveInterfaceLayout();
     UISettings::SaveWindowState();
     hotkey_registry.SaveHotkeys();
+
+    if (couch_mode)
+        couch_mode->PrepareShutdown();
 
     // Unload controllers early
     controller_dialog->UnloadController();
@@ -6972,3 +6957,36 @@ void VolumeButton::ResetMultiplier() {
 #define VMA_IMPLEMENTATION 1
 #include "video_core/vulkan_common/vma.h"
 #endif
+
+void MainWindow::ResetConfigurationDefaults() {
+    LOG_INFO(Frontend, "Resetting all settings to defaults");
+    if (!Common::FS::RemoveFile(config->GetConfigFilePath())) {
+        LOG_WARNING(Frontend, "Failed to remove configuration file");
+    }
+    if (!Common::FS::RemoveDirContentsRecursively(
+            Common::FS::GetEdenPath(Common::FS::EdenPath::ConfigDir) / "custom")) {
+        LOG_WARNING(Frontend, "Failed to remove custom configuration files");
+    }
+    if (!Common::FS::RemoveDirRecursively(Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) /
+                                          "game_list")) {
+        LOG_WARNING(Frontend, "Failed to remove game metadata cache files");
+    }
+
+    // Explicitly save the game directories, since reinitializing config does not explicitly do
+    // so.
+    QVector<UISettings::GameDir> old_game_dirs = std::move(UISettings::values.game_dirs);
+    QVector<u64> old_favorited_ids = std::move(UISettings::values.favorited_ids);
+
+    Settings::values.disabled_addons.clear();
+
+    config = std::make_unique<QtConfig>();
+    UISettings::values.reset_to_defaults = false;
+
+    UISettings::values.game_dirs = std::move(old_game_dirs);
+    UISettings::values.favorited_ids = std::move(old_favorited_ids);
+
+    InitializeRecentFileMenuActions();
+
+    SetDefaultUIGeometry();
+    RestoreUIState();
+}

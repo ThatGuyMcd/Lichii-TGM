@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    core/isolated_keys.cpp
     video_core/draw_template.cpp
     video_core/oot_perf_texture_landing.cpp
     video_core/oot_perf_stream_wrap.cpp
@@ -32,6 +33,8 @@ add_executable(tests
     core/nx2_fence_action.cpp
     core/nx2_present_queue.cpp
     core/nx2_syncpoint_allocator.cpp
+    core/nx2_syncpoint_poll.cpp
+    core/nsp_loader.cpp
     common/nvidia_shader_cache.cpp
     common/memory_detect.cpp
     video_core/ngx_runtime_path.cpp
@@ -125,6 +128,7 @@ add_executable(tests
     video_core/ampere_logged_numeric.cpp
     video_core/ampere_logged_textures.cpp
     video_core/native_texture_header_index.cpp
+    video_core/texture_cache_address_space.cpp
     video_core/texture_alias_ticks.cpp
     video_core/sampled_views.cpp
     video_core/texture_handles.cpp
@@ -193,6 +197,7 @@ add_executable(tests
     video_core/ampere_tennis_i2f.cpp
     video_core/ampere_tennis_tessellation.cpp
     video_core/pipeline_cache_files.cpp
+    video_core/vp9_range_encoder.cpp
     video_core/shader_cache_v2.cpp
     video_core/evicted_pointer_slots.cpp
     video_core/shader_cache_v2_programs.cpp

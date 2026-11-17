@@ -22,6 +22,7 @@
 #include "frontend_common/config.h"
 #include "qt_common/config/qt_config.h"
 #include "qt_common/config/shared_translation.h"
+#include "qt_common/couch/widget_model.h"
 #include "qt_common/util/vk.h"
 #include "yuzu/configuration/configuration_shared.h"
 
@@ -70,6 +71,9 @@ public:
 
     /// Save all button configurations to settings file
     void ApplyConfiguration();
+    bool CouchApply();
+    std::vector<QtCommon::Couch::SettingsPage> CouchPages() const;
+    void CouchSelectPage(const QString& id);
 
     void LoadFromFile(FileSys::VirtualFile file_);
 

@@ -5,8 +5,10 @@
 #include <QKeyEvent>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QStandardItemModel>
 #include <QTimer>
+#include <QVBoxLayout>
 #include "common/param_package.h"
 #include "common/settings.h"
 #include "core/frontend/framebuffer_layout.h"
@@ -73,6 +75,16 @@ ConfigureTouchFromButton::ConfigureTouchFromButton(
       touch_maps{touch_maps_}, input_subsystem{input_subsystem_}, selected_index{default_index},
       timeout_timer(std::make_unique<QTimer>()), poll_timer(std::make_unique<QTimer>()) {
     ui->setupUi(this);
+    ui->binding_list->setProperty("couchBindingColumn", 0);
+    bool couch = false;
+    for (auto* ancestor = parentWidget(); ancestor; ancestor = ancestor->parentWidget())
+        couch |= ancestor->property("couchSource").toBool();
+    if (couch) {
+        auto* add = new QPushButton(tr("Add touch point (edit X/Y in the list)"), this);
+        add->setProperty("couchBinding", true);
+        qobject_cast<QVBoxLayout*>(layout())->insertWidget(2, add);
+        connect(add, &QPushButton::clicked, this, [this] { NewBinding(QPoint(640, 360)); });
+    }
     binding_list_model = new QStandardItemModel(0, 3, this);
     binding_list_model->setHorizontalHeaderLabels(
         {tr("Button"), tr("X", "X axis"), tr("Y", "Y axis")});
@@ -248,8 +260,13 @@ void ConfigureTouchFromButton::GetButtonInput(const int row_index, const bool is
 
     input_subsystem->BeginMapping(InputCommon::Polling::InputType::Button);
 
-    grabKeyboard();
-    grabMouse();
+    bool couch = false;
+    for (auto* ancestor = parentWidget(); ancestor; ancestor = ancestor->parentWidget())
+        couch |= ancestor->property("couchSource").toBool();
+    if (!couch) {
+        grabKeyboard();
+        grabMouse();
+    }
     qApp->setOverrideCursor(QCursor(Qt::CursorShape::ArrowCursor));
     timeout_timer->start(5000); // Cancel after 5 seconds
     poll_timer->start(200);     // Check for new inputs every 200ms
@@ -613,4 +630,17 @@ void TouchScreenPreview::PositionDot(QLabel* const dot, const int device_x,
         contentsMargins().top() - static_cast<float>(dot->height()) / 2 + 0.5f);
 
     dot->move(x_coord, y_coord);
+}
+void ConfigureTouchFromButton::CouchMappingKey(int key) {
+    if (!input_setter)
+        return;
+    if (key == Qt::Key_Escape) {
+        SetPollingResult({}, true);
+        return;
+    }
+    QKeyEvent event(QEvent::KeyPress, key, Qt::NoModifier);
+    keyPressEvent(&event);
+}
+bool ConfigureTouchFromButton::CouchIsMapping() const {
+    return input_setter.has_value() && poll_timer->isActive();
 }

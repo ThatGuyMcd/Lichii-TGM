@@ -47,6 +47,8 @@
 #include "frontend_common/update_checker.h"
 #endif
 
+class CouchMode;
+struct CouchSettingsSource;
 class QtConfig;
 class EmuThread;
 class GameList;
@@ -554,6 +556,21 @@ private:
 
     MultiplayerState* multiplayer_state = nullptr;
     std::set<u64> asked_recommended_settings;
+
+    std::unique_ptr<CouchMode> couch_mode;
+    bool couch_enabled{};
+    std::optional<bool> couch_previous_fullscreen;
+    void RestoreCouchFullscreen();
+    bool couch_close_approved{};
+    bool couch_invitation_shown{};
+    void InitializeCouchMode();
+    void MaybeOfferCouchMode();
+    void ShowCouchMode();
+    void LeaveCouchMode();
+    void ApplyCouchConfiguration();
+    void ResetConfigurationDefaults();
+    void UpdateCouchProfile();
+    CouchSettingsSource CreateCouchSettings(const QString& scope, const QString& path);
 
     GRenderWindow* render_window = nullptr;
     GameList* game_list = nullptr;

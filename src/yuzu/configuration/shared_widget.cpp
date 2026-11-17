@@ -761,6 +761,25 @@ bool Widget::ShowsGlobal() const {
     return restore_button == nullptr || !restore_button->isEnabled();
 }
 
+void Widget::CouchTouch() {
+    if (managed_component && stage_touch)
+        stage_touch();
+}
+
+bool Widget::CouchUsingGlobal() const {
+    return !Settings::IsConfiguringGlobal() && ShowsGlobal();
+}
+
+void Widget::CouchUseGlobal() {
+    StageGlobal();
+}
+
+void Widget::CouchReset(QObject* component) {
+    auto* target =
+        component == checkbox && checkbox_setting != nullptr ? checkbox_setting : &setting;
+    Stage(*target, target->DefaultToString());
+}
+
 Widget::~Widget() = default;
 
 Widget::Widget(Settings::BasicSetting* setting_, const TranslationMap& translations_,
@@ -850,6 +869,19 @@ Widget* Builder::BuildWidget(Settings::BasicSetting* setting,
     auto* const widget =
         new Widget(setting, *translations, *combobox_translations, parent, runtime_lock,
                    apply_funcs, request, managed, multiplier, other_setting, suffix);
+    widget->setProperty("couchKey", QString::fromStdString(setting->GetLabel()));
+    widget->setProperty("couchAllowInherit",
+                        !Settings::IsConfiguringGlobal() && setting->Switchable());
+    const auto text = translations->find(setting->Id());
+    if (text != translations->end())
+        widget->setProperty("couchLabel", text->second.first);
+    if (widget->checkbox && widget->CheckboxSetting()) {
+        widget->checkbox->setProperty(
+            "couchKey", QString::fromStdString(widget->CheckboxSetting()->GetLabel()));
+        const auto paired = translations->find(widget->CheckboxSetting()->Id());
+        if (paired != translations->end())
+            widget->checkbox->setAccessibleName(paired->second.first);
+    }
     // Only managed widgets: the tab handles the others' values itself.
     if (widget->Valid() && widget->Managed()) {
         widgets[setting] = widget;

@@ -5,6 +5,22 @@
 
 #include "video_core/textures/texture.h"
 
+TEST_CASE("Only Switch Sports Resort interprets native header byte offsets",
+          "[video_core][texture_header_index]") {
+    using Tegra::Texture::TextureHeaderIndex;
+    using Tegra::Texture::UsesHeaderByteOffsetHandles;
+    constexpr u64 sports = 0x04008E001F098000ULL;
+    constexpr u64 oot = 0x0400486024DEC000ULL;
+    REQUIRE(UsesHeaderByteOffsetHandles(true, sports));
+    REQUIRE_FALSE(UsesHeaderByteOffsetHandles(false, sports));
+    REQUIRE_FALSE(UsesHeaderByteOffsetHandles(true, oot));
+    REQUIRE_FALSE(UsesHeaderByteOffsetHandles(true, 0x0400000000000849ULL));
+    REQUIRE_FALSE(UsesHeaderByteOffsetHandles(true, 0));
+    REQUIRE(TextureHeaderIndex(0x46000, 33066, UsesHeaderByteOffsetHandles(true, sports)) == 8960);
+    REQUIRE(TextureHeaderIndex(0xbe000, 33066, UsesHeaderByteOffsetHandles(true, oot)) == 0xbe000);
+    REQUIRE(TextureHeaderIndex(32, 33066, UsesHeaderByteOffsetHandles(true, oot)) == 32);
+}
+
 TEST_CASE("Legacy texture indices never decode as native header offsets",
           "[video_core][texture_header_index]") {
     using Tegra::Texture::TextureHeaderIndex;

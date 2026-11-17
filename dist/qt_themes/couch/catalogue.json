@@ -1,0 +1,3689 @@
+{
+  "version": 1,
+  "pages": [
+    {
+      "id": "general",
+      "label": "General",
+      "group": "Application"
+    },
+    {
+      "id": "appearance",
+      "label": "Appearance & library",
+      "group": "Application"
+    },
+    {
+      "id": "screenshots",
+      "label": "Screenshots",
+      "group": "Application"
+    },
+    {
+      "id": "hotkeys",
+      "label": "Hotkeys",
+      "group": "Application"
+    },
+    {
+      "id": "system",
+      "label": "System",
+      "group": "Emulation"
+    },
+    {
+      "id": "profiles",
+      "label": "User profiles",
+      "group": "Emulation"
+    },
+    {
+      "id": "filesystem",
+      "label": "Storage & paths",
+      "group": "Emulation"
+    },
+    {
+      "id": "applets",
+      "label": "Applets",
+      "group": "Emulation"
+    },
+    {
+      "id": "cpu",
+      "label": "CPU",
+      "group": "Emulation"
+    },
+    {
+      "id": "cpu-unsafe",
+      "label": "CPU · Unsafe",
+      "group": "Emulation"
+    },
+    {
+      "id": "cpu-debug",
+      "label": "CPU · Debug",
+      "group": "Diagnostics"
+    },
+    {
+      "id": "graphics",
+      "label": "Graphics",
+      "group": "Video"
+    },
+    {
+      "id": "graphics-advanced",
+      "label": "Advanced graphics",
+      "group": "Video"
+    },
+    {
+      "id": "graphics-extensions",
+      "label": "Graphics extensions",
+      "group": "Video"
+    },
+    {
+      "id": "graphics-hacks",
+      "label": "Graphics workarounds",
+      "group": "Video"
+    },
+    {
+      "id": "post-processing",
+      "label": "Post-processing",
+      "group": "Video"
+    },
+    {
+      "id": "effects",
+      "label": "Effect parameters",
+      "group": "Video"
+    },
+    {
+      "id": "dlss",
+      "label": "DLSS components",
+      "group": "Video"
+    },
+    {
+      "id": "fsr4",
+      "label": "FSR4 components",
+      "group": "Video"
+    },
+    {
+      "id": "audio",
+      "label": "Audio",
+      "group": "Devices"
+    },
+    {
+      "id": "microphone",
+      "label": "Microphone",
+      "group": "Devices"
+    },
+    {
+      "id": "controls",
+      "label": "Controller setup",
+      "group": "Devices"
+    },
+    {
+      "id": "bindings",
+      "label": "Button bindings",
+      "group": "Devices"
+    },
+    {
+      "id": "controls-advanced",
+      "label": "Advanced controls",
+      "group": "Devices"
+    },
+    {
+      "id": "input-profiles",
+      "label": "Input profiles",
+      "group": "Devices"
+    },
+    {
+      "id": "motion",
+      "label": "Motion controls",
+      "group": "Devices"
+    },
+    {
+      "id": "touch",
+      "label": "Touchscreen",
+      "group": "Devices"
+    },
+    {
+      "id": "touch-buttons",
+      "label": "Touch from buttons",
+      "group": "Devices"
+    },
+    {
+      "id": "mouse",
+      "label": "Mouse panning",
+      "group": "Devices"
+    },
+    {
+      "id": "ringcon",
+      "label": "Ring-Con",
+      "group": "Devices"
+    },
+    {
+      "id": "camera",
+      "label": "Camera",
+      "group": "Devices"
+    },
+    {
+      "id": "vibration",
+      "label": "Vibration",
+      "group": "Devices"
+    },
+    {
+      "id": "hd-rumble",
+      "label": "HD rumble",
+      "group": "Devices"
+    },
+    {
+      "id": "network",
+      "label": "Network",
+      "group": "Services"
+    },
+    {
+      "id": "multiplayer",
+      "label": "Multiplayer",
+      "group": "Services"
+    },
+    {
+      "id": "web",
+      "label": "Web services",
+      "group": "Services"
+    },
+    {
+      "id": "debug",
+      "label": "Debugging",
+      "group": "Diagnostics"
+    },
+    {
+      "id": "debug-controller",
+      "label": "Debug controller",
+      "group": "Diagnostics"
+    },
+    {
+      "id": "tas",
+      "label": "TAS",
+      "group": "Diagnostics"
+    },
+    {
+      "id": "game-general",
+      "label": "Game information",
+      "group": "Game"
+    },
+    {
+      "id": "addons",
+      "label": "Updates, DLC & mods",
+      "group": "Game"
+    },
+    {
+      "id": "couch",
+      "label": "Couch Mode",
+      "group": "Application"
+    }
+  ],
+  "controls": [
+    {
+      "lookup": "setting:cabinet_applet_mode",
+      "label": "Amiibo editor",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:controller_applet_mode",
+      "label": "Controller configuration",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:data_erase_applet_mode",
+      "label": "Data erase",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:error_applet_mode",
+      "label": "Error",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:net_connect_applet_mode",
+      "label": "Net connect",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:player_select_applet_mode",
+      "label": "Player select",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:swkbd_applet_mode",
+      "label": "Software keyboard",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:mii_edit_applet_mode",
+      "label": "Mii Edit",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:web_applet_mode",
+      "label": "Online web",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:shop_applet_mode",
+      "label": "Shop",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:photo_viewer_applet_mode",
+      "label": "Photo viewer",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:offline_web_applet_mode",
+      "label": "Offline web",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:login_share_applet_mode",
+      "label": "Login share",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:wifi_web_auth_applet_mode",
+      "label": "Wifi web auth",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:my_page_applet_mode",
+      "label": "My page",
+      "help": "",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:enable_overlay",
+      "label": "Enable Overlay Applet",
+      "help": "Enables Horizon's built-in overlay applet. Press and hold the home button for 1 second to show it.",
+      "page": "applets",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:output_engine",
+      "label": "Output Engine",
+      "help": "",
+      "page": "audio",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:output_device",
+      "label": "Output Device",
+      "help": "",
+      "page": "audio",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:input_device",
+      "label": "Input Device",
+      "help": "",
+      "page": "audio",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:sound_index",
+      "label": "Sound Output Mode",
+      "help": "",
+      "page": "audio",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:volume",
+      "label": "Volume",
+      "help": "",
+      "page": "audio",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:audio_muted",
+      "label": "Mute audio",
+      "help": "",
+      "page": "audio",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:microphone_volume",
+      "label": "Microphone volume",
+      "help": "",
+      "page": "microphone",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:use_multi_core",
+      "label": "Multicore CPU Emulation",
+      "help": "This option increases CPU emulation thread use from 1 to the maximum of 4. This is mainly a debug option and shouldn't be disabled.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:memory_layout_mode",
+      "label": "Memory Layout",
+      "help": "Increases the amount of emulated RAM. Doesn't affect performance/stability but may allow HD texture mods to load.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:use_speed_limit",
+      "label": "Use speed limit",
+      "help": "",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:speed_limit",
+      "label": "Limit Speed Percent",
+      "help": "Controls the game's maximum rendering speed, but it's up to each game if it runs faster or not. 200% for a 30 FPS game is 60 FPS, and for a 60 FPS game it will be 120 FPS. Disabling it means unlocking the framerate to the maximum your PC can reach.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:slow_speed_limit",
+      "label": "Slow Speed",
+      "help": "When the Slow Speed hotkey is pressed, the speed will be limited to this percentage.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:turbo_speed_limit",
+      "label": "Turbo Speed",
+      "help": "When the Turbo Speed hotkey is pressed, the speed will be limited to this percentage.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:sync_core_speed",
+      "label": "Synchronize Core Speed",
+      "help": "Synchronizes CPU core speed with the game's maximum rendering speed to boost FPS without affecting game speed (animations, physics, etc.). Can help reduce stuttering at lower framerates.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpu_backend",
+      "label": "Backend",
+      "help": "",
+      "page": "cpu",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpu_accuracy",
+      "label": "Accuracy",
+      "help": "Change the accuracy of the emulated CPU (for debugging only).",
+      "page": "cpu",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:fast_cpu_time",
+      "label": "CPU Clocks",
+      "help": "Raises the clock the emulated CPU reports, which removes some FPS limiters. Weaker CPUs may see reduced performance, and certain games may behave improperly.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:use_custom_cpu_ticks",
+      "label": "Use custom CPU ticks",
+      "help": "",
+      "page": "cpu",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpu_ticks",
+      "label": "Custom CPU Ticks",
+      "help": "Set a custom value of CPU ticks. Higher values can increase performance, but may cause deadlocks. A range of 77-21000 is recommended.",
+      "page": "cpu",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpuopt_page_tables",
+      "label": "Cpuopt page tables",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_block_linking",
+      "label": "Cpuopt block linking",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_return_stack_buffer",
+      "label": "Cpuopt return stack buffer",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_fast_dispatcher",
+      "label": "Cpuopt fast dispatcher",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_context_elimination",
+      "label": "Cpuopt context elimination",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_const_prop",
+      "label": "Cpuopt const prop",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_misc_ir",
+      "label": "Cpuopt misc IR",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_reduce_misalign_checks",
+      "label": "Cpuopt reduce misalign checks",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_fastmem",
+      "label": "Cpuopt fastmem",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_fastmem_exclusives",
+      "label": "Cpuopt fastmem exclusives",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_recompile_exclusives",
+      "label": "Cpuopt recompile exclusives",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_ignore_memory_aborts",
+      "label": "Cpuopt ignore memory aborts",
+      "help": "",
+      "page": "cpu-debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:cpuopt_unsafe_host_mmu",
+      "label": "Enable Host MMU Emulation (fastmem)",
+      "help": "This optimization speeds up memory accesses by the guest program. Enabling it causes guest memory reads/writes to be done directly into memory and make use of Host's MMU. Disabling this forces all memory accesses to use Software MMU Emulation.",
+      "page": "cpu-unsafe",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpuopt_unsafe_unfuse_fma",
+      "label": "Unfuse FMA (improve performance on CPUs without FMA)",
+      "help": "This option improves speed by reducing accuracy of fused-multiply-add instructions on CPUs without native FMA support.",
+      "page": "cpu-unsafe",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpuopt_unsafe_reduce_fp_error",
+      "label": "Faster FRSQRTE and FRECPE",
+      "help": "This option improves the speed of some approximate floating-point functions by using less accurate native approximations.",
+      "page": "cpu-unsafe",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpuopt_unsafe_ignore_standard_fpcr",
+      "label": "Faster ASIMD instructions (32 bits only)",
+      "help": "This option improves the speed of 32 bits ASIMD floating-point functions by running with incorrect rounding modes.",
+      "page": "cpu-unsafe",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpuopt_unsafe_inaccurate_nan",
+      "label": "Inaccurate NaN handling",
+      "help": "This option improves speed by removing NaN checking. Please note this also reduces accuracy of certain floating-point instructions.",
+      "page": "cpu-unsafe",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpuopt_unsafe_fastmem_check",
+      "label": "Disable address space checks",
+      "help": "This option improves speed by eliminating a safety check before every memory operation. Disabling it may allow arbitrary code execution.",
+      "page": "cpu-unsafe",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:cpuopt_unsafe_ignore_global_monitor",
+      "label": "Ignore global monitor",
+      "help": "This option improves speed by relying only on the semantics of cmpxchg to ensure safety of exclusive access instructions. Please note this may result in deadlocks and other race conditions.",
+      "page": "cpu-unsafe",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:hdr",
+      "label": "HDR",
+      "help": "The saved HDR On/Off choice is now part of HDR output.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:hdr_mode",
+      "label": "HDR output",
+      "help": "HDR output for games with an HDR mode. Requires Vulkan. Off (default): always SDR. Auto: HDR while Windows HDR (\"Use HDR\") is on for the monitor that shows the game, SDR otherwise and on hosts that cannot tell. On: HDR whenever the display driver offers an HDR format. The game is told the display is HDR only while Lichii really presents HDR. SDR games and menus are shown at the reference white. While HDR is active, anti-aliasing, post-processing and FSR/SGSR upscaling are off and the window is scaled bilinearly. Frame generation keeps working. Screenshots are tone mapped to SDR.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:hdr_swapchain",
+      "label": "HDR format",
+      "help": "HDR10: 10-bit PQ, what HDR displays take. scRGB: 16-bit float. Try it if HDR shows banding, which some NVIDIA drivers do with 10-bit in fullscreen.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:hdr_reference_white",
+      "label": "HDR Reference White",
+      "help": "Reference white in nits reported to the game, the brightness of its HUD and menus. Default: 200 nits. 0 uses Windows' SDR content brightness for the monitor, so the game matches the desktop; elsewhere the Switch 2 calibration, HDR Peak Luminance divided by 1.5, rounded up and clamped to 50-300 nits. SDR games and menus are shown at this brightness while HDR is active, and HDR screenshots map it to SDR white.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:hdr_peak_luminance",
+      "label": "HDR Peak Luminance",
+      "help": "Peak luminance in nits reported to the game, which tone maps to it. Default: 300 nits. 0 uses the monitor's peak from its EDID as Windows reports it; elsewhere 300 nits, the Switch 2 HDR calibration's starting value. Also the HDR10 metadata peak, and what an HDR image rolls off to on an SDR screen.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:backend",
+      "label": "API",
+      "help": "Changes the output graphics API. Vulkan is recommended.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:vulkan_device",
+      "label": "Device",
+      "help": "This setting selects the GPU to use (Vulkan only).",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:resolution_setup",
+      "label": "Resolution",
+      "help": "Forces to render at a different resolution. Higher resolutions require more VRAM and bandwidth. Options lower than 1X can cause artifacts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_vsync",
+      "label": "VSync Mode",
+      "help": "FIFO (VSync) does not drop frames or exhibit tearing but is limited by the screen refresh rate. FIFO Relaxed allows tearing as it recovers from a slow down. Mailbox can have lower latency than FIFO and does not tear but may drop frames. Immediate (no synchronization) presents whatever is available and can exhibit tearing.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:fps_limit",
+      "label": "FPS Limit",
+      "help": "Caps how often the game presents, so the game itself runs at this rate. 0 leaves the frame rate to the game and the display.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:scaling_filter",
+      "label": "Window Adapting Filter",
+      "help": "",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:game_dlss_network",
+      "label": "Use the game's built-in DLSS",
+      "help": "Runs a Switch 2 game's own DLSS (its upscaling network, translated for this GPU) instead of AMD FSR 3.1 in its place. AMD FSR 3.1 still draws while the network is checked, when it can't run on this GPU, with resolution scaling, and for the rest of the session if its output fails Lichii-tgm's checks. Takes effect when a game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:fsr_sharpening_slider",
+      "label": "RCAS Sharpness",
+      "help": "Strength of RCAS (AMD's contrast-adaptive sharpening) on the upscaler used in place of a game's DLSS (AMD FSR 3.1); 0% turns it off. Also sets the sharpening of the AMD FSR 1 and SGSR window adapting filters.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:nx2_frame_rate_limit",
+      "label": "Frame rate limit (Switch 2)",
+      "help": "Rate of the Switch 2 VSync event that games start their frames on (default 60 Hz). Above 60 Hz most games run too fast; use it with a game patch that follows real time, such as \"FPS Unlock (built-in)\" for Ocarina of Time. Takes effect when a game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:nvidia_dlss",
+      "label": "NVIDIA DLSS Super Resolution (experimental)",
+      "help": "Uses NVIDIA DLSS on GeForce RTX cards in place of a Switch 2 game's own DLSS, instead of AMD FSR 3.1. Requires NVIDIA's runtime files. Use the setup controls below to download or locate them. Windows uses Streamline; Linux uses native NGX. Fire Emblem: Fortune's Weave also needs EDEN_NX2_DLSS_REPLACEMENT=dlss. Without that override, its spatial workaround remains active. In The Legend of Zelda: Ocarina of Time, pick NVIDIA DLSS or DLAA under Ocarina of Time anti-aliasing. Takes effect when a game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:nvidia_dlss_preset",
+      "label": "NVIDIA DLSS model preset",
+      "help": "Game / NVIDIA default keeps the existing game model choice. M, E, F, J, K and L select an explicit supported model. Ocarina's explicit preset takes priority. L/M require DLSS 310.5 or newer and cost more on RTX 20/30 GPUs. NVIDIA app overrides may supersede the selection. Apply changes while playing.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:ocarina_fsr",
+      "label": "Use AMD FSR 3.1 upscaling in Ocarina of Time",
+      "help": "Replaces Ocarina of Time's native upscaler using scene depth and camera motion. Works on any supported Vulkan GPU. NVIDIA DLSS takes precedence when enabled and available. RCAS Sharpness controls sharpening. Takes effect when a game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:amd_fsr4",
+      "label": "Use AMD FSR 4 in place of FSR 3.1",
+      "help": "Uses AMD's ML-based FSR 4 where FSR replaces a game's upscaler (Ocarina of Time with the setting above). Radeon RX 6000 or newer, or a Ryzen AI processor, with a current AMD driver. Needs AMD's FidelityFX runtime, which Lichii-tgm downloads from AMD when you ask. The files are AMD's, under AMD's licence. Without them, or if FSR 4 can't run, FSR 3.1 is used. Takes effect when a game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:ocarina_dlss_mode",
+      "label": "NVIDIA DLSS mode in Ocarina of Time",
+      "help": "How much of the game's output resolution Ocarina of Time renders before DLSS upscales it. Quality: 67%. Balanced: 58%. Performance: 50%. Ultra Performance: 33%, cheapest for smaller cards. Needs NVIDIA DLSS on, docked mode, the Max Resolution add-on and 1x resolution scale. Takes effect when the game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:dlss_sharpening",
+      "label": "DLSS Sharpness",
+      "help": "Sharpens NVIDIA DLSS's upscaled output with AMD FidelityFX RCAS (DLSS has had no sharpening of its own since DLSS 3.1). Not applied in DLAA. 0% leaves it unsharpened.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:dlss_preset",
+      "label": "DLSS Preset",
+      "help": "NVIDIA DLSS's model. Auto uses the game's choice (preset K for Ocarina of Time). K: NVIDIA's default for Quality and DLAA. L: sharper, more stable, costlier. M: like L, closer to K in cost. Takes effect when a game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:nvidia_dlss_quality",
+      "label": "NVIDIA DLSS quality",
+      "help": "Automatic preserves the game's supported upscaling path. Native (DLAA) applies anti-aliasing at the game's render resolution. For Ocarina's legacy 1440p path, this keeps input and output at 1440p instead of upscaling to 4K. The explicit Ocarina anti-aliasing modes keep their selected 4K output. Requires NVIDIA DLSS to be enabled. Apply changes while playing; switching resolution may briefly pause rendering. Quality, Balanced, Performance and Ultra Performance select a supported DLSS mode for the current render/output sizes. Unsupported sizes use Automatic and log the fallback. In docked Ocarina with Max Resolution enabled, Balanced, Performance and Ultra Performance also lower the scene resolution at the next game start. An explicit Ocarina render scale takes priority; its anti-aliasing modes keep their own output.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:neural_rendering",
+      "label": "DLSS neural rendering",
+      "help": "Re-renders the scene after NVIDIA DLSS using the Standard, Natural or Cinematic style. Requires a supported NVIDIA GPU and an imported neural rendering model. Runs natively on Linux. Start the game with NVIDIA DLSS enabled, then apply style changes while playing. Off disables neural rendering. First activation may briefly pause rendering while the model loads.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:neural_rendering_strength",
+      "label": "Neural rendering strength",
+      "help": "Blend the neural result with ordinary NVIDIA DLSS/DLAA. 0% shows the original DLSS/DLAA image; 100% applies the full neural result. The default is 100%. Requires a neural style. Apply changes while playing. Lower strength keeps the neural model running; select Off to free its GPU resources.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:neural_rendering_tone",
+      "label": "Neural rendering tone",
+      "help": "Adjust the neural model's tonal treatment, including style-dependent lighting and colour changes. The default is 100%. Requires a neural style. Apply changes while playing; changing tone resets neural history.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:neural_rendering_structure",
+      "label": "Neural rendering structure",
+      "help": "Adjust how strongly the neural model changes scene detail and shapes. Lower values can help retain the original appearance. The default is 100%. Requires a neural style. Apply changes while playing; changing structure resets neural history.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:aspect_ratio",
+      "label": "Aspect Ratio",
+      "help": "Stretches the renderer to fit the specified aspect ratio. Most games only support 16:9, so modifications are required to get other ratios. Also controls the aspect ratio of captured screenshots. Ocarina of Time Remake includes aspect Add-Ons: choose the ratio before starting the game, use Docked mode, and disable fixed-size DLSS/FSR upscaling. Restart the game after changing its ratio.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:anti_aliasing",
+      "label": "Anti-Aliasing Method",
+      "help": "The anti-aliasing method to use. SMAA offers the best quality. FXAA can produce a more stable picture in lower resolutions. Off while HDR output is active.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:oot_anti_aliasing",
+      "label": "Ocarina of Time anti-aliasing",
+      "help": "The Legend of Zelda: Ocarina of Time only. Game: the game's own anti-aliasing network, which sharpens heavily. No sharpening: the image as the game renders it, without the network (faster; pairs well with a higher resolution). NVIDIA DLSS (4K Quality): NVIDIA DLSS in its place, upscaling the game's 2560x1440 to 3840x2160 with sub-pixel jitter and motion vectors. NVIDIA DLAA (4K): the 3D renders at 3840x2160 and DLSS only anti-aliases it. Sharper, but slower. Both DLSS modes need \"Use NVIDIA DLSS\" on and set the resolution scale to 1.5x for the game. Takes effect when the game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:oot_movie_upscale",
+      "label": "Ocarina of Time movies",
+      "help": "How title-screen and cutscene videos are scaled. Automatic uses the game's upscaler when this device supports its native matrix operations, and a bilinear copy otherwise. Bilinear uses a simple stretch. Game's own upscaler keeps the game's video processing when Tensor Programs permits it, and uses bilinear otherwise. On devices without native matrix support, Tensor Programs must be set to Native to permit the game's path; emulating that math can cost more.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:post_shader_enabled",
+      "label": "Enable post-processing",
+      "help": "Applies post-processing effects to the final image.",
+      "page": "post-processing",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen",
+      "label": "Enable Frame Generation",
+      "help": "Paused while HDR output is active.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_type",
+      "label": "Frame Generation Type",
+      "help": "Optical Flow Interpolation is built in and runs on any GPU. NVIDIA DLSS Frame Generation (Windows only) needs a GeForce RTX 40 series or newer GPU (3x and 4x need an RTX 50 series), Hardware-accelerated GPU scheduling on in Windows' graphics settings, \"Use NVIDIA DLSS\" on and NVIDIA's files from the NVIDIA DLSS panel. It takes the game's depth and motion vectors from the DLSS evaluation, so it runs in The Legend of Zelda: Ocarina of Time only, docked, with DLSS as its upscaler. Other games, and scRGB HDR output, use Optical Flow Interpolation instead. VSync is off while it runs. Choosing it takes effect when a game starts.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_multiplier",
+      "label": "Frame Generation Multiplier",
+      "help": "",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_target_rate",
+      "label": "Target Frame Rate",
+      "help": "",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_flow_scale_auto",
+      "label": "Auto Flow Scale",
+      "help": "",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_flow_scale",
+      "label": "Flow Scale",
+      "help": "",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_queue_target",
+      "label": "Queue Target",
+      "help": "",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_motion",
+      "label": "Frame Generation Motion",
+      "help": "Where the built-in frame generation gets its motion from. Auto uses NVIDIA's optical flow hardware (RTX 20 series and newer) when available, and the flow shader otherwise.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_flow_quality",
+      "label": "Optical Flow Quality",
+      "help": "Quality of the optical flow hardware's motion estimate. Higher quality costs more GPU time.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_dump_flow",
+      "label": "Dump Optical Flow",
+      "help": "",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_gen_performance_mode",
+      "label": "LSFG Performance Mode",
+      "help": "Uses the lighter LSFG 3.1 network. Leave disabled for standard quality.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:fullscreen_mode",
+      "label": "Fullscreen Mode",
+      "help": "The method used to render the window in fullscreen. Borderless offers the best compatibility with the on-screen keyboard that some games request for input. Exclusive fullscreen may offer better performance and better Freesync/Gsync support.",
+      "page": "graphics",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:gpu_accuracy",
+      "label": "GPU Mode",
+      "help": "Controls the GPU emulation mode. Most games render fine with Fast, but Accurate is still required for some. Particles tend to only render correctly with Accurate mode.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:dma_accuracy",
+      "label": "DMA Accuracy",
+      "help": "Controls the DMA read mode. Unsafe is faster, while Safe is more stable and can fix issues in some games. Default follows the GPU Accuracy setting.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:gpu_fence_behavior",
+      "label": "GPU Fence Behavior",
+      "help": "Controls the GPU fence synchronization behavior. Immediate is the fastest option, but can introduce some issues. Balanced offers better compatibility and may fix issues in some games. Accurate further improves compatibility at the cost of some performance. Default follows the GPU Mode setting.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:native_compute_write_mark",
+      "label": "Native compute write mark",
+      "help": "How much of a Switch 2 compute shader's storage buffer is treated as written by the GPU after each dispatch. Auto marks what the shader's stores can reach and falls back to Full when that cannot be proven. Full marks the whole binding (up to 8 MiB), the original behaviour: it can delay the game's own writes to nearby memory (flickering effects) and copy far more data back from the GPU.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:vram_usage_mode",
+      "label": "VRAM Usage Mode",
+      "help": "Selects whether the emulator should prefer to conserve memory or make maximum usage of available video memory for performance. Aggressive mode may impact performance of other applications such as recording software.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:nvdec_emulation",
+      "label": "NVDEC emulation",
+      "help": "Specifies how videos should be decoded. It can either use the CPU or the GPU for decoding, or perform no decoding at all (black screen on videos). In most cases, GPU decoding provides the best performance.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:max_anisotropy",
+      "label": "Anisotropic Filtering",
+      "help": "Controls the quality of texture rendering at oblique angles. Safe to set at 16x on most GPUs.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:accelerate_astc",
+      "label": "ASTC Decoding Method",
+      "help": "This option controls how ASTC textures should be decoded. CPU: Use the CPU for decoding. GPU: Use the GPU's compute shaders to decode ASTC textures (recommended). CPU Asynchronously: Use the CPU to decode ASTC textures on demand. EliminatesASTC decoding stuttering but may present artifacts.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:frame_pacing_mode",
+      "label": "Frame Pacing Mode (Vulkan only)",
+      "help": "Controls how the emulator manages frame pacing to reduce stuttering and make the frame rate smoother and more consistent.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:astc_recompression",
+      "label": "ASTC Recompression Method",
+      "help": "Most GPUs lack support for ASTC textures and must decompress to anintermediate format: RGBA8. BC1/BC3: The intermediate format will be recompressed to BC1 or BC3 format, saving VRAM but degrading image quality.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:sync_memory_operations",
+      "label": "Sync Memory Operations",
+      "help": "Ensures data consistency between compute and memory operations. This option fixes issues in games, but may degrade performance. Unreal Engine 4 games often see the most significant changes thereof.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:force_max_clock",
+      "label": "Force maximum clocks (Vulkan only)",
+      "help": "Runs work in the background while waiting for graphics commands to keep the GPU from lowering its clock speed.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_disk_shader_cache",
+      "label": "Use persistent pipeline cache",
+      "help": "Allows saving shaders to storage for faster loading on following game boots. Disabling it is only intended for debugging.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_vulkan_driver_pipeline_cache",
+      "label": "Use Vulkan pipeline cache",
+      "help": "Enables GPU vendor-specific pipeline cache. This option can improve shader loading time significantly in cases where the Vulkan driver does not store pipeline cache files internally.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:native_async_draws",
+      "label": "Switch 2 draws with unbuilt pipelines",
+      "help": "Only applies when asynchronous shader building is on. Decides what a Switch 2 draw does when its graphics pipeline is still building. Wait stalls the GPU until the pipeline is ready (no missing effects, but long stalls on new content). Skip drops the draw, which can leave an effect missing for a few frames. Bounded waits up to the time below per frame, then skips. The EDEN_NX2_ASYNC_DISCARD=1 environment variable overrides this: draws with a depth target skip, and draws without one wait unless EDEN_NX2_ASYNC_DISCARD_MIN_PENDING builds (32 by default) are pending.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:tensor_programs",
+      "label": "Switch 2 tensor programs",
+      "help": "Switch 2 games run neural networks (Ocarina of Time's upscaler and movie enhancement) on tensor cores. Native emulates them in software or on Vulkan cooperative matrices; Stand-in skips the network and draws a plain upscale of its input. Auto emulates them only where the GPU has cooperative matrices (and always for Donkey Kong Bananza), which makes them far faster on Macs and on GPUs without that extension. Takes effect on the next game boot.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:native_pipeline_wait_ms",
+      "label": "Pipeline wait per frame (ms)",
+      "help": "Used by the Bounded mode: the most time per frame that Switch 2 draws may wait in total for pipelines that are still building. Once spent, the remaining unbuilt draws of that frame are skipped.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_graphics_pipeline_library",
+      "label": "Shader libraries (faster first-time shader builds)",
+      "help": "Builds each shader stage once and links them into pipelines, so new shaders cause shorter stutters. Also lets Precache shaders before game start build the graphics shaders found in the game files. Takes effect after restarting the game.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:shader_calls_not_inlined",
+      "label": "Faster shader compiles (shared functions as calls)",
+      "help": "Builds large functions that a shader uses in several places once, as calls, instead of copying them into every place. Driver compiles of such shaders get several times faster (compute precache about 3x); the game may run slightly slower. Applies to shaders built after the change.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_mesh_shader_warmup",
+      "label": "Prewarm predicted mesh shaders (experimental)",
+      "help": "Prepares predicted mesh shaders to reduce first-visit stutters. Benefits vary by game and GPU; it can add startup time. Uses the 'Precache shaders before game start' timing setting and requires prepared shader data. Uses mesh shader libraries when shader libraries are enabled and supported. Does not skip draws or effects. Takes effect after restarting the game. Turning it off stops future mesh prewarming and mesh shader libraries; existing caches are kept.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:shader_warm_threads",
+      "label": "Shader precache threads",
+      "help": "CPU threads the shader precache uses on the loading screen. 0 uses every CPU thread. Takes effect at the next game start.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:precache_shaders",
+      "label": "Precache shaders before game start",
+      "help": "Builds shaders on the loading screen, on every CPU thread, so they don't stutter the first time the game uses them: the compute shaders found in the game files (and their graphics shaders with Shader libraries on), and the shaders saved by earlier play sessions that the normal shader loading leaves for later. The first launch reads the game files and takes a few minutes; later launches only build what is new, until the GPU driver changes. The loading screen has a Skip button. Ask asks at launch while the game has never been precached.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:build_all_cached_shaders",
+      "label": "Build all cached shaders before game start",
+      "help": "Builds every shader saved by earlier play sessions on the loading screen and keeps them built, so places you visited long ago don't stutter. Without it, only the shaders of recent sessions are built there and the rest in the background or when the game first needs them. Loading takes longer and uses more memory, about 0.3 MB per shader, up to a quarter of the RAM. Takes effect when a game starts.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:enable_compute_pipelines",
+      "label": "Enable Compute Pipelines (Intel Vulkan Only)",
+      "help": "Required by some games. This setting only exists for Intel proprietary drivers and may crash if enabled. Compute pipelines are always enabled on all other drivers.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_video_framerate",
+      "label": "Sync to framerate of video playback",
+      "help": "Run the game at normal speed during video playback, even when the framerate is unlocked.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:mkw_30fps",
+      "label": "Mario Kart World: 30 FPS mode",
+      "help": "Forces the game to use its native 30 FPS mode at normal game speed. Takes effect after restarting the game.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:mkw_dynamic_fps",
+      "label": "Mario Kart World: dynamic FPS (experimental)",
+      "help": "Lets the game adjust between 30 and 60 FPS using whole-frame timing to maintain normal game speed. Takes effect after restarting the game and takes precedence over the 30 FPS mode.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_reactive_flushing",
+      "label": "Enable Reactive Flushing",
+      "help": "Uses reactive flushing instead of predictive flushing, allowing more accurate memory syncing.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:barrier_feedback_loops",
+      "label": "Barrier feedback loops",
+      "help": "Improves rendering of transparency effects in specific games.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:nx2_auto_resolution",
+      "label": "Automatic resolution (Switch 2 games, docked)",
+      "help": "While the game runs well below its frame rate, it renders at its handheld resolution (Ocarina of Time: 1080p instead of 1440p), and goes back to the full resolution once it keeps up. Controllers and the output stay in docked mode.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:enable_buffer_history",
+      "label": "Enable buffer history",
+      "help": "Enables access to previous buffer states. This option may improve rendering quality and performance consistency in some games.",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_optimized_vertex_buffers",
+      "label": "Use optimized vertex buffers",
+      "help": "",
+      "page": "graphics-advanced",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:fast_gpu_time",
+      "label": "GPU Clocks",
+      "help": "Makes the game believe GPU work finishes faster than it does, so it stops lowering resolution and render distance to fit the Switch's clocks.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:skip_cpu_inner_invalidation",
+      "label": "Skip CPU Inner Invalidation",
+      "help": "Skips certain cache invalidations during memory updates, reducing CPU usage and improving latency. This may cause soft-crashes.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:async_presentation",
+      "label": "Enable asynchronous presentation (Vulkan only)",
+      "help": "Slightly improves performance by moving presentation to a separate CPU thread.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:fix_bloom_effects",
+      "label": "Fix bloom effects",
+      "help": "Removes bloom in Burnout.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:emulate_bgr565",
+      "label": "Emulate bgr565",
+      "help": "",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:use_asynchronous_shaders",
+      "label": "Enable asynchronous shader compilation",
+      "help": "May reduce shader stutter.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:gpu_unswizzle_texture_size",
+      "label": "GPU Unswizzle Max Texture Size",
+      "help": "Sets the maximum size (MiB) for GPU-based texture unswizzling. While the GPU is faster for medium and large textures, the CPU may be more efficient for very small ones. Adjust this to find the balance between GPU acceleration and CPU overhead.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:gpu_unswizzle_stream_size",
+      "label": "GPU Unswizzle Stream Size",
+      "help": "Sets the maximum amount of texture data (in MiB) processed per frame. Higher values can reduce stutter during texture loading but may impact frame consistency.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:gpu_unswizzle_chunk_size",
+      "label": "GPU Unswizzle Chunk Size",
+      "help": "Determines the number of depth slices processed in a single dispatch. Increasing this can improve throughput on high-end GPUs but may cause TDR or driver timeouts on weaker hardware.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:gpu_unswizzle_enabled",
+      "label": "GPU Unswizzle",
+      "help": "Accelerates BCn 3D texture decoding using GPU compute. Disable if experiencing crashes or graphical glitches.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:pin_gpu_threads",
+      "label": "Pin GPU threads to their own cores",
+      "help": "Pins the emulator's GPU threads to dedicated physical CPU cores and keeps the emulated CPU cores off them. Can hurt performance on CPUs with few cores. Skipped on CPUs with fewer than 6 physical performance cores. Windows and Linux only. Takes effect when a game starts.",
+      "page": "graphics-hacks",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:dyna_state",
+      "label": "Extended Dynamic State",
+      "help": "Controls the number of features that can be used in Extended Dynamic State. Higher states allow for more features and can increase performance, but may cause additional graphical issues.",
+      "page": "graphics-extensions",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:sample_shading_fraction",
+      "label": "Sample Shading",
+      "help": "Allows the fragment shader to execute per sample in a multi-sampled fragment instead of once per fragment. Improves graphics quality at the cost of performance. Higher values improve quality but degrade performance.",
+      "page": "graphics-extensions",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:vertex_input_dynamic_state",
+      "label": "Vertex Input Dynamic State",
+      "help": "Enables vertex input dynamic state feature for better quality and performance.",
+      "page": "graphics-extensions",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:mesh_shaders",
+      "label": "Mesh Shaders",
+      "help": "How Switch 2 games' mesh shader geometry is drawn. Native uses the GPU's mesh shaders. Compute Fallback emulates them with compute shaders: it can be slower in scenes with a lot of foliage, and it can't draw every kind of mesh program. Automatic uses the compute fallback on AMD GPUs, where native mesh shaders can hang the GPU, and native mesh shaders everywhere else.",
+      "page": "graphics-extensions",
+      "group": "Video"
+    },
+    {
+      "lookup": "setting:debug",
+      "label": "Debug",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:shader_feedback",
+      "label": "Shader feedback",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:nsight_aftermath",
+      "label": "Nsight aftermath",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:disable_shader_loop_safety_checks",
+      "label": "Disable shader loop safety checks",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:renderdoc_hotkey",
+      "label": "RenderDoc hotkey",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:patch_old_qcom_drivers",
+      "label": "Patch old qcom drivers",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:disable_buffer_reorder",
+      "label": "Disable buffer reorder",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:language_index",
+      "label": "Language",
+      "help": "This option can be overridden when region setting is auto-select",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:region_index",
+      "label": "Region",
+      "help": "The region of the console.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:time_zone_index",
+      "label": "Time Zone",
+      "help": "The time zone of the console.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:serial_battery",
+      "label": "Serial battery",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:serial_unit",
+      "label": "Serial unit",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:custom_rtc_enabled",
+      "label": "Custom RTC enabled",
+      "help": "",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:custom_rtc",
+      "label": "Custom RTC Date",
+      "help": "This option allows to change the clock of the console. Can be used to manipulate time in games.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:rng_seed_enabled",
+      "label": "RNG seed enabled",
+      "help": "",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:rng_seed",
+      "label": "RNG Seed",
+      "help": "Controls the seed of the random number generator. Mainly used for speedrunning.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:device_name",
+      "label": "Device Name",
+      "help": "The name of the console.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:use_docked_mode",
+      "label": "Console Mode",
+      "help": "Selects if the console is in Docked or Handheld mode. Games will change their resolution, details and supported controllers and depending on this setting. Setting to Handheld can help improve performance for low end systems.",
+      "page": "system",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:disable_wgi_xinput",
+      "label": "Disable WGI XInput",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:enable_raw_input",
+      "label": "Enable raw input",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:controller_navigation",
+      "label": "Controller navigation",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:enable_joycon_driver",
+      "label": "Enable Joy-Con driver",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:enable_procon_driver",
+      "label": "Enable Pro Controller driver",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:vibration_enabled",
+      "label": "Vibration enabled",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:enable_accurate_vibrations",
+      "label": "Enable accurate vibrations",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_enabled",
+      "label": "HD rumble enabled",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_gain",
+      "label": "HD rumble gain",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_low_boost",
+      "label": "HD rumble low boost",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_usb_interval_ms",
+      "label": "Packet interval",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_envelope_5ms",
+      "label": "5 ms envelope (three samples per packet)",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_frequency_in_packet",
+      "label": "Frequency changes inside a packet",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_crisp_notes",
+      "label": "Crisp notes (stronger attack, softer sustain)",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_bluetooth_level",
+      "label": "Level",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_bt_after_input",
+      "label": "Send right after an input report",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_bt_fast",
+      "label": "5 ms envelope while the link is idle",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hd_rumble_bt_crisp_notes",
+      "label": "Crisp notes",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:dualsense_haptics_enabled",
+      "label": "Use the haptic voice coils",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:dualsense_haptics_volume",
+      "label": "DualSense haptics volume",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:dualsense_crisp_notes",
+      "label": "Crisp notes",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:xbox_rumble_enabled",
+      "label": "Use RenHDrum's Xbox rumble",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:xbox_motor_strength",
+      "label": "Xbox motor strength",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:xbox_rumble_mode",
+      "label": "Mode",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:xbox_detail_mix",
+      "label": "Xbox detail mix",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:xbox_hit_accents",
+      "label": "Xbox hit accents",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:xbox_trigger_mix",
+      "label": "Xbox trigger mix",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:trigger_rumble_strength",
+      "label": "Trigger rumble strength",
+      "help": "",
+      "page": "hd-rumble",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:motion_enabled",
+      "label": "Motion enabled",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:udp_input_servers",
+      "label": "UDP input servers",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:enable_udp_controller",
+      "label": "Enable UDP controller",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:pause_tas_on_load",
+      "label": "Pause TAS on load",
+      "help": "",
+      "page": "tas",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:tas_enable",
+      "label": "TAS enable",
+      "help": "",
+      "page": "tas",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:tas_loop",
+      "label": "TAS loop",
+      "help": "",
+      "page": "tas",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:tas_show_recording_dialog",
+      "label": "TAS show recording dialog",
+      "help": "",
+      "page": "tas",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:mouse_panning_sensitivity",
+      "label": "Mouse panning sensitivity",
+      "help": "",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:mouse_enabled",
+      "label": "Mouse enabled",
+      "help": "",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:mouse_panning_x_sensitivity",
+      "label": "Mouse panning x sensitivity",
+      "help": "",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:mouse_panning_y_sensitivity",
+      "label": "Mouse panning y sensitivity",
+      "help": "",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:mouse_panning_deadzone_counterweight",
+      "label": "Mouse panning deadzone counterweight",
+      "help": "",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:mouse_panning_decay_strength",
+      "label": "Mouse panning decay strength",
+      "help": "",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:mouse_panning_min_decay",
+      "label": "Mouse panning min decay",
+      "help": "",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:emulate_analog_keyboard",
+      "label": "Emulate analog keyboard",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:keyboard_enabled",
+      "label": "Keyboard enabled",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:debug_pad_enabled",
+      "label": "Debug pad enabled",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:touch_device",
+      "label": "Touch device",
+      "help": "",
+      "page": "touch",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:touch_from_button_map",
+      "label": "Touch from button map",
+      "help": "",
+      "page": "touch",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:enable_ring_controller",
+      "label": "Enable ring controller",
+      "help": "",
+      "page": "ringcon",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:enable_ir_sensor",
+      "label": "Enable IR sensor",
+      "help": "",
+      "page": "camera",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:ir_sensor_device",
+      "label": "IR sensor device",
+      "help": "",
+      "page": "camera",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:random_amiibo_id",
+      "label": "Random amiibo id",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:use_virtual_sd",
+      "label": "Use virtual SD",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:gamecard_inserted",
+      "label": "Gamecard inserted",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:gamecard_current_game",
+      "label": "Gamecard current game",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:gamecard_path",
+      "label": "Gamecard path",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:ext_content_from_game_dirs",
+      "label": "Ext content from game dirs",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "setting:use_gdbstub",
+      "label": "Use GDB stub",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:gdbstub_port",
+      "label": "GDB stub port",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:program_args",
+      "label": "Homebrew Args",
+      "help": "Command-line arguments passed to homebrew at launch (e.g. -noglsl).",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:dump_exefs",
+      "label": "Dump exefs",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:dump_nso",
+      "label": "Dump nso",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:enable_fs_access_log",
+      "label": "Enable fs access log",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:quest_flag",
+      "label": "Quest flag",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:use_dev_keys",
+      "label": "Use dev keys",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:disable_macro_jit",
+      "label": "Disable macro jit",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:disable_macro_hle",
+      "label": "Disable macro hle",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:use_debug_asserts",
+      "label": "Use debug asserts",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:use_auto_stub",
+      "label": "Use auto stub",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:enable_all_controllers",
+      "label": "Enable all controllers",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:perform_vulkan_check",
+      "label": "Perform vulkan check",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:disable_web_applet",
+      "label": "Disable web applet",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:gpu_log_level",
+      "label": "GPU log level",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:gpu_log_vulkan_calls",
+      "label": "GPU log vulkan calls",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:gpu_log_shader_dumps",
+      "label": "GPU log shader dumps",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:gpu_log_memory_tracking",
+      "label": "GPU log memory tracking",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:gpu_log_driver_debug",
+      "label": "GPU log driver debug",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:gpu_log_ring_buffer_size",
+      "label": "GPU log ring buffer size",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:debug_knobs",
+      "label": "Debug knobs",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:log_filter",
+      "label": "Log filter",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:flush_line",
+      "label": "Flush line",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:censor_username",
+      "label": "Censor username",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:first_launch",
+      "label": "First launch",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:recommended_settings_backup",
+      "label": "Recommended settings backup",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "setting:network_interface",
+      "label": "Network interface",
+      "help": "",
+      "page": "network",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:airplane_mode",
+      "label": "Airplane mode",
+      "help": "",
+      "page": "network",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:web_api_url",
+      "label": "Web API url",
+      "help": "",
+      "page": "web",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:eden_username",
+      "label": "Eden username",
+      "help": "",
+      "page": "web",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:eden_token",
+      "label": "Eden token",
+      "help": "",
+      "page": "web",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:singleWindowMode",
+      "label": "Single window mode",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:fullscreen",
+      "label": "Fullscreen",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:showFilterBar",
+      "label": "Show filter bar",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:showStatusBar",
+      "label": "Show status bar",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:confirmStop",
+      "label": "Confirm before stopping emulation",
+      "help": "Overrides prompts asking to confirm stopping the emulation. Enabling it bypasses such prompts and directly exits the emulation.",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:show_low_ram_warning",
+      "label": "Show memory notice before loading Switch 2 games",
+      "help": "Show a dismissible notice when the host reports less memory than the Switch 2 baseline.",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:pauseWhenInBackground",
+      "label": "Pause when not in focus",
+      "help": "Pauses emulation when focusing on other windows.",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:muteWhenInBackground",
+      "label": "Mute audio when in background",
+      "help": "",
+      "page": "audio",
+      "group": "Devices"
+    },
+    {
+      "lookup": "setting:hideInactiveMouse",
+      "label": "Hide mouse on inactivity",
+      "help": "Hides the mouse after 2.5s of inactivity.",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:select_user_on_boot",
+      "label": "Prompt for user profile on boot",
+      "help": "Useful if multiple people use the same PC.",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:check_for_updates",
+      "label": "Check for updates",
+      "help": "Whether or not to check for updates upon startup.",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:enable_gamemode",
+      "label": "Enable Gamemode",
+      "help": "",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:gui_force_x11",
+      "label": "Force X11 as Graphics Backend",
+      "help": "",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:enable_discord_presence",
+      "label": "Enable discord presence",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:showConsole",
+      "label": "Show console",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:enable_screenshot_save_as",
+      "label": "Enable screenshot save as",
+      "help": "",
+      "page": "screenshots",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:screenshot_height",
+      "label": "Screenshot height",
+      "help": "0 selects automatic sizing. Enter a height to choose an exact screenshot resolution.",
+      "page": "screenshots",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:language",
+      "label": "Interface language",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:steamgriddb_api_key",
+      "label": "Steamgriddb API key",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:comfortable_ui",
+      "label": "Comfortable UI",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:settings_fullscreen",
+      "label": "Settings fullscreen",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:nickname",
+      "label": "Nickname",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:filter_games_owned",
+      "label": "Filter games owned",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:filter_games_hide_empty",
+      "label": "Filter games hide empty",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:filter_games_hide_full",
+      "label": "Filter games hide full",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:ip",
+      "label": "Ip",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:port",
+      "label": "Port",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:room_nickname",
+      "label": "Room nickname",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:room_name",
+      "label": "Room name",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:max_player",
+      "label": "Max player",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:room_port",
+      "label": "Room port",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:room_description",
+      "label": "Room description",
+      "help": "",
+      "page": "multiplayer",
+      "group": "Services"
+    },
+    {
+      "lookup": "setting:show_add_ons",
+      "label": "Show add ons",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:game_icon_size",
+      "label": "Game icon size",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:folder_icon_size",
+      "label": "Folder icon size",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:row_1_text_id",
+      "label": "Library row 1 text",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:row_2_text_id",
+      "label": "Library row 2 text",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:game_list_mode",
+      "label": "Game list mode",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:show_game_name",
+      "label": "Show game name",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:cache_game_list",
+      "label": "Cache game list",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:show_perf_overlay",
+      "label": "Show perf overlay",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:show_size",
+      "label": "Show size",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:show_types",
+      "label": "Show types",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:show_play_time",
+      "label": "Show play time",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "setting:show_fw_warning",
+      "label": "Show fw warning",
+      "help": "",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureCamera:ir_sensor_combo_box",
+      "label": "IR sensor combo box",
+      "help": "",
+      "page": "camera",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureCamera:preview_button",
+      "label": "Click to preview",
+      "help": "",
+      "page": "camera",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureCamera:restore_defaults_button",
+      "label": "Restore Defaults",
+      "help": "",
+      "page": "camera",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureDebug:log_filter_edit",
+      "label": "Log filter edit",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:extended_logging",
+      "label": "Enable Extended Logging**",
+      "help": "When checked, the max size of the log increases from 100 MB to 1 GB",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:open_log_button",
+      "label": "Open Log Location",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:homebrew_args_edit",
+      "label": "Homebrew args edit",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:dump_macros",
+      "label": "Dump Maxwell Macros",
+      "help": "When checked, it will dump all the macro programs of the GPU",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:dump_guest_shaders",
+      "label": "Dump Guest (Maxwell) Shaders",
+      "help": "When checked, it will dump original Maxwell guest shader bytecode (the input to the recompiler) as .ash files under DumpDir/shaders/. Useful for inspection with nvdisasm.",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:serial_battery_edit",
+      "label": "Serial battery edit",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:serial_board_edit",
+      "label": "Serial board edit",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:dump_audio_commands",
+      "label": "Dump Audio Commands To Console**",
+      "help": "Enable this to output the latest generated audio command list to the console. Only affects games using the audio renderer.",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebug:reporting_services",
+      "label": "Enable Verbose Reporting Services**",
+      "help": "",
+      "page": "debug",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebugController:clear_all_button",
+      "label": "Clear",
+      "help": "",
+      "page": "debug-controller",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureDebugController:restore_defaults_button",
+      "label": "Defaults",
+      "help": "",
+      "page": "debug-controller",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureFilesystem:nand_directory_button",
+      "label": "NAND",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:nand_directory_edit",
+      "label": "NAND",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:sdmc_directory_edit",
+      "label": "SD Card",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:sdmc_directory_button",
+      "label": "SD Card",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:save_directory_edit",
+      "label": "Save Data",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:save_directory_button",
+      "label": "Save Data",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:gamecard_path_edit",
+      "label": "Gamecard path edit",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:gamecard_path_button",
+      "label": "Gamecard path button",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:load_path_edit",
+      "label": "Mod Load Root",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:dump_path_edit",
+      "label": "Dump Root",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:dump_path_button",
+      "label": "Dump Root",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:load_path_button",
+      "label": "Mod Load Root",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureFilesystem:reset_game_list_cache",
+      "label": "Reset Metadata Cache",
+      "help": "",
+      "page": "filesystem",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureGeneral:external_content_list",
+      "label": "External content list",
+      "help": "",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureGeneral:add_external_dir_button",
+      "label": "Add Directory",
+      "help": "",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureGeneral:remove_external_dir_button",
+      "label": "Remove Selected",
+      "help": "",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureGeneral:button_reset_defaults",
+      "label": "Reset All Settings",
+      "help": "",
+      "page": "general",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureHotkeys:button_clear_all",
+      "label": "Clear All",
+      "help": "",
+      "page": "hotkeys",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureHotkeys:button_restore_defaults",
+      "label": "Restore Defaults",
+      "help": "",
+      "page": "hotkeys",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureInput:radioDocked",
+      "label": "Docked",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:radioUndocked",
+      "label": "Handheld",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:vibrationButton",
+      "label": "Configure",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:motionButton",
+      "label": "Configure",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:checkboxPlayer2Connected",
+      "label": "Player 2 connected",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:checkboxPlayer4Connected",
+      "label": "Player 4 connected",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:checkboxPlayer3Connected",
+      "label": "Player 3 connected",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:checkboxPlayer5Connected",
+      "label": "Player 5 connected",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:checkboxPlayer7Connected",
+      "label": "Player 7 connected",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:checkboxPlayer6Connected",
+      "label": "Player 6 connected",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:checkboxPlayer1Connected",
+      "label": "Player 1 connected",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:checkboxPlayer8Connected",
+      "label": "Player 8 connected",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:buttonRestoreDefaults",
+      "label": "Defaults",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInput:buttonClearAll",
+      "label": "Clear",
+      "help": "",
+      "page": "controls",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player1_left_body_button",
+      "label": "Player 1 · left body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player1_left_buttons_button",
+      "label": "Player 1 · left buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player1_right_body_button",
+      "label": "Player 1 · right body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player1_right_buttons_button",
+      "label": "Player 1 · right buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player2_left_body_button",
+      "label": "Player 2 · left body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player2_left_buttons_button",
+      "label": "Player 2 · left buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player2_right_body_button",
+      "label": "Player 2 · right body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player2_right_buttons_button",
+      "label": "Player 2 · right buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player3_left_body_button",
+      "label": "Player 3 · left body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player3_left_buttons_button",
+      "label": "Player 3 · left buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player3_right_body_button",
+      "label": "Player 3 · right body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player3_right_buttons_button",
+      "label": "Player 3 · right buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player4_left_body_button",
+      "label": "Player 4 · left body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player4_left_buttons_button",
+      "label": "Player 4 · left buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player4_right_body_button",
+      "label": "Player 4 · right body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player4_right_buttons_button",
+      "label": "Player 4 · right buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player5_left_body_button",
+      "label": "Player 5 · left body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player5_left_buttons_button",
+      "label": "Player 5 · left buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player5_right_body_button",
+      "label": "Player 5 · right body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player5_right_buttons_button",
+      "label": "Player 5 · right buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player6_left_body_button",
+      "label": "Player 6 · left body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player6_left_buttons_button",
+      "label": "Player 6 · left buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player6_right_body_button",
+      "label": "Player 6 · right body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player6_right_buttons_button",
+      "label": "Player 6 · right buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player7_left_body_button",
+      "label": "Player 7 · left body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player7_left_buttons_button",
+      "label": "Player 7 · left buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player7_right_body_button",
+      "label": "Player 7 · right body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player7_right_buttons_button",
+      "label": "Player 7 · right buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player8_left_body_button",
+      "label": "Player 8 · left body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player8_left_buttons_button",
+      "label": "Player 8 · left buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player8_right_body_button",
+      "label": "Player 8 · right body colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:player8_right_buttons_button",
+      "label": "Player 8 · right buttons colour",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:touchscreen_enabled",
+      "label": "Touchscreen",
+      "help": "",
+      "page": "touch",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:touchscreen_advanced",
+      "label": "Advanced",
+      "help": "",
+      "page": "touch",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:debug_configure",
+      "label": "Configure",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:ring_controller_configure",
+      "label": "Configure",
+      "help": "",
+      "page": "ringcon",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:camera_configure",
+      "label": "Configure",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputAdvanced:buttonMotionTouch",
+      "label": "Configure",
+      "help": "",
+      "page": "controls-advanced",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPerGame:profile_player_1",
+      "label": "Profile player 1",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPerGame:profile_player_2",
+      "label": "Profile player 2",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPerGame:profile_player_3",
+      "label": "Profile player 3",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPerGame:profile_player_4",
+      "label": "Profile player 4",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPerGame:profile_player_5",
+      "label": "Profile player 5",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPerGame:profile_player_6",
+      "label": "Profile player 6",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPerGame:profile_player_7",
+      "label": "Profile player 7",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPerGame:profile_player_8",
+      "label": "Profile player 8",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:comboControllerType",
+      "label": "Emulated controller",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:comboDevices",
+      "label": "Input device",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:comboProfiles",
+      "label": "Controller profile",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonProfilesSave",
+      "label": "Save",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonProfilesNew",
+      "label": "New",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonProfilesDelete",
+      "label": "Delete",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonLStickDown",
+      "label": "Left stick · Down",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonLStickRight",
+      "label": "Left stick · Right",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonLStickLeft",
+      "label": "Left stick · Left",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonLStickUp",
+      "label": "Left stick · Up",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonLStick",
+      "label": "Left stick · Pressed",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonLStickMod",
+      "label": "Left stick · Modifier",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:spinboxLStickRange",
+      "label": "Left stick · Range",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:sliderLStickDeadzone",
+      "label": "Left stick · Lstick deadzone",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:sliderLStickModifierRange",
+      "label": "Left stick · Lstick modifier range",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonDpadDown",
+      "label": "D-pad · Down",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonDpadLeft",
+      "label": "D-pad · Left",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonDpadRight",
+      "label": "D-pad · Right",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonDpadUp",
+      "label": "D-pad · Up",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonSRLeft",
+      "label": "SR",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonSLLeft",
+      "label": "SL",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonZL",
+      "label": "ZL",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:sliderZLThreshold",
+      "label": "Zlthreshold",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonL",
+      "label": "L",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonMinus",
+      "label": "Minus",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonPlus",
+      "label": "Plus",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonZR",
+      "label": "ZR",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:sliderZRThreshold",
+      "label": "Zrthreshold",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonR",
+      "label": "R",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonSRRight",
+      "label": "SR",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonSLRight",
+      "label": "SL",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonMotionLeft",
+      "label": "Motion · Left",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonMotionRight",
+      "label": "Motion · Right",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonScreenshot",
+      "label": "Capture",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonHome",
+      "label": "Home",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonX",
+      "label": "X",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonB",
+      "label": "B",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonA",
+      "label": "A",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonY",
+      "label": "Y",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonRStickRight",
+      "label": "Right stick · Right",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonRStickDown",
+      "label": "Right stick · Down",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonRStickLeft",
+      "label": "Right stick · Left",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonRStickUp",
+      "label": "Right stick · Up",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonRStick",
+      "label": "Right stick · Pressed",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:buttonRStickMod",
+      "label": "Right stick · Modifier",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:spinboxRStickRange",
+      "label": "Right stick · Range",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:sliderRStickDeadzone",
+      "label": "Right stick · Rstick deadzone",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:sliderRStickModifierRange",
+      "label": "Right stick · Rstick modifier range",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputPlayer:mousePanningButton",
+      "label": "Configure",
+      "help": "",
+      "page": "bindings",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputProfileDialog:clear_all_button",
+      "label": "Clear",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureInputProfileDialog:restore_defaults_button",
+      "label": "Defaults",
+      "help": "",
+      "page": "input-profiles",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMotionTouch:touch_calibration_config",
+      "label": "Configure",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMotionTouch:touch_from_button_map",
+      "label": "Touch from button map",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMotionTouch:touch_from_button_config_btn",
+      "label": "Configure",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMotionTouch:udp_server",
+      "label": "UDP server",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMotionTouch:udp_port",
+      "label": "UDP port",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMotionTouch:udp_test",
+      "label": "Test",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMotionTouch:udp_add",
+      "label": "Add Server",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMotionTouch:udp_remove",
+      "label": "Remove Server",
+      "help": "",
+      "page": "motion",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMousePanning:enable",
+      "label": "Enable mouse panning",
+      "help": "Can be toggled via a hotkey. Default hotkey is Ctrl + F9",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureMousePanning:default_button",
+      "label": "Default",
+      "help": "",
+      "page": "mouse",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureNetwork:network_interface",
+      "label": "Network Interface",
+      "help": "",
+      "page": "network",
+      "group": "Services"
+    },
+    {
+      "lookup": "ConfigureNetwork:airplane_mode",
+      "label": "Enable Airplane Mode",
+      "help": "",
+      "page": "network",
+      "group": "Services"
+    },
+    {
+      "lookup": "ConfigurePerGame:button_detect_icon",
+      "label": "Detect Icon",
+      "help": "Preview a local icon next to the archive. Online lookup is optional. Apply or OK saves changes.",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:button_upload_icon",
+      "label": "Choose custom game icon",
+      "help": "Preview a local image as the game icon. Apply or OK saves changes.",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:button_remove_icon",
+      "label": "Remove Custom Icon",
+      "help": "Show the game's own icon again. Apply or OK saves changes.",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:allow_online_detection",
+      "label": "Allow online lookup",
+      "help": "If no local icon is found, send the game name to GitHub, Wikipedia and Bing to look for an icon. Disabled by default.",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:display_size",
+      "label": "Size",
+      "help": "",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:display_version",
+      "label": "Version",
+      "help": "",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:display_title_id",
+      "label": "Title ID",
+      "help": "",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:display_filename",
+      "label": "Filename",
+      "help": "",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:display_format",
+      "label": "Format",
+      "help": "",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:display_name",
+      "label": "Name",
+      "help": "",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGame:display_developer",
+      "label": "Developer",
+      "help": "",
+      "page": "game-general",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGameAddons:zip",
+      "label": "Import Mod from ZIP",
+      "help": "",
+      "page": "addons",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigurePerGameAddons:folder",
+      "label": "Import Mod from Folder",
+      "help": "",
+      "page": "addons",
+      "group": "Game"
+    },
+    {
+      "lookup": "ConfigureProfileManager:pm_add",
+      "label": "Add",
+      "help": "",
+      "page": "profiles",
+      "group": "Emulation"
+    },
+    {
+      "lookup": "ConfigureRingController:buttonRingAnalogPull",
+      "label": "Pull",
+      "help": "",
+      "page": "ringcon",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureRingController:buttonRingAnalogPush",
+      "label": "Push",
+      "help": "",
+      "page": "ringcon",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureRingController:sliderRingAnalogDeadzone",
+      "label": "Ring analog deadzone",
+      "help": "",
+      "page": "ringcon",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureRingController:enable_ring_controller_button",
+      "label": "Enable",
+      "help": "",
+      "page": "ringcon",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureRingController:restore_defaults_button",
+      "label": "Restore Defaults",
+      "help": "",
+      "page": "ringcon",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTas:tas_path_button",
+      "label": "Path",
+      "help": "",
+      "page": "tas",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureTas:tas_path_edit",
+      "label": "Path",
+      "help": "",
+      "page": "tas",
+      "group": "Diagnostics"
+    },
+    {
+      "lookup": "ConfigureTouchFromButton:mapping",
+      "label": "Mapping",
+      "help": "",
+      "page": "touch-buttons",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTouchFromButton:button_new",
+      "label": "New",
+      "help": "",
+      "page": "touch-buttons",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTouchFromButton:button_delete",
+      "label": "Delete",
+      "help": "",
+      "page": "touch-buttons",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTouchFromButton:button_rename",
+      "label": "Rename",
+      "help": "",
+      "page": "touch-buttons",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTouchFromButton:button_delete_bind",
+      "label": "Delete Point",
+      "help": "",
+      "page": "touch-buttons",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTouchscreenAdvanced:diameter_x_box",
+      "label": "Diameter x box",
+      "help": "",
+      "page": "touch",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTouchscreenAdvanced:diameter_y_box",
+      "label": "Diameter y box",
+      "help": "",
+      "page": "touch",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTouchscreenAdvanced:angle_box",
+      "label": "Angle box",
+      "help": "",
+      "page": "touch",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureTouchscreenAdvanced:restore_defaults_button",
+      "label": "Restore Defaults",
+      "help": "",
+      "page": "touch",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureUi:theme_combobox",
+      "label": "Desktop theme",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureUi:screenshot_path_edit",
+      "label": "Screenshot path edit",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureUi:screenshot_path_button",
+      "label": "Screenshot path button",
+      "help": "",
+      "page": "appearance",
+      "group": "Application"
+    },
+    {
+      "lookup": "ConfigureVibration:vibrationSpinPlayer1",
+      "label": "Vibration spin player1",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureVibration:vibrationSpinPlayer2",
+      "label": "Vibration spin player2",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureVibration:vibrationSpinPlayer3",
+      "label": "Vibration spin player3",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureVibration:vibrationSpinPlayer4",
+      "label": "Vibration spin player4",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureVibration:vibrationSpinPlayer7",
+      "label": "Vibration spin player7",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureVibration:vibrationSpinPlayer8",
+      "label": "Vibration spin player8",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureVibration:vibrationSpinPlayer5",
+      "label": "Vibration spin player5",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureVibration:vibrationSpinPlayer6",
+      "label": "Vibration spin player6",
+      "help": "",
+      "page": "vibration",
+      "group": "Devices"
+    },
+    {
+      "lookup": "ConfigureWeb:edit_username",
+      "label": "Username",
+      "help": "",
+      "page": "web",
+      "group": "Services"
+    },
+    {
+      "lookup": "ConfigureWeb:edit_token",
+      "label": "Token",
+      "help": "",
+      "page": "web",
+      "group": "Services"
+    },
+    {
+      "lookup": "ConfigureWeb:button_generate",
+      "label": "Generate",
+      "help": "",
+      "page": "web",
+      "group": "Services"
+    }
+  ]
+}

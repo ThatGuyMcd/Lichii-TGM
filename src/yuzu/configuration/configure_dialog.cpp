@@ -16,6 +16,7 @@
 #include "ui_configure.h"
 #include "yuzu/configuration/configure_applets.h"
 #include "yuzu/configuration/configure_audio.h"
+#include "yuzu/configuration/configure_couch.h"
 #include "yuzu/configuration/configure_cpu.h"
 #include "yuzu/configuration/configure_debug_tab.h"
 #include "yuzu/configuration/configure_dialog.h"
@@ -46,6 +47,7 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
       applets_tab{std::make_unique<ConfigureApplets>(system_, nullptr, *builder, this)},
       audio_tab{std::make_unique<ConfigureAudio>(system_, nullptr, *builder, this)},
       cpu_tab{std::make_unique<ConfigureCpu>(system_, nullptr, *builder, this)},
+      couch_tab{std::make_unique<ConfigureCouch>(this)},
       debug_tab_tab{std::make_unique<ConfigureDebugTab>(system_, this)},
       filesystem_tab{std::make_unique<ConfigureFilesystem>(this)},
       general_tab{std::make_unique<ConfigureGeneral>(system_, nullptr, *builder, this)},
@@ -114,7 +116,7 @@ ConfigureDialog::ConfigureDialog(QWidget* parent, HotkeyRegistry& registry_,
                         {graphics_extensions_tab.get(), QStringLiteral("gfxx")},
                         {audio_tab.get(), QStringLiteral("aud")},
                     };
-                    const auto it = sections.find(ui->tabWidget->currentWidget());
+                    const auto it = sections.find(navigation->CurrentPage());
                     return it == sections.end() ? QString{} : it->second;
                 },
             .builder = builder.get(),
@@ -143,6 +145,7 @@ void ConfigureDialog::ApplyConfiguration() {
     input_tab->ApplyConfiguration();
     hotkeys_tab->ApplyConfiguration(registry);
     cpu_tab->ApplyConfiguration();
+    couch_tab->ApplyConfiguration();
     graphics_tab->ApplyConfiguration();
     graphics_advanced_tab->ApplyConfiguration();
     graphics_extensions_tab->ApplyConfiguration();
@@ -188,6 +191,8 @@ void ConfigureDialog::PopulateSelectionList() {
          tr("appearance theme screenshots library folders icons")},
         {hotkeys_tab.get(), tr("Hotkeys"), tr("Application"),
          tr("keyboard shortcuts key bindings")},
+        {couch_tab.get(), tr("Couch Mode"), tr("Application"),
+         tr("controller couch console startup themes prompts")},
         {system_tab.get(), tr("System"), tr("Emulation"),
          tr("console region time clock language memory")},
         {profile_tab.get(), tr("Profiles"), tr("Emulation"), tr("users accounts avatars")},
@@ -206,8 +211,7 @@ void ConfigureDialog::PopulateSelectionList() {
          tr("input controllers gamepad player joystick keyboard mouse microphone mic voice")},
         {network_tab.get(), tr("Network"), tr("Services"),
          tr("internet multiplayer LAN interface")},
-        {web_tab.get(), tr("Web"), tr("Services"),
-         tr("services telemetry account privacy")},
+        {web_tab.get(), tr("Web"), tr("Services"), tr("services telemetry account privacy")},
         {debug_tab_tab.get(), tr("Debug"), tr("Diagnostics"),
          tr("logging diagnostics CPU debugging advanced")},
     });
@@ -222,4 +226,59 @@ void ConfigureDialog::OnLanguageChanged(const QString& locale) {
     RetranslateUI();
     SetConfiguration();
     QtCommon::TouchUi::MarkApplied(this);
+}
+
+std::vector<QtCommon::Couch::SettingsPage> ConfigureDialog::CouchPages() const {
+    return {
+        {general_tab.get(), QStringLiteral("general"), tr("General"),
+         QStringLiteral("Application")},
+        {ui_tab.get(), QStringLiteral("appearance"), tr("Appearance & library"),
+         QStringLiteral("Application")},
+        {hotkeys_tab.get(), QStringLiteral("hotkeys"), tr("Hotkeys"),
+         QStringLiteral("Application")},
+        {couch_tab.get(), QStringLiteral("couch"), tr("Couch Mode"), QStringLiteral("Application")},
+        {system_tab.get(), QStringLiteral("system"), tr("System"), QStringLiteral("Emulation")},
+        {profile_tab.get(), QStringLiteral("profiles"), tr("User profiles"),
+         QStringLiteral("Emulation")},
+        {filesystem_tab.get(), QStringLiteral("filesystem"), tr("Storage & paths"),
+         QStringLiteral("Emulation")},
+        {applets_tab.get(), QStringLiteral("applets"), tr("Applets"), QStringLiteral("Emulation")},
+        {cpu_tab.get(), QStringLiteral("cpu"), tr("CPU"), QStringLiteral("Emulation")},
+        {graphics_tab.get(), QStringLiteral("graphics"), tr("Graphics"), QStringLiteral("Video")},
+        {graphics_advanced_tab.get(), QStringLiteral("graphics-advanced"), tr("Advanced graphics"),
+         QStringLiteral("Video")},
+        {graphics_extensions_tab.get(), QStringLiteral("graphics-extensions"),
+         tr("Graphics extensions"), QStringLiteral("Video")},
+        {audio_tab.get(), QStringLiteral("audio"), tr("Audio"), QStringLiteral("Devices")},
+        {input_tab.get(), QStringLiteral("controls"), tr("Controller setup"),
+         QStringLiteral("Devices")},
+        {network_tab.get(), QStringLiteral("network"), tr("Network"), QStringLiteral("Services")},
+        {web_tab.get(), QStringLiteral("web"), tr("Web services"), QStringLiteral("Services")},
+        {debug_tab_tab.get(), QStringLiteral("debug"), tr("Debugging"),
+         QStringLiteral("Diagnostics")},
+    };
+}
+
+void ConfigureDialog::CouchSelectPage(const QString& id) {
+    for (const auto& page : CouchPages()) {
+        bool matches = page.id == id;
+        if (page.id == QStringLiteral("graphics-advanced"))
+            matches |= id == QStringLiteral("graphics-hacks");
+        if (page.id == QStringLiteral("graphics"))
+            matches |= id == QStringLiteral("dlss") || id == QStringLiteral("fsr4");
+        if (page.id == QStringLiteral("controls"))
+            matches |= id == QStringLiteral("bindings") ||
+                       id.startsWith(QStringLiteral("input-")) ||
+                       id.startsWith(QStringLiteral("controls-"));
+        if (page.id == QStringLiteral("cpu"))
+            matches |= id == QStringLiteral("cpu-unsafe");
+        if (matches) {
+            navigation->SetCurrentPage(page.widget);
+            return;
+        }
+    }
+}
+
+void ConfigureDialog::CouchSetResetCallback(std::function<void()> callback) {
+    general_tab->SetResetCallback(std::move(callback));
 }

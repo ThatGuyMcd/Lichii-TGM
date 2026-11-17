@@ -101,6 +101,7 @@ static constexpr u64 MakeCbufKey(u32 index, u32 offset) {
 // environment of a record, the EnvironmentReadProperties of the host that made it. Older builds
 // load it as one more value.
 constexpr u64 READ_PROPERTIES_KEY{MakeCbufKey(~0U, 0)};
+constexpr u64 HEADER_BYTE_OFFSET_RULE_KEY{MakeCbufKey(~0U, 2)};
 
 // The most values of a kind an environment of a record holds. Translation reads a few hundred at
 // most; a damaged count can't make a load allocate more than a few MB for them.
@@ -345,9 +346,9 @@ size_t GenericEnvironment::ReadSizeBytes() const noexcept {
 }
 
 bool GenericEnvironment::CanBeSerialized() const noexcept {
-    // The read properties are one more constant buffer value.
+    // The read properties and texture rule marker are two more constant buffer values.
     return !has_unbound_instructions &&
-           std::max({texture_types.size(), texture_pixel_formats.size(), cbuf_values.size() + 1,
+           std::max({texture_types.size(), texture_pixel_formats.size(), cbuf_values.size() + 2,
                      storage_pointer_types.size(), cbuf_replacements.size()}) <=
                MAX_RECORDED_VALUES;
 }
@@ -375,7 +376,7 @@ void GenericEnvironment::Serialize(std::ostream& file, u32 read_properties) cons
     const u64 code_size{static_cast<u64>(CachedSizeBytes())};
     const u64 num_texture_types{static_cast<u64>(texture_types.size())};
     const u64 num_texture_pixel_formats{static_cast<u64>(texture_pixel_formats.size())};
-    const u64 num_cbuf_values{static_cast<u64>(cbuf_values.size()) + 1};
+    const u64 num_cbuf_values{static_cast<u64>(cbuf_values.size()) + 2};
     const u64 num_storage_pointer_types{static_cast<u64>(storage_pointer_types.size())};
     const u64 num_cbuf_replacement_values{static_cast<u64>(cbuf_replacements.size())};
 
@@ -409,8 +410,12 @@ void GenericEnvironment::Serialize(std::ostream& file, u32 read_properties) cons
         file.write(reinterpret_cast<const char*>(&key), sizeof(key))
             .write(reinterpret_cast<const char*>(&type), sizeof(type));
     }
+    constexpr u32 marker_present{1};
     file.write(reinterpret_cast<const char*>(&READ_PROPERTIES_KEY), sizeof(READ_PROPERTIES_KEY))
-        .write(reinterpret_cast<const char*>(&read_properties), sizeof(read_properties));
+        .write(reinterpret_cast<const char*>(&read_properties), sizeof(read_properties))
+        .write(reinterpret_cast<const char*>(&HEADER_BYTE_OFFSET_RULE_KEY),
+               sizeof(HEADER_BYTE_OFFSET_RULE_KEY))
+        .write(reinterpret_cast<const char*>(&marker_present), sizeof(marker_present));
     for (const auto& [key, type] : storage_pointer_types) {
         file.write(reinterpret_cast<const char*>(&key), sizeof(key))
             .write(reinterpret_cast<const char*>(&type), sizeof(type));
@@ -495,8 +500,10 @@ static Tegra::Texture::TICEntry PastPoolTextureDescriptor(u32 raw, u32 index, u3
 Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
                                                              bool via_header_index, u32 raw) {
     const auto handle{Tegra::Texture::TexturePair(raw, via_header_index)};
-    const u32 index{Tegra::Texture::TextureHeaderIndex(handle.first, tic_limit,
-                                                       gpu_memory->UsesNativeTiling())};
+    const u32 index{Tegra::Texture::TextureHeaderIndex(
+        handle.first, tic_limit,
+        Tegra::Texture::UsesHeaderByteOffsetHandles(gpu_memory->UsesNativeTiling(),
+                                                   Settings::GetCurrentProgramID()))};
     if (index > tic_limit) {
         return PastPoolTextureDescriptor(raw, index, tic_limit);
     }
@@ -1091,7 +1098,7 @@ Tegra::Texture::TICEntry GraphicsEnvironment::ReadTextureDescriptor(u32 handle) 
     if (snapshot) {
         const auto pair{Tegra::Texture::TexturePair(handle, snapshot->via_header_index)};
         const u32 index{Tegra::Texture::TextureHeaderIndex(
-            pair.first, snapshot->texture_pool_limit, snapshot->native_tiling)};
+            pair.first, snapshot->texture_pool_limit, snapshot->header_byte_offset_handles)};
         if (index > snapshot->texture_pool_limit) {
             return PastPoolTextureDescriptor(handle, index, snapshot->texture_pool_limit);
         }
@@ -1182,7 +1189,8 @@ bool GraphicsEnvironment::Detach(
     copy.texture_pool = texture_pool;
     copy.texture_pool_limit = regs.tex_header.limit;
     copy.via_header_index = regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding;
-    copy.native_tiling = gpu_memory->UsesNativeTiling();
+    copy.header_byte_offset_handles = Tegra::Texture::UsesHeaderByteOffsetHandles(
+        gpu_memory->UsesNativeTiling(), Settings::GetCurrentProgramID());
     copy.viewport_scale_offset_enabled = regs.viewport_scale_offset_enabled;
     if (has_hle_engine_state) {
         copy.replace_table = maxwell3d->replace_table;
@@ -1277,8 +1285,10 @@ Shader::TexturePixelFormat ComputeEnvironment::ReadTexturePixelFormat(u32 handle
     if (inserted && result == Shader::TexturePixelFormat::R16_FLOAT &&
         kepler_compute->IsNativeMode() && std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
         const auto pair{Tegra::Texture::TexturePair(handle, qmd.linked_tsc != 0)};
-        const u32 index{Tegra::Texture::TextureHeaderIndex(pair.first, regs.tic.limit,
-                                                        gpu_memory->UsesNativeTiling())};
+        const u32 index{Tegra::Texture::TextureHeaderIndex(
+            pair.first, regs.tic.limit,
+            Tegra::Texture::UsesHeaderByteOffsetHandles(gpu_memory->UsesNativeTiling(),
+                                                       Settings::GetCurrentProgramID()))};
         const GPUVAddr tic_gpu{regs.tic.Address() + index * sizeof(entry)};
         const auto tic_device{gpu_memory->GpuToCpuAddress(tic_gpu)};
         const auto image_device{gpu_memory->GpuToCpuAddress(entry.Address())};
@@ -1401,6 +1411,17 @@ void FileEnvironment::Deserialize(std::istream& file, std::streampos end) {
     if (const auto it{cbuf_values.find(READ_PROPERTIES_KEY)}; it != cbuf_values.end()) {
         recorded_read_properties = it->second;
         cbuf_values.erase(it);
+    }
+    if (const auto it{cbuf_values.find(HEADER_BYTE_OFFSET_RULE_KEY)}; it != cbuf_values.end()) {
+        cbuf_values.erase(it);
+    } else if (HasNativeInstructions() && !Tegra::Texture::UsesHeaderByteOffsetHandles(
+                                            true, Settings::GetCurrentProgramID())) {
+        // Older records cannot distinguish aligned indices from the former byte-offset guess.
+        const auto ambiguous = [](const auto& entry) {
+            return entry.first != 0 && entry.first % 32 == 0;
+        };
+        erase_if(texture_types, ambiguous);
+        erase_if(texture_pixel_formats, ambiguous);
     }
     for (size_t i = 0; i < num_storage_pointer_types; ++i) {
         u64 key;

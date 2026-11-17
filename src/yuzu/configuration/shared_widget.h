@@ -118,6 +118,11 @@ public:
         return managed_component;
     }
 
+    Q_INVOKABLE void CouchTouch();
+    Q_INVOKABLE bool CouchUsingGlobal() const;
+    Q_INVOKABLE void CouchUseGlobal();
+    Q_INVOKABLE void CouchReset(QObject* component);
+
     /// The paired checkbox setting, if any.
     [[nodiscard]] const Settings::BasicSetting* CheckboxSetting() const {
         return checkbox_setting;

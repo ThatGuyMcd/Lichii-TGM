@@ -40,6 +40,8 @@ public:
                                       InputCommon::InputSubsystem* input_subsystem_,
                                       int default_index = 0);
     ~ConfigureTouchFromButton() override;
+    bool CouchIsMapping() const;
+    void CouchMappingKey(int key);
 
     int GetSelectedIndex() const;
     std::vector<Settings::TouchFromButtonMap> GetMaps() const;

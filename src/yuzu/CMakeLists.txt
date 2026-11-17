@@ -5,6 +5,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
+set_source_files_properties(couch/main_window_couch.cpp PROPERTIES SKIP_AUTOUIC ON)
 
 # Set the RPATH for Qt Libraries
 # This must be done before the `yuzu` target is created
@@ -17,9 +18,16 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
 if(YUZU_TESTS)
     add_subdirectory(../tests/qt_compatibility ${CMAKE_BINARY_DIR}/qt_compatibility_tests)
     add_subdirectory(../tests/qt_forest ${CMAKE_BINARY_DIR}/qt_forest_tests)
+    add_subdirectory(../tests/qt_couch ${CMAKE_BINARY_DIR}/qt_couch_tests)
 endif()
 
 add_executable(yuzu
+    couch/main_window_couch.cpp
+    couch/configuration_snapshot.h
+    couch/couch_mode.cpp
+    couch/couch_mode.h
+    configuration/configure_couch.cpp
+    configuration/configure_couch.h
     Info.plist
     about_dialog.cpp
     about_dialog.h
@@ -490,10 +498,10 @@ if (WIN32 AND NOT YUZU_USE_BUNDLED_QT)
                      HINTS "${QT_HOST_PATH}/bin" "${QT_TARGET_PATH}/bin")
     endif()
     file(GENERATE OUTPUT "$<TARGET_FILE_DIR:yuzu>/qt.conf"
-         CONTENT "[Paths]\nPrefix=.\nPlugins=plugins\n")
+         CONTENT "[Paths]\nPrefix=.\nPlugins=plugins\nQmlImports=qml\n")
     if (WINDEPLOYQT_EXECUTABLE)
         set(YUZU_EXE_DIR "$<TARGET_FILE_DIR:yuzu>")
-        add_custom_command(TARGET yuzu POST_BUILD COMMAND ${WINDEPLOYQT_EXECUTABLE} "$<TARGET_FILE:yuzu>" --dir "${YUZU_EXE_DIR}" --libdir "${YUZU_EXE_DIR}" --plugindir "${YUZU_EXE_DIR}/plugins" --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-translations --verbose 0)
+        add_custom_command(TARGET yuzu POST_BUILD COMMAND ${WINDEPLOYQT_EXECUTABLE} "$<TARGET_FILE:yuzu>" --dir "${YUZU_EXE_DIR}" --libdir "${YUZU_EXE_DIR}" --plugindir "${YUZU_EXE_DIR}/plugins" --qmldir "${PROJECT_SOURCE_DIR}/dist/qt_themes/couch" --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-translations --verbose 0)
     else()
         message(WARNING "windeployqt not found: copy the Qt DLLs next to the executable yourself")
     endif()

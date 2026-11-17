@@ -181,6 +181,14 @@ struct Values {
     std::string theme;
     Setting<bool> comfortable_ui{linkage, true, "comfortable_ui", Category::Ui};
     Setting<bool> settings_fullscreen{linkage, true, "settings_fullscreen", Category::Ui};
+    Setting<bool> couch_startup{linkage, false, "couch_startup", Category::UiLayout};
+    Setting<bool> couch_invitation_dismissed{linkage, false, "couch_invitation_dismissed",
+                                            Category::UiLayout};
+    Setting<std::string> couch_theme{linkage, "horizon-dark", "couch_theme", Category::UiLayout};
+    Setting<bool> couch_reduced_motion{linkage, false, "couch_reduced_motion", Category::UiLayout};
+    Setting<u32, true> couch_text_scale{linkage,           100, 75, 125, "couch_text_scale",
+                                        Category::UiLayout};
+    Setting<u32, true> couch_prompts{linkage, 0, 0, 3, "couch_prompts", Category::UiLayout};
 
     // Shortcut name <Shortcut, context>
     std::vector<Shortcut> shortcuts;

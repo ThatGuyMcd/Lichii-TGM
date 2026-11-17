@@ -1136,7 +1136,8 @@ void TextureCache<P>::MemoizeTextures(SampledTextureMemo& memo,
     }
     const bool via_header_index =
         maxwell3d->regs.sampler_binding == Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
-    const bool native_tiling = gpu_memory->UsesNativeTiling();
+    const bool byte_offset_handles = Tegra::Texture::UsesHeaderByteOffsetHandles(
+        gpu_memory->UsesNativeTiling(), Settings::GetCurrentProgramID());
     // The descriptors are read through one host page each (see DescriptorTable::Read).
     const auto host_of = [&](GPUVAddr address, size_t size) -> const u8* {
         if ((address & Core::Memory::YUZU_PAGEMASK) + size > Core::Memory::YUZU_PAGESIZE) {
@@ -1147,7 +1148,8 @@ void TextureCache<P>::MemoizeTextures(SampledTextureMemo& memo,
     for (size_t i = 0; i < reads.size(); ++i) {
         const auto [view_index, sampler_index] = Tegra::Texture::TexturePair(reads[i].raw, via_header_index);
         const u32 tic_index =
-            Tegra::Texture::TextureHeaderIndex(view_index, image_table.current_limit, native_tiling);
+            Tegra::Texture::TextureHeaderIndex(view_index, image_table.current_limit,
+                                               byte_offset_handles);
         if (!views[i].id || !samplers[i] || tic_index > image_table.current_limit ||
             sampler_index > sampler_table.current_limit) {
             return;
@@ -1219,7 +1221,8 @@ bool TextureCache<P>::KeepTemplateTextures(std::span<const TextureHandleRead> re
     }
     const bool via_header_index = maxwell3d->regs.sampler_binding ==
                                   Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
-    const bool native_tiling = gpu_memory->UsesNativeTiling();
+    const bool byte_offset_handles = Tegra::Texture::UsesHeaderByteOffsetHandles(
+        gpu_memory->UsesNativeTiling(), Settings::GetCurrentProgramID());
     const auto host_of = [&](GPUVAddr address, size_t size) -> const u8* {
         if ((address & Core::Memory::YUZU_PAGEMASK) + size > Core::Memory::YUZU_PAGESIZE) {
             return nullptr;
@@ -1240,7 +1243,7 @@ bool TextureCache<P>::KeepTemplateTextures(std::span<const TextureHandleRead> re
         const auto [view_index, sampler_index] =
             Tegra::Texture::TexturePair(reads[i].raw, via_header_index);
         const u32 tic_index = Tegra::Texture::TextureHeaderIndex(
-            view_index, image_table.current_limit, native_tiling);
+            view_index, image_table.current_limit, byte_offset_handles);
         if (!views[i].id || !samplers[i] || tic_index > image_table.current_limit ||
             sampler_index > sampler_table.current_limit ||
             (views[i].id == NULL_IMAGE_VIEW_ID &&
@@ -1644,8 +1647,10 @@ typename P::Framebuffer* TextureCache<P>::GetFramebuffer() {
 template <class P>
 ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
     auto& table = compute ? channel_state->compute_image_table : channel_state->graphics_image_table;
-    index = Tegra::Texture::TextureHeaderIndex(index, table.current_limit,
-                                               gpu_memory->UsesNativeTiling());
+    index = Tegra::Texture::TextureHeaderIndex(
+        index, table.current_limit,
+        Tegra::Texture::UsesHeaderByteOffsetHandles(gpu_memory->UsesNativeTiling(),
+                                                   Settings::GetCurrentProgramID()));
     if (index > table.current_limit) {
         LOG_TRACE(HW_GPU, "Invalid image view index={}", index);
         return NULL_IMAGE_VIEW_ID;
@@ -4692,6 +4697,10 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
     image.flags &= ~ImageFlagBits::Registered;
     image.flags &= ~ImageFlagBits::BadOverlap;
     lru_cache.Free(image.lru_index);
+    const std::optional<size_t> storage_id = getStorageID(image.address_space);
+    ASSERT(storage_id);
+    TextureCacheGPUMap& gpu_page_table = gpu_page_table_storage[*storage_id * 2];
+    TextureCacheGPUMap& sparse_page_table = gpu_page_table_storage[*storage_id * 2 + 1];
     bool reported_missing_page = false;
     const auto& clear_page_table =
         [this, image_id, &image, &reported_missing_page](u64 page, ::Common::unordered_map<u64, std::vector<ImageId>, Common::IdentityHash<u64>>& selected_page_table) {
@@ -4712,8 +4721,8 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
             }
             image_ids.erase(vector_it);
         };
-    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, &clear_page_table](u64 page) {
-        clear_page_table(page, (*channel_state->gpu_page_table));
+    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [&clear_page_table, &gpu_page_table](u64 page) {
+        clear_page_table(page, gpu_page_table);
     });
     if (False(image.flags & ImageFlagBits::Sparse)) {
         const auto map_id = image.map_view_id;
@@ -4735,8 +4744,8 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
         slot_map_views.erase(map_id);
         return;
     }
-    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, &clear_page_table](u64 page) {
-        clear_page_table(page, (*channel_state->sparse_page_table));
+    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [&clear_page_table, &sparse_page_table](u64 page) {
+        clear_page_table(page, sparse_page_table);
     });
     auto it = sparse_views.find(image_id);
     ASSERT(it != sparse_views.end());

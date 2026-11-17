@@ -9,8 +9,13 @@ release advances the highest published fork version once: `1.0.3` becomes `1.0.4
 and `1.0.9` becomes `1.0.10`. A local candidate, a draft or an upstream `build-N`
 tag doesn't consume another version. `tools/release/plan_nightly_release.py`
 plans this from the fork's release records and the local release journal. It also
-checks published timestamps, so an interrupted run can't publish twice in one
-London calendar day after losing its local journal. Windows Python needs the
+checks published timestamps, so an interrupted scheduled run can't publish twice in one
+London calendar day after losing its local journal. An additional release I've
+explicitly requested uses `--manual`; it still requires the next numeric patch,
+an unused tag, matching packages and every publication gate. The publisher's
+`manual_release` input must match the manifest. Nightly runs keep their normal
+date guard. After v1.0.5, the next successful scheduled release is v1.0.6.
+Windows Python needs the
 `tzdata` package; Linux can use the system IANA timezone data.
 
 Configure with `-DLICHII_BUILD_TAG=Lichii-tgm-v<version>` and
@@ -21,6 +26,11 @@ Build the GUI, CLI and tests, then run CTest on both platforms. Windows also shi
 `lichii-tgm-updater.exe`. Qt tests require the matching Qt Test library and offscreen
 plugin. Test executables are excluded from release archives.
 
+For Couch Mode, Windows deployment scans `dist/qt_themes/couch` using
+`windeployqt --qmldir`. Both packages include Qt Quick, Quick Widgets, Basic
+Controls, layouts and QML worker modules. I check the Couch shell and invitation
+with the deployed modules as well as the development Qt installation.
+
 On the configured local machine, `build-local/Build-All.ps1 -Tests` builds and
 validates both platforms and creates matching ZIP/AppImage files. Machine-specific
 toolchain setup is in the workspace `BUILD-HERE.md`; local helpers/builds are ignored.
@@ -30,7 +40,6 @@ toolchain setup is in the workspace `BUILD-HERE.md`; local helpers/builds are ig
 - `Lichii-tgm-v<version>-windows-x86_64.zip`
 - `Lichii-tgm-v<version>-linux-x86_64.AppImage`
 - `SHA256SUMS` and a JSON build manifest
-- Reviewed integration and branding audits
 - `windows-ctest.xml` and `linux-ctest.xml`
 
 Package runtime libraries and `LICENSE.txt`; verify archive integrity, dependencies
@@ -62,15 +71,21 @@ The source check reads protected dependencies and never changes them.
 
 The publisher verifies a clean checkout, the next fork tag, matching package
 source/version identities, checksum coverage and both CTest reports. The reports
-must include all configured groups, at least the existing 16 per platform, with
+must include all configured groups, including Couch and cache-replay groups, with
 no failed or skipped groups. It checks the contents of both packages before
 making the draft public. Detailed diagnostic reports stay outside the checkout
 and aren't uploaded as release assets.
 
 I write the README and release notes in my own voice: what I've changed, why it
-helps and how to use it. Performance figures need measurements. If the required
-checks or provenance aren't complete, I hold the release and resolve that locally.
+helps and how to use it. Performance figures need measurements. I publish after
+the required checks and provenance review pass.
 Existing releases and tags are kept intact.
+
+The nightly review covers every new or updated commit, PR, issue and discussion
+from Lichii and Fritchii, with the historical review backlog retained. I assess
+shared components and production changes even when no game is named. Actionable
+bug reports get an existing correction or a source-backed fix with independent
+regression coverage, followed by the same paired-build and release gates.
 
 ## Branding boundaries
 

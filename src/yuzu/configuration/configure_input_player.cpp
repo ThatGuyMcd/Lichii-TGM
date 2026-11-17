@@ -1486,8 +1486,13 @@ void ConfigureInputPlayer::HandleClick(
 
     input_subsystem->BeginMapping(type);
 
-    QWidget::grabMouse();
-    QWidget::grabKeyboard();
+    bool couch = false;
+    for (auto* ancestor = parentWidget(); ancestor; ancestor = ancestor->parentWidget())
+        couch |= ancestor->property("couchSource").toBool();
+    if (!couch) {
+        QWidget::grabMouse();
+        QWidget::grabKeyboard();
+    }
 
     if (type == InputCommon::Polling::InputType::Button) {
         ui->controllerFrame->BeginMappingButton(button_id);
@@ -1564,6 +1569,17 @@ void ConfigureInputPlayer::keyPressEvent(QKeyEvent* event) {
     if (event->key() != Qt::Key_Escape) {
         input_subsystem->GetKeyboard()->PressKey(event->key());
     }
+}
+
+void ConfigureInputPlayer::CouchMappingKey(int key) {
+    if (!input_setter)
+        return;
+    if (key == Qt::Key_Escape) {
+        SetPollingResult({}, true);
+        return;
+    }
+    QKeyEvent event(QEvent::KeyPress, key, Qt::NoModifier);
+    keyPressEvent(&event);
 }
 
 bool ConfigureInputPlayer::eventFilter(QObject* object, QEvent* event) {
@@ -1689,4 +1705,7 @@ void ConfigureInputPlayer::UpdateInputProfiles() {
 
     LOG_DEBUG(Frontend, "Setting the current input profile to index {}", profile_index);
     ui->comboProfiles->setCurrentIndex(profile_index);
+}
+bool ConfigureInputPlayer::CouchIsMapping() const {
+    return input_setter.has_value() && poll_timer->isActive();
 }

@@ -14,6 +14,7 @@
 
 #include "common/page_table.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "core/hle/kernel/k_process.h"
@@ -22,6 +23,8 @@
 #include "tests/core/system_test_context.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/engines/engine_upload.h"
+#include "video_core/engines/sw_blitter/blitter.h"
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
 #include "video_core/native_lowering.h"
@@ -357,6 +360,85 @@ struct ConstantDiagnosticFixture : DeltaFixture {
     u8* backing{};
     size_t mapping_size;
 };
+
+TEST_CASE("Inline uploads select the address space's native GOB layout", "[fast_draw][native_tiling]") {
+    const bool native = GENERATE(false, true);
+    ConstantDiagnosticFixture f;
+    if (native) {
+        f.memory.EnableNativeTiling();
+    }
+    std::array<u32, 128> source{};
+    auto* bytes = reinterpret_cast<u8*>(source.data());
+    for (u32 i = 0; i < 512; ++i) {
+        bytes[i] = static_cast<u8>(i * 29 + (i / 64) * 13);
+    }
+    Tegra::Engines::Upload::Registers regs{};
+    regs.line_length_in = 64;
+    regs.line_count = 8;
+    regs.dest.address_low = static_cast<u32>(ConstantDiagnosticFixture::Gpu);
+    regs.dest.width = 64;
+    regs.dest.height = 8;
+    regs.dest.depth = 1;
+    Tegra::Engines::Upload::State upload{f.memory, regs};
+    upload.BindRasterizer(&f.rasterizer);
+    upload.ProcessExec(false);
+    upload.ProcessData(source.data(), source.size());
+    for (u32 y = 0; y < 8; ++y) {
+        for (u32 x = 0; x < 64; ++x) {
+            // One GOB, expressed independently of the decoder implementation.
+            const u32 offset = (x & 15) | ((x & 32) << 3) | ((y & 1) << 4) |
+                               ((y & 4) << 5) |
+                               (native ? ((x & 16) << 2) | ((y & 2) << 4)
+                                       : ((x & 16) << 1) | ((y & 2) << 5));
+            CHECK(f.backing[offset] == bytes[y * 64 + x]);
+        }
+    }
+}
+
+TEST_CASE("Software blits select native tiling independently on reads and writes",
+          "[fast_draw][native_tiling]") {
+    const bool native = GENERATE(false, true);
+    const bool tiled_source = GENERATE(false, true);
+    ConstantDiagnosticFixture f;
+    if (native) {
+        f.memory.EnableNativeTiling();
+    }
+    using Fermi = Tegra::Engines::Fermi2D;
+    const auto offset = [native](u32 x, u32 y) {
+        return (x & 15) | ((x & 32) << 3) | ((y & 1) << 4) | ((y & 4) << 5) |
+               (native ? ((x & 16) << 2) | ((y & 2) << 4)
+                       : ((x & 16) << 1) | ((y & 2) << 5));
+    };
+    for (u32 y = 0; y < 8; ++y) {
+        for (u32 x = 0; x < 64; ++x) {
+            f.backing[tiled_source ? offset(x, y) : y * 64 + x] =
+                static_cast<u8>(x * 29 + y * 13);
+        }
+    }
+    Fermi::Surface src{};
+    src.format = Tegra::RenderTargetFormat::R8_UNORM;
+    src.linear = tiled_source ? Fermi::MemoryLayout::BlockLinear : Fermi::MemoryLayout::Pitch;
+    src.depth = 1;
+    src.width = src.pitch = 64;
+    src.height = 8;
+    src.addr_lower = static_cast<u32>(ConstantDiagnosticFixture::Gpu);
+    auto dst = src;
+    dst.linear = tiled_source ? Fermi::MemoryLayout::Pitch : Fermi::MemoryLayout::BlockLinear;
+    dst.addr_lower += 0x1000;
+    Fermi::Config config{};
+    config.operation = Fermi::Operation::SrcCopy;
+    config.filter = Fermi::Filter::Point;
+    config.src_x1 = config.dst_x1 = 64;
+    config.src_y1 = config.dst_y1 = 8;
+    Tegra::Engines::Blitter::SoftwareBlitEngine blitter{f.memory};
+    REQUIRE(blitter.Blit(src, dst, config));
+    for (u32 y = 0; y < 8; ++y) {
+        for (u32 x = 0; x < 64; ++x) {
+            CHECK(f.backing[0x1000 + (tiled_source ? y * 64 + x : offset(x, y))] ==
+                  static_cast<u8>(x * 29 + y * 13));
+        }
+    }
+}
 
 struct ScopedConstantDiagnostics {
     explicit ScopedConstantDiagnostics(bool enabled)
@@ -974,6 +1056,40 @@ TEST_CASE("Detached shader environments own guest bytes after their engine and m
     CHECK(rejected_table);
     env.DropSnapshot();
     CHECK(env.SnapshotSizeBytes() == 0);
+}
+
+TEST_CASE("Detached texture decoding retains its title policy after the title changes",
+          "[shader_reuse][detached_translation][texture_header_index]") {
+    const u64 saved_program = Settings::GetCurrentProgramID();
+    SCOPE_EXIT { Settings::SetCurrentProgramID(saved_program); };
+    const bool sports = GENERATE(false, true);
+    Settings::SetCurrentProgramID(sports ? 0x04008E001F098000ULL : 0x0400486024DEC000ULL);
+    auto fixture = std::make_unique<ConstantDiagnosticFixture>();
+    auto& f = *fixture;
+    f.memory.EnableNativeTiling();
+    f.maxwell3d.GetNativeMacroEngine().native_turing = true;
+    f.maxwell3d.regs.tex_header.address_low = static_cast<u32>(f.Gpu + 0x400);
+    f.maxwell3d.regs.tex_header.address_high = 0;
+    f.maxwell3d.regs.tex_header.limit = 3;
+    f.maxwell3d.regs.sampler_binding = Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
+    Tegra::Texture::TICEntry entry{};
+    entry.texture_type.Assign(Tegra::Texture::TextureType::Texture3D);
+    std::memcpy(f.backing + 0x400 + 2 * sizeof(entry), &entry, sizeof(entry));
+    auto lowered = std::make_shared<VideoCommon::LoweredNativeCode>();
+    lowered->source_size = 144;
+    lowered->code.resize(32);
+    VideoCommon::GraphicsEnvironment env{
+        f.maxwell3d, f.memory, Maxwell3D::Regs::ShaderType::VertexB, f.Gpu, 0, lowered};
+    std::shared_ptr<const std::vector<Tegra::Texture::TICEntry>> texture_pool;
+    REQUIRE(env.Detach(texture_pool));
+    fixture.reset();
+    Settings::SetCurrentProgramID(sports ? 0x0400486024DEC000ULL : 0x04008E001F098000ULL);
+    const auto type = env.ReadTextureType(64);
+    if (sports) {
+        CHECK(type == Shader::TextureType::Color3D);
+    } else {
+        CHECK(type != Shader::TextureType::Color3D);
+    }
 }
 
 TEST_CASE("Deferred texture uploads decode owned bytes after guest mappings are destroyed",

@@ -107,6 +107,15 @@ void ConfigureInput::Initialize(InputCommon::InputSubsystem* input_subsystem,
     };
 
     for (std::size_t i = 0; i < player_tabs.size(); ++i) {
+        player_controllers[i]->setProperty("couchPlayer", static_cast<int>(i));
+        for (auto* button : player_controllers[i]->findChildren<QPushButton*>()) {
+            const QString name = button->objectName();
+            const bool binding = name.startsWith(QStringLiteral("button")) &&
+                                 !name.startsWith(QStringLiteral("buttonProfiles"));
+            const bool mouse_binding = name == QStringLiteral("mousePanningButton");
+            if (binding || mouse_binding)
+                button->setProperty("couchBinding", true);
+        }
         QHBoxLayout* tab_layout = new QHBoxLayout(player_tabs[i]);
         tab_layout->addWidget(player_controllers[i]);
         connect(player_controllers[i], &ConfigureInputPlayer::Connected, [this, i](bool checked) {

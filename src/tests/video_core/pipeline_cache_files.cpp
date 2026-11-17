@@ -23,6 +23,7 @@
 
 #include "common/fs/file_lock.h"
 #include "video_core/pipeline_cache_files.h"
+#include "video_core/pipeline_cache_snapshot.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache_records.h"
 #include "video_core/shader_environment.h"
@@ -59,6 +60,71 @@ void WriteCache(const std::filesystem::path& file, const std::array<char, 8>& ma
 std::string ReadAll(const std::filesystem::path& file) {
     std::ifstream stream(file, std::ios::binary);
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+}
+
+TEST_CASE("Static pipeline snapshots preserve the previous file until a complete commit",
+          "[pipeline_cache_files]") {
+    TempDir dir;
+    const auto path = dir.path / "static.bin";
+    WriteCache(path, Magic, 1, "old");
+    const auto previous = ReadAll(path);
+    const std::string replacement = "independently constructed new cache bytes";
+    const auto write = [&](const Common::FS::IOFile& output) {
+        CHECK(ReadAll(path) == previous);
+        return output.WriteSpan(std::span<const char>{replacement}) == replacement.size();
+    };
+    REQUIRE(VideoCommon::ReplacePipelineCacheSnapshot(path, write));
+    CHECK(ReadAll(path) == replacement);
+    CHECK_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+}
+
+TEST_CASE("Failed or competing static pipeline snapshots retain the existing file",
+          "[pipeline_cache_files]") {
+    TempDir dir;
+    const auto path = dir.path / "static.bin";
+    WriteCache(path, Magic, 1, "old");
+    const auto previous = ReadAll(path);
+    const auto temporary = std::filesystem::path{path.string() + ".tmp"};
+    bool invoked = false;
+    const auto partial = [&](const Common::FS::IOFile& output) {
+        invoked = true;
+        const std::string bytes = "partial";
+        CHECK(output.WriteSpan(std::span<const char>{bytes}) == bytes.size());
+        return false;
+    };
+    SECTION("Partial write") {
+        CHECK_FALSE(VideoCommon::ReplacePipelineCacheSnapshot(path, partial));
+        CHECK(invoked);
+        CHECK_FALSE(std::filesystem::exists(temporary));
+    }
+    SECTION("Temporary path cannot be opened") {
+        std::filesystem::create_directory(temporary);
+        WriteCache(temporary / "sentinel", Magic, 1, "keep");
+        CHECK_FALSE(VideoCommon::ReplacePipelineCacheSnapshot(path, partial));
+        CHECK_FALSE(invoked);
+        CHECK(std::filesystem::exists(temporary / "sentinel"));
+    }
+    SECTION("Another writer holds the lock") {
+        Common::FS::FileLock lock{path.string() + ".lock"};
+        REQUIRE(lock.Held());
+        CHECK_FALSE(VideoCommon::ReplacePipelineCacheSnapshot(path, partial));
+        CHECK_FALSE(invoked);
+        CHECK_FALSE(std::filesystem::exists(temporary));
+    }
+    CHECK(ReadAll(path) == previous);
+}
+
+TEST_CASE("Static pipeline snapshot cleans its temporary file after rename failure",
+          "[pipeline_cache_files]") {
+    TempDir dir;
+    const auto path = dir.path / "static.bin";
+    std::filesystem::create_directory(path);
+    WriteCache(path / "sentinel", Magic, 1, "keep");
+    CHECK_FALSE(VideoCommon::ReplacePipelineCacheSnapshot(path, [](const Common::FS::IOFile& output) {
+        return output.WriteObject(u32{123});
+    }));
+    CHECK(std::filesystem::exists(path / "sentinel"));
+    CHECK_FALSE(std::filesystem::exists(path.string() + ".tmp"));
 }
 
 class SerializedEnvironment final : public VideoCommon::GenericEnvironment {

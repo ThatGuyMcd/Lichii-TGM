@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <istream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -36,6 +37,10 @@ struct LogFile {
 /// ignores one cut off by an append still in progress. A missing file reads as empty. See ParseLog
 /// for `for_each`.
 [[nodiscard]] LogFile ReadLogFile(const std::filesystem::path& file, const ForEach& for_each = {});
+
+/// Bounds each CRT read, and returns the prefix obtained if the file shrinks while being read.
+[[nodiscard]] size_t ReadLogBytes(std::istream& stream, std::span<u8> bytes,
+                                size_t chunk_size = size_t{256} << 20);
 
 /// The payload of the record of `kind` and `key` that a read of the log found at `offset`, read
 /// again from the file the same way. Empty when the file no longer holds it there intact (a

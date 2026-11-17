@@ -11,6 +11,7 @@
 #include <QDialog>
 #include "configuration/shared_widget.h"
 #include "qt_common/config/shared_translation.h"
+#include "qt_common/couch/widget_model.h"
 #include "qt_common/util/vk.h"
 #include "yuzu/configuration/configuration_shared.h"
 
@@ -21,6 +22,7 @@ class System;
 class ConfigureApplets;
 class ConfigureAudio;
 class ConfigureCpu;
+class ConfigureCouch;
 class ConfigureDebugTab;
 class ConfigureFilesystem;
 class ConfigureGeneral;
@@ -60,6 +62,9 @@ public:
     ~ConfigureDialog() override;
 
     void ApplyConfiguration();
+    std::vector<QtCommon::Couch::SettingsPage> CouchPages() const;
+    void CouchSelectPage(const QString& id);
+    void CouchSetResetCallback(std::function<void()> callback);
 
 private slots:
     void OnLanguageChanged(const QString& locale);
@@ -89,6 +94,7 @@ private:
     std::unique_ptr<ConfigureApplets> applets_tab;
     std::unique_ptr<ConfigureAudio> audio_tab;
     std::unique_ptr<ConfigureCpu> cpu_tab;
+    std::unique_ptr<ConfigureCouch> couch_tab;
     std::unique_ptr<ConfigureDebugTab> debug_tab_tab;
     std::unique_ptr<ConfigureFilesystem> filesystem_tab;
     std::unique_ptr<ConfigureGeneral> general_tab;

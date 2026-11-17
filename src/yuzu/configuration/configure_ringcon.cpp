@@ -146,6 +146,7 @@ ConfigureRingController::ConfigureRingController(QWidget* parent,
 
     for (int sub_button_id = 0; sub_button_id < ANALOG_SUB_BUTTONS_NUM; ++sub_button_id) {
         auto* const analog_button = analog_map_buttons[sub_button_id];
+        analog_button->setProperty("couchBinding", true);
 
         if (analog_button == nullptr) {
             continue;
@@ -336,6 +337,7 @@ void ConfigureRingController::ControllerUpdate(Core::HID::ControllerTriggerType 
 void ConfigureRingController::HandleClick(
     QPushButton* button, std::function<void(const Common::ParamPackage&)> new_input_setter,
     InputCommon::Polling::InputType type) {
+    button->setProperty("couchBinding", true);
     button->setText(tr("[waiting]"));
     button->setFocus();
 
@@ -343,8 +345,13 @@ void ConfigureRingController::HandleClick(
 
     input_subsystem->BeginMapping(type);
 
-    QWidget::grabMouse();
-    QWidget::grabKeyboard();
+    bool couch = false;
+    for (auto* ancestor = parentWidget(); ancestor; ancestor = ancestor->parentWidget())
+        couch |= ancestor->property("couchSource").toBool();
+    if (!couch) {
+        QWidget::grabMouse();
+        QWidget::grabKeyboard();
+    }
 
     timeout_timer->start(2500); // Cancel after 2.5 seconds
     poll_timer->start(25);      // Check for new inputs every 25ms
@@ -454,6 +461,19 @@ QString ConfigureRingController::ButtonToText(const Common::ParamPackage& param)
     }
 
     return QObject::tr("[unknown]");
+}
+void ConfigureRingController::CouchMappingKey(int key) {
+    if (!input_setter)
+        return;
+    if (key == Qt::Key_Escape) {
+        SetPollingResult({}, true);
+        return;
+    }
+    QKeyEvent event(QEvent::KeyPress, key, Qt::NoModifier);
+    keyPressEvent(&event);
+}
+bool ConfigureRingController::CouchIsMapping() const {
+    return input_setter.has_value() && poll_timer->isActive();
 }
 
 QString ConfigureRingController::AnalogToText(const Common::ParamPackage& param,

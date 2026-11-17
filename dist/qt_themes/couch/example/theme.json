@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "id": "ember-console",
+  "name": "Ember Console",
+  "author": "Lichii theme example",
+  "base": "dark",
+  "colours": {
+    "background": "#222225",
+    "surface": "#36363b",
+    "text": "#fff4e8",
+    "muted": "#bfb5ad",
+    "line": "#535057",
+    "focus": "#ffb15f",
+    "accent": "#f06757",
+    "onPrimary": "#222225",
+    "scrim": "#bb000000"
+  },
+  "metrics": {
+    "radius": 10,
+    "focusWidth": 4,
+    "rowHeight": 92,
+    "sectionHeight": 64,
+    "sidebarWidth": 380,
+    "columnGap": 40,
+    "fontSize": 26,
+    "valueSize": 22,
+    "smallSize": 18,
+    "titleSize": 40
+  },
+  "layers": [
+    {
+      "type": "rectangle",
+      "view": "home",
+      "x": 80,
+      "y": 150,
+      "width": 80,
+      "height": 4,
+      "colour": "#ffb15f"
+    },
+    {
+      "type": "text",
+      "view": "library",
+      "x": 80,
+      "y": 880,
+      "width": 420,
+      "height": 36,
+      "fontSize": 20,
+      "colour": "#bfb5ad",
+      "text": "EMBER / {view}"
+    }
+  ],
+  "views": {
+    "home": {
+      "hero": {"x": 80, "y": 164, "width": 1760, "height": 300},
+      "games": {"x": 80, "y": 540, "width": 1760, "height": 284}
+    },
+    "library": {
+      "games": {"x": 80, "y": 264, "width": 1760, "height": 530}
+    }
+  }
+}

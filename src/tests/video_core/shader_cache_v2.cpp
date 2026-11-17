@@ -13,6 +13,7 @@
 #include <random>
 #include <set>
 #include <span>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -30,6 +31,8 @@
 
 #include "common/cityhash.h"
 #include "common/fs/file_lock.h"
+#include "common/scope_exit.h"
+#include "common/settings.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/program_header.h"
 #include "video_core/native_lowering.h"
@@ -167,6 +170,11 @@ public:
 /// An environment of a lowered native program's code
 class NativeTestEnvironment final : public VideoCommon::GenericEnvironment {
 public:
+    void SetTextureInfo(u32 handle, Shader::TextureType type, Shader::TexturePixelFormat format) {
+        texture_types.emplace(handle, type);
+        texture_pixel_formats.emplace(handle, format);
+    }
+
     NativeTestEnvironment(Shader::Stage shader_stage, std::span<const u64> lowered_code,
                           u32 texture_bound_) {
         stage = shader_stage;
@@ -280,6 +288,92 @@ constexpr std::array<Instruction, 3> ProgramCounterProgram{{
 }};
 
 } // Anonymous namespace
+
+TEST_CASE("Carried native records rebuild ambiguous header-offset classifications once",
+          "[shader_cache_v2][texture_header_records]") {
+    const u64 saved_program_id = Settings::GetCurrentProgramID();
+    SCOPE_EXIT { Settings::SetCurrentProgramID(saved_program_id); };
+    const auto program = LowerTestProgram(std::array{EXIT}, false, 0);
+    const std::array<u64, 2> legacy_code{0x123456789abcdef0, 0xfedcba9876543210};
+    constexpr u64 marker_key = (u64{~u32{0}} << 32) | 2;
+    constexpr u32 marker_value = 1;
+    std::string marker(sizeof(marker_key) + sizeof(marker_value), '\0');
+    std::memcpy(marker.data(), &marker_key, sizeof(marker_key));
+    std::memcpy(marker.data() + sizeof(marker_key), &marker_value, sizeof(marker_value));
+    for (const u64 program_id : {0x0400486024DEC000ULL, 0x04008E001F098000ULL}) {
+        Settings::SetCurrentProgramID(program_id);
+        for (const bool native : {false, true}) {
+            for (const bool current : {false, true}) {
+                CAPTURE(program_id, native, current);
+                NativeTestEnvironment source{
+                    Shader::Stage::Fragment,
+                    native ? std::span<const u64>{program.lowered_code}
+                           : std::span<const u64>{legacy_code}, 2};
+                source.SetTextureInfo(0xbe000, Shader::TextureType::Color3D,
+                                      Shader::TexturePixelFormat::R16_FLOAT);
+                source.SetTextureInfo(3, Shader::TextureType::Color2D,
+                                      Shader::TexturePixelFormat::R16_FLOAT);
+                std::ostringstream serialized(std::ios::binary);
+                source.Serialize(serialized, ReadProperties);
+                std::string bytes = serialized.str();
+                if (!current) {
+                    if (const size_t at = bytes.find(marker); at != std::string::npos) {
+                        bytes.erase(at, marker.size());
+                        u64 count{};
+                        std::memcpy(&count, bytes.data() + 3 * sizeof(u64), sizeof(count));
+                        --count;
+                        std::memcpy(bytes.data() + 3 * sizeof(u64), &count, sizeof(count));
+                    }
+                }
+                std::istringstream file(bytes, std::ios::binary);
+                VideoCommon::FileEnvironment env;
+                env.Deserialize(file, std::streampos{static_cast<std::streamoff>(bytes.size())});
+                REQUIRE(env.ReadTextureType(3) == Shader::TextureType::Color2D);
+                REQUIRE(env.ReadTexturePixelFormat(3) == Shader::TexturePixelFormat::R16_FLOAT);
+                REQUIRE_FALSE(env.LacksRecordedValue(ReadProperties));
+                if (!current && native && program_id != 0x04008E001F098000ULL) {
+                    REQUIRE_THROWS_AS(env.ReadTextureType(0xbe000), Shader::LogicError);
+                    REQUIRE_THROWS_AS(env.ReadTexturePixelFormat(0xbe000), Shader::LogicError);
+                    REQUIRE(env.LacksRecordedValue(ReadProperties));
+                } else {
+                    REQUIRE(env.ReadTextureType(0xbe000) == Shader::TextureType::Color3D);
+                    REQUIRE(env.ReadTexturePixelFormat(0xbe000) ==
+                            Shader::TexturePixelFormat::R16_FLOAT);
+                    REQUIRE_FALSE(env.LacksRecordedValue(ReadProperties));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("Shader cache log reads accumulate chunks and preserve a short final prefix",
+          "[video_core][shader_cache_v2]") {
+    class BoundedStream final : public std::stringbuf {
+    public:
+        explicit BoundedStream(const std::string& data) : std::stringbuf{data} {}
+        std::streamsize xsgetn(char* output, std::streamsize size) override {
+            requests.push_back(size);
+            if (size > 64) {
+                return 0;
+            }
+            return std::stringbuf::xsgetn(output, size);
+        }
+        std::vector<std::streamsize> requests;
+    };
+    const std::string data(145, 'x');
+    for (const size_t available : {size_t{0}, size_t{63}, size_t{64}, size_t{65}, data.size()}) {
+        BoundedStream source{data.substr(0, available)};
+        std::istream stream{&source};
+        std::vector<u8> bytes(145, 0xcc);
+        const size_t read = V2::ReadLogBytes(stream, bytes, 64);
+        CHECK(read == available);
+        CHECK(std::all_of(bytes.begin(), bytes.begin() + read, [](u8 byte) { return byte == 'x'; }));
+        CHECK(std::all_of(bytes.begin() + read, bytes.end(), [](u8 byte) { return byte == 0xcc; }));
+        CHECK(source.requests.size() == available / 64 + 1);
+        CHECK(std::all_of(source.requests.begin(), source.requests.end(),
+                          [](auto size) { return size <= 64; }));
+    }
+}
 
 TEST_CASE("Shader cache v2: every kind of record reads back as written", "[video_core][shader_cache_v2]") {
     TestEnvironment fragment{Shader::Stage::Fragment};

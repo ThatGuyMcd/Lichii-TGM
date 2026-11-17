@@ -38,6 +38,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/shader_cache_v2/cache.h"
+#include "video_core/pipeline_cache_snapshot.h"
 #ifdef EGLANTINE_NVIDIA_DLSS
 #include "video_core/vulkan_common/nvidia_dlss.h"
 #include "common/scope_exit.h"
@@ -1340,7 +1341,13 @@ void Device::LoadStaticPipelineCache() {
         create(0, nullptr);
         return;
     }
-    create(data.size(), data.empty() ? nullptr : data.data());
+    try {
+        create(data.size(), data.empty() ? nullptr : data.data());
+    } catch (const vk::Exception& error) {
+        LOG_ERROR(Render_Vulkan, "Driver rejected the static pipeline cache ({}), starting empty",
+                  error.what());
+        create(0, nullptr);
+    }
 }
 
 void Device::SaveStaticPipelineCache() const {
@@ -1353,24 +1360,36 @@ void Device::SaveStaticPipelineCache() const {
     }
     size_t size = 0;
     std::vector<char> data;
-    static_pipeline_cache.Read(&size, nullptr);
-    if (size == 0) {
+    VkResult result = VK_INCOMPLETE;
+    for (size_t attempt = 0; attempt < 3 && result == VK_INCOMPLETE; ++attempt) {
+        result = static_pipeline_cache.Read(&size, nullptr);
+        if (result != VK_SUCCESS || size == 0) {
+            break;
+        }
+        data.resize(size);
+        result = static_pipeline_cache.Read(&size, data.data());
+    }
+    if (result != VK_SUCCESS || size == 0 || size > data.size()) {
         return;
     }
-    data.resize(size);
-    static_pipeline_cache.Read(&size, data.data());
-    try {
-        std::ofstream file(filename, std::ios::binary | std::ios::trunc);
-        file.exceptions(std::ofstream::failbit);
-        if (!file.is_open()) {
-            return;
+    const bool saved = VideoCommon::ReplacePipelineCacheSnapshot(filename, [&](const auto& file) {
+        if (file.WriteSpan(std::span<const char>{STATIC_CACHE_MAGIC_NUMBER}) !=
+                STATIC_CACHE_MAGIC_NUMBER.size() ||
+            !file.WriteObject(STATIC_CACHE_VERSION)) {
+            return false;
         }
-        file.write(STATIC_CACHE_MAGIC_NUMBER.data(), STATIC_CACHE_MAGIC_NUMBER.size())
-            .write(reinterpret_cast<const char*>(&STATIC_CACHE_VERSION),
-                   sizeof(STATIC_CACHE_VERSION))
-            .write(data.data(), static_cast<std::streamsize>(size));
-    } catch (const std::ios_base::failure& e) {
-        Common::FS::RemoveFile(filename);
+        constexpr size_t Chunk = size_t{64} << 20;
+        for (size_t offset = 0; offset < size; offset += Chunk) {
+            const auto bytes = std::span<const char>{data.data() + offset,
+                                                    (std::min)(Chunk, size - offset)};
+            if (file.WriteSpan(bytes) != bytes.size()) {
+                return false;
+            }
+        }
+        return true;
+    });
+    if (!saved) {
+        LOG_ERROR(Render_Vulkan, "Couldn't replace the static pipeline cache");
     }
 }
 

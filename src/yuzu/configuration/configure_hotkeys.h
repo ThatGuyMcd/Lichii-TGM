@@ -39,6 +39,11 @@ public:
      * @param registry The HotkeyRegistry whose data is used to populate the list.
      */
     void Populate(const HotkeyRegistry& registry);
+    bool CouchIsMapping() const;
+    void CouchCancelMapping() {
+        if (input_setter)
+            SetPollingResult(true);
+    }
 
 private:
     void changeEvent(QEvent* event) override;

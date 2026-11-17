@@ -67,6 +67,33 @@ TEST_CASE("Ampere TLD.SCR.LZ takes its handle from a uniform register", "[video_
     REQUIRE(((tld >> 31) & 0xf) == 7);
 }
 
+TEST_CASE("Ampere register-handle texel fetch spans cannot overwrite uniform shadows",
+          "[video_core][ampere]") {
+    // Independently assemble TLD.B.LZ from its fields: two or three coordinates followed by
+    // a handle. R216 becomes UR0's shadow only when the preceding UMOV is present.
+    const auto fetch = [](u32 dest, u32 a, u32 b, u32 second, u32 mask, u32 dimension) {
+        return Instruction{{0x7367U | (dest << 16) | (a << 24),
+                            b | (1U << 27) | (1U << 28) | (dimension << 29),
+                            second | (mask << 8) | (7U << 17) | (1U << 23), 0}};
+    };
+    constexpr Instruction uniform{{0x00007c02, 0, 0x08000f00, 0}};
+    for (const auto instruction : {fetch(4, 215, 12, 255, 3, 1),
+                                   fetch(4, 12, 215, 255, 3, 2),
+                                   fetch(215, 8, 12, 255, 3, 1),
+                                   fetch(4, 8, 12, 215, 15, 1)}) {
+        const auto rejected = LowerToMaxwell(std::array{uniform, instruction, EXIT});
+        INFO(rejected.error);
+        CHECK_FALSE(rejected);
+        CHECK(rejected.error == "native bindless texel fetch mode");
+        const auto plain = LowerToMaxwell(std::array{instruction, EXIT});
+        INFO(plain.error);
+        CHECK(static_cast<bool>(plain));
+    }
+    const auto boundary = LowerToMaxwell(std::array{uniform, fetch(214, 214, 12, 255, 3, 1), EXIT});
+    INFO(boundary.error);
+    CHECK(static_cast<bool>(boundary));
+}
+
 TEST_CASE("Ampere I2F converts signed 16-bit sources", "[video_core][ampere]") {
     // I2F.S16 R8, R8
     const std::array<Instruction, 2> code{{

@@ -261,8 +261,17 @@ void ShaderJobScheduler::Cancel(const ShaderJobBatch& batch) {
 
 void ShaderJobScheduler::RunOrWait(const ShaderJobHandle& handle) {
     Promote(handle, ShaderJobPriority::NeedNow);
+    ShaderJobState& job{*handle.state};
     std::unique_lock lock{mutex};
-    switch (handle.state->status.load()) {
+    if (job.status.load() == ShaderJobStatus::Cpu) {
+        lock.unlock();
+        {
+            std::unique_lock job_lock{job.mutex};
+            job.condition.wait(job_lock, [&] { return job.status.load() != ShaderJobStatus::Cpu; });
+        }
+        lock.lock();
+    }
+    switch (job.status.load()) {
     case ShaderJobStatus::Queued:
         StartStage(*handle.state, false, Clock::now());
         lock.unlock();
@@ -439,10 +448,14 @@ void ShaderJobScheduler::RunCpu(const JobPtr& job, bool run_driver_here) {
                 StartStage(*job, true, Clock::now());
                 run_driver = true;
             } else {
-                job->status = ShaderJobStatus::DriverQueued;
+                {
+                    std::scoped_lock job_lock{job->mutex};
+                    job->status = ShaderJobStatus::DriverQueued;
+                }
                 job->queued_priority = job->priority.load();
                 driver_queue[Index(job->queued_priority)].push_back(job);
                 driver_condition.notify_one();
+                job->condition.notify_all();
             }
         }
     }

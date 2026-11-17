@@ -7,6 +7,10 @@ on:
         description: Tested release tag with a draft and verified assets
         required: true
         type: string
+      manual_release:
+        description: Additional release explicitly requested by the owner
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -34,6 +38,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           REPO: ${{ github.repository }}
+          MANUAL_RELEASE: ${{ inputs.manual_release }}
         shell: bash
         run: |
           set -euo pipefail
@@ -43,8 +48,14 @@ jobs:
           mkdir "$ASSETS"
           gh release download "$TAG" --repo "$REPO" --dir "$ASSETS"
           gh api --paginate "repos/$REPO/releases?per_page=100" | jq -s add > "$RUNNER_TEMP/releases.json"
+          extra=()
+          case "$MANUAL_RELEASE" in
+            true) extra=(--manual) ;;
+            false|'') ;;
+            *) exit 1 ;;
+          esac
           python3 tools/release/plan_nightly_release.py --releases "$RUNNER_TEMP/releases.json" \
-            --journal "$RUNNER_TEMP/new-release-journal.json" --has-changes --output "$RUNNER_TEMP/release-plan.json"
+            --journal "$RUNNER_TEMP/new-release-journal.json" --has-changes "${extra[@]}" --output "$RUNNER_TEMP/release-plan.json"
           test "$TAG" = "$(jq -r .tag "$RUNNER_TEMP/release-plan.json")"
           BASELINE=$(jq -r .previous_release "$RUNNER_TEMP/release-plan.json")
           python3 tools/release/publication_guard.py source --require-clean --baseline "$BASELINE" \
@@ -61,6 +72,11 @@ jobs:
           SOURCE_COMMIT=$(git rev-parse HEAD) python3 - <<'PY'
           import json, os, pathlib
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'linux-package'
+          assets = pathlib.Path(os.environ['RUNNER_TEMP']) / 'release-assets'
+          manifest = json.loads((assets / 'release-manifest.json').read_text())
+          expected_kind = 'manual' if os.environ['MANUAL_RELEASE'] == 'true' else 'nightly'
+          if manifest.get('release_kind', 'nightly') != expected_kind:
+              raise SystemExit('Release kind does not match the authorised workflow request')
           info = json.loads((root / 'usr/share/lichii-tgm/build-info.json').read_text())
           if info['source_commit'] != os.environ['SOURCE_COMMIT'] or info['release_tag'] != os.environ['TAG']:
               raise SystemExit('Linux package identity mismatch')

@@ -415,6 +415,7 @@ std::optional<Decoded> Decode(const QString& code, QString& error) {
 
 void AddShareButton(QDialog* dialog, QDialogButtonBox* box, DialogHooks hooks) {
     auto* button = box->addButton(Tr("Share settings"), QDialogButtonBox::ResetRole);
+    button->setObjectName(QStringLiteral("couchShareSettings"));
     auto* menu = new QMenu(button);
     auto* copy_tab = menu->addAction(QString{});
     auto* copy_all = menu->addAction(Tr("Copy code for all settings"));

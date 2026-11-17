@@ -10,6 +10,12 @@ I've kept our Forest Lantern dark and light themes, selected-game artwork, large
 touch controls and full-screen settings. All of the settings and per-game overrides
 are still here. Compatibility and performance depend on your game, hardware and driver.
 
+I've added an optional [Couch Mode](docs/CouchMode.md) with a full-screen library,
+controller navigation, theme packs and the same settings and save paths as Desktop.
+The first-launch invitation offers **Switch now**, **Later** and **Never ask again**.
+You can also open it from **View → Couch Mode** or **Ctrl+Shift+C**, and choose
+**Start in Couch Mode** in settings.
+
 ## Downloads
 
 You can get the Windows ZIP and Linux AppImage from

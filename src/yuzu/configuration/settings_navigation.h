@@ -207,6 +207,16 @@ public:
         return current;
     }
 
+    void SetCurrentPage(QWidget* widget) {
+        for (size_t index = 0; index < pages.size(); ++index) {
+            if (pages[index].spec.widget == widget) {
+                Select(static_cast<int>(index));
+                selection->setCurrentItem(pages[index].item);
+                return;
+            }
+        }
+    }
+
     void Retranslate() {
         search->setPlaceholderText(tr("Search settings…"));
         search->setAccessibleName(tr("Search settings"));

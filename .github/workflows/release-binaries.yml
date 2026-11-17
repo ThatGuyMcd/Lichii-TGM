@@ -455,6 +455,7 @@ jobs:
           cp dist/lichii.png "$icon"
           export APPIMAGE_EXTRACT_AND_RUN=1
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export QML_SOURCES_PATHS="$GITHUB_WORKSPACE/dist/qt_themes/couch"
           # Include Wayland platform plugins and their graphics/shell integrations.
           export EXTRA_QT_MODULES=waylandcompositor
           export EXTRA_PLATFORM_PLUGINS='libqwayland-egl.so;libqwayland-generic.so'
@@ -486,7 +487,7 @@ jobs:
               throw "build/release/bin/$exe was not produced"
             }
           }
-          windeployqt --release --no-translations build/release/bin/lichii.exe
+          windeployqt --release --no-translations --qmldir dist/qt_themes/couch build/release/bin/lichii.exe
 
       # A self-contained app bundle: macdeployqt copies Qt and every other Homebrew library both
       # programs load into the bundle, then the leftover Homebrew and build-tree search paths are

@@ -300,6 +300,7 @@ void ConfigurePostProcessing::BuildUniformWidget(QWidget* parent, QVBoxLayout* l
         auto* row = new QHBoxLayout();
         row->addWidget(new QLabel(label, parent));
         auto* combo = new QComboBox(parent);
+        combo->setAccessibleName(tr("Effect %1 / %2").arg(index + 1).arg(label));
         for (size_t i = 0; i < uniform.items.size(); ++i) {
             combo->addItem(QString::fromStdString(uniform.items[i]), static_cast<int>(i));
         }
@@ -340,6 +341,10 @@ void ConfigurePostProcessing::BuildUniformWidget(QWidget* parent, QVBoxLayout* l
         value_label->setText(FormatValue(uniform, value[component]));
 
         auto* slider = new QSlider(Qt::Horizontal, parent);
+        slider->setAccessibleName(tr("Effect %1 / %2").arg(index + 1).arg(component_label));
+        slider->setProperty("couchMinimum", uniform.ui_min);
+        slider->setProperty("couchMaximum", uniform.ui_max);
+        slider->setProperty("couchStep", uniform.ui_step);
         slider->setMinimum(0);
         slider->setMaximum(SliderSteps(uniform));
         slider->setValue(
@@ -377,12 +382,14 @@ QWidget* ConfigurePostProcessing::BuildSlot(int index, const VideoCore::FxChainE
     auto* header = new QHBoxLayout();
 
     auto* toggle = new QToolButton(group);
+    toggle->setAccessibleName(tr("Effect %1 / Show parameters").arg(index + 1));
     toggle->setArrowType(Qt::RightArrow);
     toggle->setAutoRaise(true);
     toggle->setCheckable(true);
     header->addWidget(toggle);
 
     auto* combo = new QComboBox(group);
+    combo->setAccessibleName(tr("Effect %1 / Shader").arg(index + 1));
     PopulateEffectCombo(combo, entry);
     connect(combo, &QComboBox::currentIndexChanged, this, [this, index, combo](int) {
         const QString key = combo->currentData().toString();
@@ -398,6 +405,7 @@ QWidget* ConfigurePostProcessing::BuildSlot(int index, const VideoCore::FxChainE
     header->addWidget(combo, 1);
 
     auto* up_button = new QToolButton(group);
+    up_button->setAccessibleName(tr("Effect %1 / Move up").arg(index + 1));
     up_button->setText(QStringLiteral("▲"));
     up_button->setEnabled(index > 0);
     connect(up_button, &QToolButton::clicked, this, [this, index]() {
@@ -407,6 +415,7 @@ QWidget* ConfigurePostProcessing::BuildSlot(int index, const VideoCore::FxChainE
     header->addWidget(up_button);
 
     auto* down_button = new QToolButton(group);
+    down_button->setAccessibleName(tr("Effect %1 / Move down").arg(index + 1));
     down_button->setText(QStringLiteral("▼"));
     down_button->setEnabled(static_cast<size_t>(index) + 1 < VideoCore::FxChain::Instance().Size());
     connect(down_button, &QToolButton::clicked, this, [this, index]() {
@@ -416,6 +425,7 @@ QWidget* ConfigurePostProcessing::BuildSlot(int index, const VideoCore::FxChainE
     header->addWidget(down_button);
 
     auto* reset_button = new QToolButton(group);
+    reset_button->setAccessibleName(tr("Effect %1 / Reset").arg(index + 1));
     reset_button->setText(QStringLiteral("⟲"));
     reset_button->setToolTip(tr("Reset to defaults"));
     connect(reset_button, &QToolButton::clicked, this, [this, index]() {
@@ -425,6 +435,7 @@ QWidget* ConfigurePostProcessing::BuildSlot(int index, const VideoCore::FxChainE
     header->addWidget(reset_button);
 
     auto* remove_button = new QToolButton(group);
+    remove_button->setAccessibleName(tr("Effect %1 / Remove").arg(index + 1));
     remove_button->setText(QStringLiteral("✕"));
     connect(remove_button, &QToolButton::clicked, this, [this, index]() {
         VideoCore::FxChain::Instance().Remove(static_cast<size_t>(index));

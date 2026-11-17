@@ -495,7 +495,7 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
                         {audio_tab.get(), QStringLiteral("aud")},
                         {applets_tab.get(), QStringLiteral("app")},
                     };
-                    const auto it = sections.find(ui->tabWidget->currentWidget());
+                    const auto it = sections.find(navigation->CurrentPage());
                     return it == sections.end() ? QString{} : it->second;
                 },
             .builder = builder.get(),
@@ -598,6 +598,48 @@ void ConfigurePerGame::HandleApplyButtonClicked() {
     ApplyConfiguration();
     UpdateSettingsShell();
     QtCommon::TouchUi::MarkApplied(this);
+}
+
+bool ConfigurePerGame::CouchApply() {
+    if (detect_watcher.isRunning() || !SaveCustomMetadata(true))
+        return false;
+    ApplyConfiguration();
+    QtCommon::TouchUi::MarkApplied(this);
+    return true;
+}
+
+std::vector<QtCommon::Couch::SettingsPage> ConfigurePerGame::CouchPages() const {
+    return {
+        {info_page, QStringLiteral("game-general"), tr("Game information"), QStringLiteral("Game")},
+        {addons_tab.get(), QStringLiteral("addons"), tr("Updates, DLC & mods"),
+         QStringLiteral("Game")},
+        {system_tab.get(), QStringLiteral("system"), tr("System"), QStringLiteral("Emulation")},
+        {cpu_tab.get(), QStringLiteral("cpu"), tr("CPU"), QStringLiteral("Emulation")},
+        {applets_tab.get(), QStringLiteral("applets"), tr("Applets"), QStringLiteral("Emulation")},
+        {graphics_tab.get(), QStringLiteral("graphics"), tr("Graphics"), QStringLiteral("Video")},
+        {graphics_advanced_tab.get(), QStringLiteral("graphics-advanced"), tr("Advanced graphics"),
+         QStringLiteral("Video")},
+        {graphics_extensions_tab.get(), QStringLiteral("graphics-extensions"),
+         tr("Graphics extensions"), QStringLiteral("Video")},
+        {audio_tab.get(), QStringLiteral("audio"), tr("Audio"), QStringLiteral("Devices")},
+        {input_tab.get(), QStringLiteral("input-profiles"), tr("Input profiles"),
+         QStringLiteral("Devices")},
+        {network_tab.get(), QStringLiteral("network"), tr("Network"), QStringLiteral("Services")},
+    };
+}
+
+void ConfigurePerGame::CouchSelectPage(const QString& id) {
+    for (const auto& page : CouchPages()) {
+        const bool matches =
+            page.id == id ||
+            (page.id == QStringLiteral("cpu") && id == QStringLiteral("cpu-unsafe")) ||
+            (page.id == QStringLiteral("graphics-advanced") &&
+             id == QStringLiteral("graphics-hacks"));
+        if (matches) {
+            navigation->SetCurrentPage(page.widget);
+            return;
+        }
+    }
 }
 
 void ConfigurePerGame::LoadFromFile(FileSys::VirtualFile file_) {

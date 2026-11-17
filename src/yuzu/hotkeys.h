@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <map>
 #include <QKeySequence>
 #include <QString>
@@ -39,6 +40,9 @@ public:
 
     void SetEnabled(bool enable);
     bool IsEnabled() const;
+    void SetSuspended(bool suspended) {
+        is_suspended.store(suspended, std::memory_order_relaxed);
+    }
 
 Q_SIGNALS:
     void Activated();
@@ -46,6 +50,7 @@ Q_SIGNALS:
 private:
     void ControllerUpdateEvent(Core::HID::ControllerTriggerType type);
 
+    std::atomic_bool is_suspended{};
     bool is_enabled{};
     bool active{};
     int callback_key{};
@@ -68,6 +73,7 @@ public:
      *       registered.
      */
     void LoadHotkeys();
+    void SetCouchNavigationActive(bool active);
 
     /**
      * Saves all registered hotkeys to the settings file.
@@ -124,4 +130,5 @@ private:
     using HotkeyGroupMap = std::map<std::string, HotkeyMap>;
 
     HotkeyGroupMap hotkey_groups;
+    bool couch_navigation_active{};
 };

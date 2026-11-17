@@ -3,17 +3,28 @@
 
 #pragma once
 
+#include <array>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <QDialog>
 
+class QPushButton;
+namespace Common {
+class ParamPackage;
+}
 namespace InputCommon {
 class InputSubsystem;
+namespace Polling {
+enum class InputType;
+}
 } // namespace InputCommon
 
 namespace Core::HID {
 class HIDCore;
 class EmulatedController;
+enum class ControllerTriggerType;
 } // namespace Core::HID
 
 namespace Ui {
@@ -27,6 +38,8 @@ public:
     explicit ConfigureRingController(QWidget* parent, InputCommon::InputSubsystem* input_subsystem_,
                                      Core::HID::HIDCore& hid_core_);
     ~ConfigureRingController() override;
+    bool CouchIsMapping() const;
+    void CouchMappingKey(int key);
 
     void ApplyConfiguration();
 

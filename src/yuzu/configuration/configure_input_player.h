@@ -74,6 +74,9 @@ public:
     /// Clear all input configuration.
     void ClearAll();
 
+    bool CouchIsMapping() const;
+    void CouchMappingKey(int key);
+
 signals:
     /// Emitted when this controller is (dis)connected by the user.
     void Connected(bool connected);

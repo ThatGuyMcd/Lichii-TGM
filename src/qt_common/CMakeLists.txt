@@ -11,6 +11,11 @@ add_library(qt_common STATIC
     touch_ui.h
     cover_art.cpp
     cover_art.h
+    couch/widget_model.cpp couch/widget_model.h
+    couch/theme.cpp couch/theme.h
+    couch/native_dialog.cpp couch/native_dialog.h
+    couch/welcome.cpp couch/welcome.h
+    ${PROJECT_SOURCE_DIR}/dist/qt_themes/couch/couch.qrc
     ${PROJECT_SOURCE_DIR}/dist/qt_themes/forest/forest.qrc
     qt_common.h
     qt_common.cpp
@@ -60,6 +65,7 @@ create_target_directory_groups(qt_common)
 if (YUZU_TESTS)
     add_executable(mod_rename_tests
         ../tests/qt_common/mod.cpp
+        ../tests/qt_common/patch_cache.cpp
         util/mod.cpp)
     target_link_libraries(mod_rename_tests PRIVATE
         frontend_common common Qt6::Widgets QuaZip::QuaZip Catch2::Catch2WithMain)
@@ -93,7 +99,7 @@ if (USE_DISCORD_PRESENCE)
 endif()
 
 # TODO(crueter)
-target_link_libraries(qt_common PRIVATE Qt6::Widgets)
+target_link_libraries(qt_common PUBLIC Qt6::QuickWidgets Qt6::QuickControls2 Qt6::Qml PRIVATE Qt6::Widgets)
 
 target_compile_definitions(qt_common PUBLIC
     # Use QStringBuilder for string concatenation to reduce

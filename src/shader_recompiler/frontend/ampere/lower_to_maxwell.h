@@ -2423,10 +2423,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const u32 dimension = insn.Bits(61, 3), coordinates = coordinate_count[dimension];
             const u32 count = coordinates + 1, in_a = (count + 1) / 2;
+            const u32 components = static_cast<u32>(std::popcount(mask));
+            const bool split = second_dest != 255;
+            const u32 limit = uses_uniform_bank ? high_uniform_base : 246U;
             if (coordinates == 0 || !insn.Bits(59, 1) || !insn.Bits(60, 1) || insn.Bits(40, 19) ||
                 insn.Bits(76, 5) || insn.Bits(81, 3) != 7 || insn.Bits(87, 3) != 1 || insn.Bits(91, 1) ||
-                mask == 0 || source_a == 255 || source_a + in_a > 246 || source_b == 255 ||
-                source_b + (count - in_a) > 246)
+                mask == 0 || source_a == 255 || source_a + in_a > limit || source_b == 255 ||
+                source_b + (count - in_a) > limit ||
+                (uses_uniform_bank && dest != 255 && dest + (split ? (std::min)(components, 2U) : components) > limit) ||
+                (uses_uniform_bank && split && components > 2 && second_dest + components - 2 > limit))
                 return fail(index, "native bindless texel fetch mode");
             const auto value = [&](u32 i) { return i < in_a ? source_a + i : source_b + (i - in_a); };
             const auto copy = [&](u32 target, u32 source) {
@@ -2437,8 +2442,6 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             emit(0xdd00000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
                  (u64{maxwell_type[dimension]} << 28) | (u64{mask} << 31) | (u64{insn.Bits(90, 1)} << 49) |
                  (u64{7} << 51));
-            const u32 components = static_cast<u32>(std::popcount(mask));
-            const bool split = second_dest != 255;
             for (u32 i = 0; i < components; ++i) {
                 u32 target = 255;
                 if (!split || i < 2) target = dest == 255 ? 255U : static_cast<u32>(dest) + i;

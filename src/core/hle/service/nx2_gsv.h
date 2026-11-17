@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "core/hle/service/nx2_syncpoint_poll.h"
+
 #include <algorithm>
 #include <array>
 #include <thread>
@@ -4429,25 +4431,27 @@ private:
     }
 
     // Mirrors Eden's guest syncpoint values into the shared RO page. Returns true if any changed.
-    bool UpdateSyncptValues() {
+    bool UpdateSyncptValues(std::span<u64> changed_ids = {}) {
         auto& manager = system.Host1x().GetSyncpointManager();
         bool changed = false;
         manager.WithGuestValuesStable([&] {
             for (u32 id = 0; id < std::min(m_syncpt_count, HostSyncpoints); ++id) {
-                const u64 value = manager.GetGuestSyncpointValue(id);
+                const u32 value = manager.GetGuestSyncpointValue(id);
                 const u64 address = m_syncpt_ro + SyncptValuesOffset + id * 8;
                 if (m_syncpt_memory->Read64(address) != value) {
                     m_syncpt_memory->Write64(address, value);
                     changed = true;
+                }
+                if (!changed_ids.empty()) {
+                    m_syncpt_polled_values.Observe(id, value, changed_ids);
                 }
             }
         });
         return changed;
     }
 
-    // Answers every armed wait: the value page is current, so the client rechecks its threshold
-    // and rearms if it still has to wait. Acknowledging without a value change costs the client a
-    // wakeup per poll, which keeps waits whose syncpoint we never see from hanging.
+    // Acknowledge changed armed words and notify unchanged armed bits whose value advanced.
+    // The guest rechecks its threshold and rearms if it still has to wait.
     void PollSyncpts() {
         if (m_syncpt_memory == nullptr) {
             return;
@@ -4457,12 +4461,16 @@ private:
         for (u32 w = 0; w < words; ++w) {
             armed[w] = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
         }
-        UpdateSyncptValues();
+        std::array<u64, 0x40> changed_ids{};
+        UpdateSyncptValues(changed_ids);
         bool acked = false;
         for (u32 w = 0; w < words; ++w) {
             const u64 ro_address = m_syncpt_ro + SyncptRoBitsOffset + w * 8;
             if (m_syncpt_memory->Read64(ro_address) != armed[w]) {
                 m_syncpt_memory->Write64(ro_address, armed[w]);
+                acked = true;
+            }
+            if (w < changed_ids.size() && (armed[w] & changed_ids[w]) != 0) {
                 acked = true;
             }
         }
@@ -4955,6 +4963,7 @@ private:
     u64 m_syncpt_rw{};
     u64 m_syncpt_ro{};
     u32 m_syncpt_count{};
+    Nx2SyncpointPollSnapshot<HostSyncpoints> m_syncpt_polled_values;
     std::shared_ptr<Core::Timing::EventType> m_syncpt_poll;
 };
 

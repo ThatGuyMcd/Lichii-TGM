@@ -430,3 +430,6 @@ void ConfigureHotkeys::RestoreHotkey(QModelIndex index) {
         model->setData(index, default_key_sequence.toString(QKeySequence::NativeText));
     }
 }
+bool ConfigureHotkeys::CouchIsMapping() const {
+    return input_setter.has_value() && poll_timer->isActive();
+}

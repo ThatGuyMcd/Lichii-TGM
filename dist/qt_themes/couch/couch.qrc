@@ -1,0 +1,15 @@
+<RCC>
+  <qresource prefix="/couch">
+    <file>Horizon.qml</file>
+    <file>CButton.qml</file>
+    <file>CIcon.qml</file>
+    <file>TreeBrowser.qml</file>
+    <file>ChoiceMenu.qml</file>
+    <file>ShellModal.qml</file>
+    <file>NativeDialog.qml</file>
+    <file>Editor.qml</file>
+    <file>Keyboard.qml</file>
+    <file>ThemeLayers.qml</file>
+    <file>catalogue.json</file>
+  </qresource>
+</RCC>

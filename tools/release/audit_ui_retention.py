@@ -17,6 +17,8 @@ def main():
     parser.add_argument('--upstream', help='Reviewed upstream commit whose additions are permitted')
     parser.add_argument('--ui-upstream', help='UI integration boundary when later upstream layouts are retained locally')
     parser.add_argument('--output', type=pathlib.Path)
+    parser.add_argument('--couch', action='store_true',
+                        help='Review the optional Couch page addition while retaining every original apply call')
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[2]
 
@@ -84,7 +86,12 @@ def main():
     for path, signature in apply_paths.items():
         old = git('show', f'{baseline}:{path}').decode()
         new = (root / path).read_text(encoding='utf-8')
-        assert function(old, signature) == function(new, signature), f'Apply path changed: {path}'
+        current = function(new, signature)
+        if args.couch and path == 'src/yuzu/configuration/configure_dialog.cpp':
+            addition = 'couch_tab->ApplyConfiguration();'
+            assert current.count(addition) == 1, 'Couch settings must use their native apply path once'
+            current = current.replace(addition, '')
+        assert function(old, signature) == current, f'Original apply path changed: {path}'
 
     def declarations(content):
         text = content.decode('utf-8')
@@ -139,6 +146,7 @@ def main():
         'upstream_updated_ui_forms': updated_forms,
         'retained_form_widgets': widget_count,
         'unchanged_apply_paths': list(apply_paths),
+        'reviewed_couch_apply_extension': args.couch,
         'setting_definitions_match_baseline_plus_upstream': True,
         'original_setting_declarations_retained': len(original_settings),
         'upstream_updated_settings': updated_settings,

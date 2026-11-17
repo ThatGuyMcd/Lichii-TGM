@@ -248,7 +248,7 @@ private:
         std::shared_ptr<const std::vector<Tegra::Texture::TICEntry>> texture_pool;
         u32 texture_pool_limit{};
         bool via_header_index{};
-        bool native_tiling{};
+        bool header_byte_offset_handles{};
 
         /// Keys (index, offset) of the 4-byte aligned constant buffer slots whose 8 bytes were a
         /// mapped GPU address.

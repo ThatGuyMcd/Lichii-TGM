@@ -76,6 +76,7 @@ ControllerShortcut* HotkeyRegistry::GetControllerHotkey(const std::string& group
         hk.controller_shortcut->SetKey(hk.controller_keyseq);
     }
 
+    hk.controller_shortcut->SetSuspended(couch_navigation_active);
     return hk.controller_shortcut;
 }
 
@@ -187,6 +188,10 @@ bool ControllerShortcut::IsEnabled() const {
 }
 
 void ControllerShortcut::ControllerUpdateEvent(Core::HID::ControllerTriggerType type) {
+    if (is_suspended.load(std::memory_order_relaxed)) {
+        active = false;
+        return;
+    }
     if (!is_enabled) {
         return;
     }
@@ -214,4 +219,11 @@ void ControllerShortcut::ControllerUpdateEvent(Core::HID::ControllerTriggerType 
         return;
     }
     active = false;
+}
+void HotkeyRegistry::SetCouchNavigationActive(bool active) {
+    couch_navigation_active = active;
+    for (const auto& group : hotkey_groups)
+        for (const auto& entry : group.second)
+            if (entry.second.controller_shortcut)
+                entry.second.controller_shortcut->SetSuspended(active);
 }

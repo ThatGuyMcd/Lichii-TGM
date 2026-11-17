@@ -135,5 +135,27 @@ class PublicationPolicyTests(unittest.TestCase):
         releases = [{'tag_name': 'Lichii-tgm-v1.0.4', 'published_at': '2026-11-17T01:40:00Z'}]
         self.assertEqual(planner.plan(releases, {}, True, now)['action'], 'already_published')
 
+    def test_explicit_manual_release_keeps_next_patch_and_nightly_date_guard(self):
+        now = datetime(2026, 11, 17, 12, tzinfo=timezone.utc)
+        releases = [{'tag_name': 'Lichii-tgm-v1.0.4', 'published_at': '2026-11-17T11:33:30Z'}]
+        journal = {'runs': [{'london_date': '2026-11-17', 'status': 'published'}]}
+        self.assertEqual(planner.plan(releases, journal, True, now)['action'], 'already_published')
+        result = planner.plan(releases, journal, True, now, manual=True)
+        self.assertEqual(result['tag'], 'Lichii-tgm-v1.0.5')
+        self.assertEqual(result['release_kind'], 'manual')
+        releases.append({'tag_name': 'Lichii-tgm-v1.0.5', 'published_at': '2026-11-17T12:10:00Z'})
+        tomorrow = datetime(2026, 11, 18, 1, tzinfo=timezone.utc)
+        self.assertEqual(planner.plan(releases, journal, True, tomorrow)['tag'], 'Lichii-tgm-v1.0.6')
+
+    def test_manual_drafts_and_empty_runs_do_not_consume_versions(self):
+        now = datetime(2026, 11, 17, 12, tzinfo=timezone.utc)
+        releases = [{'tag_name': 'Lichii-tgm-v1.0.4'},
+                    {'tag_name': 'Lichii-tgm-v1.0.5', 'draft': True, 'id': 8}]
+        result = planner.plan(releases, {}, True, now, manual=True)
+        self.assertEqual(result['action'], 'resume_draft')
+        self.assertEqual(result['draft_id'], 8)
+        self.assertEqual(result['tag'], 'Lichii-tgm-v1.0.5')
+        self.assertEqual(planner.plan(releases, {}, False, now, manual=True)['action'], 'no_changes')
+
 if __name__ == '__main__':
     unittest.main()

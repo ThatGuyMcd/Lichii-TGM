@@ -186,7 +186,7 @@ TEST_CASE("NSP discovery skips unreadable NCA metadata", "[.][core][file_sys][nc
             // Decrypted update: a real single-entry indirect tree maps all logical bytes
             // to the patch itself. The retained counter table is already decrypted.
             std::vector<u8> section(0x10200);
-            const auto partition = MakePfs0WithFiles({{"main", {0}}});
+            const auto partition = MakePfs0WithFiles({{"main", {0}}, {"main.npdm", {0}}});
             std::copy(partition.begin(), partition.end(), section.begin());
             const BucketTree::NodeHeader node{0, 1, 0x8000};
             Put(section, 0x8000, node);

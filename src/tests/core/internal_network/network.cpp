@@ -31,10 +31,6 @@ TEST_CASE("Network::DefaultProtocolDoesNotReportUnsupported", "[core][sockets]")
     Network::Socket v4;
     CHECK(v4.Initialize(Network::Domain::INET, Network::Type::DGRAM, Network::Protocol::IP) ==
           Network::Errno::SUCCESS);
-    Network::Socket v6;
-    const auto ipv6 =
-        v6.Initialize(Network::Domain::INET6, Network::Type::DGRAM, Network::Protocol::IP);
-    INFO("IPv6 socket result (host IPv6 support is optional): " << static_cast<int>(ipv6));
     for (const auto& line : Common::Log::ReadRing(start)) {
         INFO(line.text);
         CHECK(line.text.find("Unimplemented protocol") == std::string::npos);

@@ -324,6 +324,10 @@ target_compile_definitions(tests PRIVATE
     LICHII_NX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/core/nx_fixtures")
 
 add_test(NAME tests COMMAND tests)
+# KeyManager intentionally retains loaded keys. Keep missing-key diagnostics and
+# synthetic encrypted-header fixtures in separate processes from install tests.
+add_test(NAME nca_discovery COMMAND tests "[nca_discovery]")
+add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 
 if (ENABLE_NVIDIA_DLSS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(ngx_smoke EXCLUDE_FROM_ALL video_core/ngx_smoke.cpp)

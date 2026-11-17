@@ -113,11 +113,25 @@ std::vector<u8> MakeDiscoveryNca(u64 title_id, NcaHeader::ContentType type,
     return bytes;
 }
 
-TEST_CASE("NSP discovery skips unreadable NCA metadata", "[core][file_sys][nca_discovery]") {
+TEST_CASE("NSP discovery retains the missing header key diagnostic",
+          "[.][core][file_sys][nca_missing_keys]") {
     ScopedParserKeysDirectory keys_directory;
-    if (Core::Crypto::KeyManager::Instance().HasKey(Core::Crypto::S256KeyType::Header)) {
-        SKIP("A header key is installed");
+    REQUIRE_FALSE(Core::Crypto::KeyManager::Instance().HasKey(Core::Crypto::S256KeyType::Header));
+    std::vector<std::pair<std::string, std::vector<u8>>> files;
+    for (unsigned i = 0; i < 61; ++i) {
+        files.emplace_back(std::to_string(i) + ".cnmt.nca", std::vector<u8>(0xC00, 0xA5));
     }
+    const NSP nsp{MakeFile(MakePfs0WithFiles(files))};
+    CHECK(nsp.GetProgramStatus() == Loader::ResultStatus::ErrorMissingHeaderKey);
+    CHECK(nsp.GetProgramTitleID() == 0);
+    CHECK(nsp.GetProgramTitleIDs().empty());
+}
+
+TEST_CASE("NSP discovery skips unreadable NCA metadata", "[.][core][file_sys][nca_discovery]") {
+    ScopedParserKeysDirectory keys_directory;
+    const auto header_key = keys_directory.InstallSyntheticHeaderKey();
+    REQUIRE(Core::Crypto::KeyManager::Instance().GetKey(Core::Crypto::S256KeyType::Header) ==
+            header_key);
     Common::Log::Initialize();
     Common::Log::SetRingCapacity(1024);
     SCOPE_EXIT { Common::Log::SetRingCapacity(0); };
@@ -127,12 +141,12 @@ TEST_CASE("NSP discovery skips unreadable NCA metadata", "[core][file_sys][nca_d
     std::vector<std::pair<std::string, std::vector<u8>>> files;
     const std::vector<u8> unreadable(0xC00, 0xA5);
 
-    SECTION("Encrypted metadata without keys retains its error without a title ID") {
+    SECTION("Unreadable metadata retains its error without a title ID") {
         for (unsigned i = 0; i < 61; ++i) {
             files.emplace_back(std::to_string(i) + ".cnmt.nca", unreadable);
         }
         const NSP nsp{MakeFile(MakePfs0WithFiles(files))};
-        CHECK(nsp.GetProgramStatus() == Loader::ResultStatus::ErrorMissingHeaderKey);
+        CHECK(nsp.GetProgramStatus() == Loader::ResultStatus::ErrorBadNCAHeader);
         CHECK(nsp.GetProgramTitleID() == 0);
         CHECK(nsp.GetProgramTitleIDs().empty());
     }
@@ -152,10 +166,10 @@ TEST_CASE("NSP discovery skips unreadable NCA metadata", "[core][file_sys][nca_d
                            MakeDiscoveryNca(TitleId, NcaHeader::ContentType::Meta,
                                             MakePfs0WithFiles({{"test.cnmt", cnmt.Serialize()}})));
 
-        SECTION("An unreadable program retains its missing-key diagnostic") {
+        SECTION("An unreadable program retains its bad-header diagnostic") {
             files.emplace_back(program_name, unreadable);
             const NSP nsp{MakeFile(MakePfs0WithFiles(files))};
-            CHECK(nsp.GetProgramStatus() == Loader::ResultStatus::ErrorMissingHeaderKey);
+            CHECK(nsp.GetProgramStatus() == Loader::ResultStatus::ErrorBadNCAHeader);
             CHECK(nsp.GetProgramTitleIDs().empty());
         }
         SECTION("An unreadable metadata sibling does not mask a valid program") {
@@ -169,12 +183,32 @@ TEST_CASE("NSP discovery skips unreadable NCA metadata", "[core][file_sys][nca_d
             CHECK(nsp.GetProgramTitleIDs() == std::vector<u64>{TitleId});
         }
         SECTION("An initialized update retains its metadata without a base RomFS") {
-            auto program = MakeDiscoveryNca(TitleId, NcaHeader::ContentType::Program,
-                                            MakePfs0WithFiles({{"main", {0}}}));
+            // Decrypted update: a real single-entry indirect tree maps all logical bytes
+            // to the patch itself. The retained counter table is already decrypted.
+            std::vector<u8> section(0x10200);
+            const auto partition = MakePfs0WithFiles({{"main", {0}}});
+            std::copy(partition.begin(), partition.end(), section.begin());
+            const BucketTree::NodeHeader node{0, 1, 0x8000};
+            Put(section, 0x8000, node);
+            Put(section, 0x8000 + sizeof(node), s64{0});
+            Put(section, 0xC000, node);
+            IndirectStorage::Entry entry{};
+            entry.storage_index = 1;
+            Put(section, 0xC000 + sizeof(node), entry);
+            auto program = MakeDiscoveryNca(TitleId, NcaHeader::ContentType::Program, section);
             NcaFsHeader fs{};
             std::memcpy(&fs, program.data() + NcaHeader::Size, sizeof(fs));
-            fs.encryption_type = NcaFsHeader::EncryptionType::AesCtrEx;
+            fs.patch_info.indirect_offset = 0x8000;
+            fs.patch_info.indirect_size = 0x8000;
+            fs.patch_info.aes_ctr_ex_offset = 0x10000;
+            fs.patch_info.aes_ctr_ex_size = 0x200;
+            BucketTree::Header table_header;
+            table_header.Format(1);
+            std::memcpy(fs.patch_info.indirect_header.data(), &table_header, sizeof(table_header));
             Put(program, NcaHeader::Size, fs);
+            const NCA update{MakeFile(program)};
+            REQUIRE(update.GetStatus() == Loader::ResultStatus::ErrorMissingBKTRBaseRomFS);
+            REQUIRE(update.IsUpdate());
             files.emplace_back(program_name, std::move(program));
             const NSP nsp{MakeFile(MakePfs0WithFiles(files))};
             CHECK(nsp.GetProgramStatus() == Loader::ResultStatus::ErrorMissingBKTRBaseRomFS);
@@ -190,11 +224,9 @@ TEST_CASE("NSP discovery skips unreadable NCA metadata", "[core][file_sys][nca_d
             // no test derives.
             constexpr u8 KeyGeneration = 0x10; // master key 0x0F
             Put(base, offsetof(NcaHeader, key_generation), KeyGeneration);
-            if (Core::Crypto::KeyManager::Instance().HasKey(
+            REQUIRE_FALSE(Core::Crypto::KeyManager::Instance().HasKey(
                     Core::Crypto::S128KeyType::KeyArea, KeyGeneration - 1,
-                    static_cast<u64>(Core::Crypto::KeyAreaKeyType::Application))) {
-                SKIP("A key area key for this key generation is loaded");
-            }
+                    static_cast<u64>(Core::Crypto::KeyAreaKeyType::Application)));
             REQUIRE(NCA{MakeFile(base)}.GetStatus() ==
                     Loader::ResultStatus::ErrorMissingKeyAreaKey);
             files.emplace_back(program_name, std::move(base));
@@ -246,6 +278,7 @@ TEST_CASE("NSP discovery skips unreadable NCA metadata", "[core][file_sys][nca_d
     for (const auto& line : Common::Log::ReadRing(0)) {
         INFO(line.text);
         CHECK(line.text.find("m_body_storage != nullptr") == std::string::npos);
+        CHECK(line.text.find("EVP_CipherInit_ex2") == std::string::npos);
     }
 }
 
@@ -482,10 +515,10 @@ TEST_CASE("NCA with an AES-XTS section opens a storage", "[core][file_sys]") {
     REQUIRE(nca.Open() == ResultSuccess);
 }
 
-TEST_CASE("NCA without a header key reports the missing key", "[core][file_sys]") {
-    if (Core::Crypto::KeyManager::Instance().HasKey(Core::Crypto::S256KeyType::Header)) {
-        SKIP("A header key is installed");
-    }
+TEST_CASE("NCA without a header key reports the missing key",
+          "[.][core][file_sys][nca_missing_keys]") {
+    ScopedParserKeysDirectory keys_directory;
+    REQUIRE_FALSE(Core::Crypto::KeyManager::Instance().HasKey(Core::Crypto::S256KeyType::Header));
     const NCA nca{MakeFile(std::vector<u8>(0xC00, 0xA5))};
     CHECK(nca.GetStatus() == Loader::ResultStatus::ErrorMissingHeaderKey);
 }
@@ -653,11 +686,11 @@ TEST_CASE("XCI with a secure partition parses", "[core][file_sys]") {
 }
 
 TEST_CASE("XCI discovery skips unreadable normal-partition NCAs",
-          "[core][file_sys][nca_discovery]") {
+          "[.][core][file_sys][nca_discovery]") {
     ScopedParserKeysDirectory keys_directory;
-    if (Core::Crypto::KeyManager::Instance().HasKey(Core::Crypto::S256KeyType::Header)) {
-        SKIP("A header key is installed");
-    }
+    const auto header_key = keys_directory.InstallSyntheticHeaderKey();
+    REQUIRE(Core::Crypto::KeyManager::Instance().GetKey(Core::Crypto::S256KeyType::Header) ==
+            header_key);
     Common::Log::Initialize();
     Common::Log::SetRingCapacity(256);
     SCOPE_EXIT { Common::Log::SetRingCapacity(0); };
@@ -680,6 +713,7 @@ TEST_CASE("XCI discovery skips unreadable normal-partition NCAs",
     for (const auto& line : Common::Log::ReadRing(0)) {
         INFO(line.text);
         CHECK(line.text.find("m_body_storage != nullptr") == std::string::npos);
+        CHECK(line.text.find("EVP_CipherInit_ex2") == std::string::npos);
     }
 }
 

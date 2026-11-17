@@ -19,11 +19,9 @@
 #include "tests/core/parser_keys_context.h"
 
 TEST_CASE("NSP launch reports missing keys before rejecting an unreadable title ID",
-          "[core][loader][nca_discovery]") {
+          "[.][core][loader][nca_missing_keys]") {
     ScopedParserKeysDirectory keys_directory;
-    if (Core::Crypto::KeyManager::Instance().HasKey(Core::Crypto::S256KeyType::Header)) {
-        SKIP("A header key is installed");
-    }
+    REQUIRE_FALSE(Core::Crypto::KeyManager::Instance().HasKey(Core::Crypto::S256KeyType::Header));
 
     constexpr char Name[] = "0123456789abcdef0123456789abcdef.cnmt.nca";
     std::vector<u8> bytes(0x10 + 0x18 + sizeof(Name) + 0xC00);

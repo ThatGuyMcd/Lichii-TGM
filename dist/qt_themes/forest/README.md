@@ -1,8 +1,9 @@
 # Forest Lantern
 
-`style.qss` uses palette tokens replaced by `QtCommon::ForestTheme::Apply`.
-The theme is bundled as a Qt resource, so it needs no network, font download or
-external theme files at runtime. Dark and light themes share the same lantern header.
+I've kept Forest Lantern's dark and light themes together, with the same lantern
+header and touch spacing. `style.qss` uses palette tokens replaced by
+`QtCommon::ForestTheme::Apply`. I've bundled the theme as a Qt resource, so it needs
+no network, font download or external theme files at runtime.
 Only `header-bough.png` is bundled. The fox and forest-glade images remain archived
 in source for provenance; the UI no longer displays or packages them. Library
 covers use the selected game's existing metadata, decoded asynchronously and fitted
@@ -18,6 +19,6 @@ with this project's GPL-3.0-or-later licensed UI.
 - `footer-fox.png`: transparent sleeping fox, meadow flowers and a small lantern.
 - `forest-glade.png`: original forest path, stream and warm lantern landscape.
 
-The full generation prompts and selected concept reference are retained locally
-under `build-local` for design provenance. The runtime draws header/footer artwork
+I've retained the full generation prompts and selected concept reference locally
+under `build-local` for design provenance. The runtime keeps the header artwork
 away from settings controls. Menu and toolbar icons are drawn with Qt vector paths.

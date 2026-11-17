@@ -1,10 +1,8 @@
 # User Handbook
 
-The "FAQ".
-
-This handbook is primarily aimed at the end-user - baking useful knowledge for enhancing their emulation experience.
-
-A copy of this handbook is [available online](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/README.md).
+I've kept the upstream handbook here to help you get set up, use the settings and
+look after your saves. The technical guides retain their original contributors'
+work. For this fork's downloads and changes, use [our releases page](https://github.com/ThatGuyMcd/Lichii-TGM/releases).
 
 ## Basics
 

@@ -67,3 +67,28 @@ vulkansdk*.exe
 
 # Build-time generated external sources
 externals/generated
+
+# Local tooling and private runtime material
+__pycache__/
+*.py[cod]
+/.venv/
+/.env
+/user/
+/nand/
+/sdmc/
+/captures/
+/game_dumps/
+/crashdumps/
+prod.keys
+title.keys
+console.keys
+*.nsp
+*.nsz
+*.xci
+*.xcz
+*.nca
+*.nso
+*.nro
+*.nup
+*.rdc
+*.dmp

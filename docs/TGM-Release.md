@@ -1,10 +1,19 @@
 # Lichii-tgm releases
 
-`CMakeModules/Branding.cmake` defines the product name, numeric version, release tag,
-repository and Linux application ID. Release 1.0.2 is titled/tagged `Lichii-tgm-v1.0.2`;
-numeric metadata uses `1.0.2` (Windows `1.0.2.0`).
+I publish matching Windows ZIP and Linux AppImage downloads from this fork. Each
+release lists the changes I've brought across, with credit and links to the
+original PRs and commits.
 
-Configure with `-DLICHII_BUILD_TAG=Lichii-tgm-v1.0.2` and
+`CMakeModules/Branding.cmake` is the source of product/version metadata. A patch
+release advances the highest published fork version once: `1.0.3` becomes `1.0.4`,
+and `1.0.9` becomes `1.0.10`. A local candidate, a draft or an upstream `build-N`
+tag doesn't consume another version. `tools/release/plan_nightly_release.py`
+plans this from the fork's release records and the local release journal. It also
+checks published timestamps, so an interrupted run can't publish twice in one
+London calendar day after losing its local journal. Windows Python needs the
+`tzdata` package; Linux can use the system IANA timezone data.
+
+Configure with `-DLICHII_BUILD_TAG=Lichii-tgm-v<version>` and
 `-DLICHII_BUILD_PLATFORM=windows-x86_64` or `linux-x86_64`. Builds without a release
 tag retain their development revision. Internal CMake targets remain unchanged.
 
@@ -18,10 +27,11 @@ toolchain setup is in the workspace `BUILD-HERE.md`; local helpers/builds are ig
 
 ## Release assets
 
-- `Lichii-tgm-v1.0.2-windows-x86_64.zip`
-- `Lichii-tgm-v1.0.2-linux-x86_64.AppImage`
+- `Lichii-tgm-v<version>-windows-x86_64.zip`
+- `Lichii-tgm-v<version>-linux-x86_64.AppImage`
 - `SHA256SUMS` and a JSON build manifest
 - Reviewed integration and branding audits
+- `windows-ctest.xml` and `linux-ctest.xml`
 
 Package runtime libraries and `LICENSE.txt`; verify archive integrity, dependencies
 and Linux executable build IDs. Build both platforms from the same tested commit.
@@ -35,6 +45,32 @@ plugin filenames from the Qt installation.
 Upload verified assets to a draft release, verify asset digests, then publish it as
 a non-prerelease. Fork tags use `Lichii-tgm-vMAJOR.MINOR[.PATCH]`, ordered numerically;
 they never select upstream `build-N` releases. Updates target `ThatGuyMcd/Lichii-TGM`.
+
+## Before publishing
+
+I keep games, Nintendo-owned code/artwork, firmware, keys, account credentials,
+shader captures, crash dumps and personal user data out of releases. I retain the
+licenses and credits for the independent code and artwork we use.
+
+`tools/release/publication_guard.py` checks the tracked source and extracted
+packages for restricted file types, executable signatures, ownership markers,
+captured shader instructions and credentials. New or changed artwork needs an
+exact hash and a documented origin/license in `publication-provenance.json`;
+opaque profiles and recipes need a documented data classification. These checks
+support provenance review; a scan alone cannot establish authorship or rights.
+The source check reads protected dependencies and never changes them.
+
+The publisher verifies a clean checkout, the next fork tag, matching package
+source/version identities, checksum coverage and both CTest reports. The reports
+must include all configured groups, at least the existing 16 per platform, with
+no failed or skipped groups. It checks the contents of both packages before
+making the draft public. Detailed diagnostic reports stay outside the checkout
+and aren't uploaded as release assets.
+
+I write the README and release notes in my own voice: what I've changed, why it
+helps and how to use it. Performance figures need measurements. If the required
+checks or provenance aren't complete, I hold the release and resolve that locally.
+Existing releases and tags are kept intact.
 
 ## Branding boundaries
 

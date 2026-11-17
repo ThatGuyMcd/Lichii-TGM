@@ -1,8 +1,9 @@
 # Shader preparation profiles
 
-`oot/oot-v131072-cache54.nx2recipe` contains pipeline state and shader fingerprints
-for Ocarina of Time Remake, title `0400486024DEC000`, game version `131072`, pipeline
-cache version `54`. Shader code is assembled locally from the user's game files.
+I've included `oot/oot-v131072-cache54.nx2recipe` for Ocarina of Time Remake,
+title `0400486024DEC000`, game version `131072`, pipeline cache version `54`.
+It contains pipeline state and shader fingerprints. Shader code is assembled
+locally from your own game files.
 
 Source: [Frizti/Fritchii v5.7](https://github.com/Frizti/Fritchii/releases/tag/fritchii-v5.7),
 `recipes/OoT v131072 (cache v54).nx2recipe` inside `Fritchii-v5.7-Windows-x64.zip`.

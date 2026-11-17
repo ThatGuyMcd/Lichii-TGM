@@ -6,7 +6,6 @@ on:
       tag:
         description: Tested release tag with a draft and verified assets
         required: true
-        default: Lichii-tgm-v1.0.3
         type: string
 
 permissions:
@@ -24,7 +23,12 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ inputs.tag }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Check publication policy
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s tools/release -p 'test_*.py'
       - name: Verify draft, tag, manifest and asset checksums
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,19 +39,33 @@ jobs:
           set -euo pipefail
           [[ "$TAG" =~ ^Lichii-tgm-v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
           gh release view "$TAG" --repo "$REPO" --json isDraft --jq '.isDraft' | grep -qx true
-          mkdir release-assets
-          gh release download "$TAG" --repo "$REPO" --dir release-assets
-          cd release-assets
-          test -f "$TAG-windows-x86_64.zip"
-          test -f "$TAG-linux-x86_64.AppImage"
-          sha256sum --check SHA256SUMS
-          SOURCE_COMMIT=$(git -C .. rev-parse HEAD) python3 - <<'PY'
+          ASSETS="$RUNNER_TEMP/release-assets"
+          mkdir "$ASSETS"
+          gh release download "$TAG" --repo "$REPO" --dir "$ASSETS"
+          gh api --paginate "repos/$REPO/releases?per_page=100" | jq -s add > "$RUNNER_TEMP/releases.json"
+          python3 tools/release/plan_nightly_release.py --releases "$RUNNER_TEMP/releases.json" \
+            --journal "$RUNNER_TEMP/new-release-journal.json" --has-changes --output "$RUNNER_TEMP/release-plan.json"
+          test "$TAG" = "$(jq -r .tag "$RUNNER_TEMP/release-plan.json")"
+          BASELINE=$(jq -r .previous_release "$RUNNER_TEMP/release-plan.json")
+          python3 tools/release/publication_guard.py source --require-clean --baseline "$BASELINE" \
+            --report "$RUNNER_TEMP/source-publication.json"
+          python3 tools/release/verify_nightly_manifest.py --assets "$ASSETS" \
+            --tag "$TAG" --source "$(git rev-parse HEAD)" > "$RUNNER_TEMP/appimage-offset"
+          python3 tools/release/publication_guard.py zip \
+            "$ASSETS/$TAG-windows-x86_64.zip" --report "$RUNNER_TEMP/windows-publication.json"
+          command -v unsquashfs >/dev/null || { sudo apt-get update -qq; sudo apt-get install -y squashfs-tools; }
+          unsquashfs -q -o "$(cat "$RUNNER_TEMP/appimage-offset")" \
+            -d "$RUNNER_TEMP/linux-package" "$ASSETS/$TAG-linux-x86_64.AppImage"
+          python3 tools/release/publication_guard.py tree "$RUNNER_TEMP/linux-package" \
+            --report "$RUNNER_TEMP/linux-publication.json"
+          SOURCE_COMMIT=$(git rev-parse HEAD) python3 - <<'PY'
           import json, os, pathlib
-          manifest = json.loads(pathlib.Path('release-manifest.json').read_text())
-          assert manifest['source_commit'] == os.environ['SOURCE_COMMIT']
-          assert manifest['release_tag'] == os.environ['TAG']
-          assert manifest['validation']['windows_ctest_groups'] == 13
-          assert manifest['validation']['linux_ctest_groups'] == 13
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'linux-package'
+          info = json.loads((root / 'usr/share/lichii-tgm/build-info.json').read_text())
+          if info['source_commit'] != os.environ['SOURCE_COMMIT'] or info['release_tag'] != os.environ['TAG']:
+              raise SystemExit('Linux package identity mismatch')
+          if not (root / 'usr/share/licenses/lichii-tgm/LICENSE.txt').is_file():
+              raise SystemExit('Linux package license missing')
           PY
       - name: Publish release
         env:

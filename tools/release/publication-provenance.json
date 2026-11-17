@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "files": {
+    "src/tests/core/nx_fixtures/external_dlc.nsp": {
+      "sha256": "b03a46462dff48888d6babffa381a6e6bc89757467b1e6a4207d5e7c8f117680",
+      "classification": "synthetic_fixture",
+      "origin": "Independent nxformat synthetic NCA/NSP writer; generation/provenance and exact hashes in src/tests/core/nx_fixtures/README.md",
+      "license_or_data_basis": "Synthetic title0100123456781002, zero/synthetic content; no games/keys/firmware, source-only parser fixture"
+    },
+    "src/tests/core/nx_fixtures/external_update.nsp": {
+      "sha256": "68a52ea169f60d9235c80f830036aa247481afc8a98a697e19eacfb938b7e588",
+      "classification": "synthetic_fixture",
+      "origin": "Independent nxformat synthetic NCA/NSP writer; generation/provenance and exact hashes in src/tests/core/nx_fixtures/README.md",
+      "license_or_data_basis": "Synthetic title0100123456780000/version2 complete synthetic RomFS; no games/keys/firmware, source-only parser fixture"
+    },
+    "eglantine.profdata": {
+      "sha256": "2d769a1adadc4d911295e540229d1b01e7cb01f379fabcc3e7051e1ed8647144",
+      "classification": "emulator_metadata",
+      "origin": "Inherited Eglantine compiler instrumentation profile; existing upstream emulator build input",
+      "license_or_data_basis": "Compiler counters for emulator functions, not a guest executable or shader payload"
+    },
+    "lichii-windows.profdata": {
+      "sha256": "a6bb81a2e65f35236749388647de834a42ab05a0bfbe077ecbf70b632a9e7a77",
+      "classification": "emulator_metadata",
+      "origin": "Inherited Lichii Windows compiler instrumentation profile; existing upstream emulator build input",
+      "license_or_data_basis": "Compiler counters for emulator functions, not a guest executable or shader payload"
+    },
+    "dist/recipes/oot/oot-v131072-cache54.nx2recipe": {
+      "sha256": "85d944c8557fbeffe02af566c9c4277251ed0ab1a0f2a3ab7a626af6a877c3a1",
+      "classification": "emulator_metadata",
+      "origin": "Fritchii v5.7 metadata-only recipe; archive and file provenance in dist/recipes/README.md",
+      "license_or_data_basis": "Pipeline state and shader fingerprints; shader code is assembled locally from user-owned files"
+    }
+  }
+}

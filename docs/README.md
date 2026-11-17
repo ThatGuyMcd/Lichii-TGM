@@ -1,10 +1,12 @@
-# Eden Build Documentation
+# Lichii-tgm documentation
 
-Are you just a casual user? Take a look at our [User Handbook](./user) then!
+I've gathered the build guides and developer documentation here. For help using
+the emulator, start with the [User Handbook](./user).
 
 To contribute to this fork, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-This contains documentation created by developers, build instructions, guidelines, instructions/layouts for [cool stuff we made](./CPMUtil.md), and more.
+I've retained the upstream technical guides and their credits alongside our fork's
+release instructions. For downloads and changes, use [our releases page](https://github.com/ThatGuyMcd/Lichii-TGM/releases).
 
 - **[General Build Instructions](./Build.md)**
 - **[CMake Options](./Options.md)**

@@ -1,46 +1,44 @@
-<p align="center"><img src="dist/branding/lichii_icon.png" alt="Lichii-tgm" width="160"></p>
+<p align="center"><img src="dist/branding/lichii-tgm-v1.0-banner.png" alt="Lichii-tgm" width="900"></p>
 
-# Lichii-tgm-v1.0.2
+# Lichii-tgm
 
-Lichii-tgm is ThatGuyMcd's independent Nintendo Switch and Switch 2 emulator fork,
-based on Lichii, Eglantine, Eden, yuzu and Sudachi. Version 1.0.2 introduces Forest
-Lantern dark and light themes, selected-game cover artwork, a larger playback toolbar
-and full-screen settings designed for touch and gaming handhelds. Every existing
-setting and per-game override is retained. See the
-[release notes](docs/TGM-v1.0.2.md) for validation and known limitations.
+This is my fork of Lichii, built on the work of Lichii, Eglantine, Eden, yuzu and
+Sudachi. I'm focusing on OOT Remake, with improvements to rendering, stability,
+performance and gaming handhelds.
 
-This is an experimental emulator. Compatibility and performance depend on the game,
-hardware and driver. Automated build and unit-test results are not gameplay validation.
+I've kept our Forest Lantern dark and light themes, selected-game artwork, larger
+touch controls and full-screen settings. All of the settings and per-game overrides
+are still here. Compatibility and performance depend on your game, hardware and driver.
 
 ## Downloads
 
-Download the Windows ZIP or Linux AppImage from
-[this fork's releases](https://github.com/ThatGuyMcd/Lichii-TGM/releases).
+You can get the Windows ZIP and Linux AppImage from
+[our releases page](https://github.com/ThatGuyMcd/Lichii-TGM/releases).
+The [latest release](https://github.com/ThatGuyMcd/Lichii-TGM/releases/latest)
+has the current version and the full list of changes.
 
 - Windows x86_64: extract the entire ZIP and run `lichii-tgm.exe`.
 - Linux x86_64: make the AppImage executable with `chmod +x`, then run it.
 - The command-line executable is `lichii-tgm-cli.exe` / `lichii-tgm-cli`.
 - Releases include SHA-256 checksums and a build manifest.
 
-Games, keys and firmware are not included. Use your own legally obtained game and
-system files. Lichii-tgm is not affiliated with Nintendo or the upstream projects.
+I don't bundle games, keys or firmware. You'll need your own legally obtained game
+and system files. This is an independent fork, with no affiliation to Nintendo.
 
 ## Existing saves and settings
 
-The fork continues to use the existing Eden/Eglantine user-data directories and
-configuration keys. Existing settings, saves, firmware, keys and caches remain
-accessible. Portable installations continue to use the `user` directory.
+I've kept the existing Eden/Eglantine user-data directories and configuration keys.
+Your settings, saves, firmware, keys and caches stay accessible. Portable
+installations continue to use the `user` directory.
 
 ## Ocarina of Time Remake integration
 
-The release retains the OOT integration at `4dafb0b5c1`, incorporating
-upstream snapshot `d2eaae4f3abca636b030b726f107bace06f61079` and reviewed OOT
-and supporting pull requests. Conflicting, superseded and experimental changes
-were assessed separately. The release manifest and integration audit describe the
-selected changes and validation limits.
+I'm bringing useful OOT work across from Lichii and Fritchii while keeping our UI,
+settings, save paths and aspect-ratio add-ons intact. Each release lists the commits
+and PR components I've brought in, with credit to the original contributors.
 
-Optional NVIDIA/AMD upscaler runtimes remain separate, user-supplied components.
-See the in-application settings for their requirements and availability.
+Upscaler availability depends on your GPU and platform. The graphics settings show
+the available options and their requirements.
 
 ## Building
 
@@ -60,7 +58,7 @@ separately from this fork. Submission requires your explicit consent.
 
 ## Credits and license
 
-Original code, copyright notices and third-party licenses are retained. Thanks to
+I've kept the original copyright notices and third-party licenses. Thanks to
 Lichii, Eglantine (including Camille LaVey), Eden, yuzu, Sudachi and their contributors.
 The original fruit artwork is by YOB (yobslab). The fork's release wordmark is an
 adaptation of that artwork; its provenance is in

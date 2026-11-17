@@ -15,6 +15,7 @@ namespace {
 class NetworkRasterizer final : public OotPerfNullRasterizer {
 public:
     VideoCommon::OotNetwork::BypassState* OotNetworkBypass() override {
+        state.ValidateEpoch(frame, channel, mapping);
         return temporal ? nullptr : &state;
     }
     bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& source,
@@ -32,10 +33,13 @@ public:
     size_t copies{};
     bool copy_success{true};
     bool temporal{};
+    u64 frame{1};
+    const void* channel{};
+    u64 mapping{};
 };
 } // namespace
 
-TEST_CASE("OOT network bypass reads the current output pass input and recovers missing outputs",
+TEST_CASE("OOT network bypass copies a fresh known tonemap instead of its HDR scene input",
           "[video_core][oot_perf][oot_network]") {
     using namespace VideoCommon::OotNetwork;
     using namespace Tegra::Texture;
@@ -54,6 +58,8 @@ TEST_CASE("OOT network bypass reads the current output pass input and recovers m
     constexpr DAddr backing = 0x10000;
     device_memory.KeepWrites(backing, 0x1000);
     memory.Map(gpu, backing, 0x1000, Tegra::PTEKind::PITCH, false);
+    rasterizer.channel = &memory;
+    rasterizer.mapping = memory.HostPointerSerial();
     Tegra::Engines::KeplerCompute compute{memory};
     compute.BindRasterizer(&rasterizer);
     compute.launch_description.const_buffer_enable_mask.Assign(1);
@@ -81,45 +87,92 @@ TEST_CASE("OOT network bypass reads the current output pass input and recovers m
         REQUIRE(device_memory.WriteKept(backing + 0x200 + sizeof(input), &input, sizeof(input)));
     };
     publish();
+    const auto note_tonemap = [&](u64 address = 0x500000, u64 hash = 0xbded5ce917183214ULL) {
+        rasterizer.state.NoteDraw(hash, {address, 1920, 1080, 0, 0, 0}, rasterizer.frame,
+                                  rasterizer.channel, rasterizer.mapping);
+    };
 
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
+    // A valid sampled HDR descriptor alone must never establish a NoSharpening copy.
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    REQUIRE(rasterizer.copies == 0);
+    note_tonemap();
     REQUIRE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
-    REQUIRE(rasterizer.last_source.addr_lower == 0x300000);
+    REQUIRE(rasterizer.last_source.addr_lower == 0x500000);
+    REQUIRE(rasterizer.last_source.addr_lower != input.Address());
     REQUIRE(rasterizer.last_source.format == Tegra::RenderTargetFormat::B10G11R11_FLOAT);
     REQUIRE(rasterizer.last_config.filter == Tegra::Engines::Fermi2D::Filter::Point);
-    REQUIRE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
-    REQUIRE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
-    // A later frame swaps its input without a matching known tonemap draw.
+    note_tonemap();
+    // Earlier success and a valid current source still cannot guarantee a later copy succeeds.
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
+    // A changed HDR input does not redirect the copy away from the tracked tonemap.
     input.address_low = 0x400000;
     publish();
     REQUIRE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
-    REQUIRE(rasterizer.last_source.addr_lower == 0x400000);
-    REQUIRE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
-    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, 0x1234));
+    REQUIRE(rasterizer.last_source.addr_lower == 0x500000);
+    note_tonemap();
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, 0x1234));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
+    REQUIRE_FALSE(rasterizer.state.output_replaced.load());
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
+    note_tonemap();
     REQUIRE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
 
     rasterizer.copy_success = false;
+    note_tonemap();
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
     rasterizer.copy_success = true;
     const size_t before_invalid = rasterizer.copies;
+    // A clear/DrawTexture after the inputs must leave a coherent original-output fallback.
+    note_tonemap();
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
+    rasterizer.state.InvalidateTonemap();
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    // Unknown shaders and stale frame/channel/mapping epochs cannot supply the source.
+    note_tonemap();
+    note_tonemap(0x500000, 0x1234);
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    note_tonemap();
+    ++rasterizer.frame;
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    note_tonemap();
+    ++rasterizer.mapping;
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    note_tonemap();
+    rasterizer.channel = &system;
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    note_tonemap(input.Address());
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    note_tonemap(output.Address());
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
     input.address_low = output.address_low;
     publish();
+    note_tonemap(input.Address());
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
     input.address_low = 0x400000;
     input.format.Assign(TextureFormat::A8B8G8R8);
     publish();
+    note_tonemap();
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
     input.format.Assign(TextureFormat::B10G11R11);
     input.header_version.Assign(TICHeaderVersion::Pitch);
     publish();
+    note_tonemap();
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
     input.header_version.Assign(TICHeaderVersion::BlockLinear);
     publish();
     cb.size.Assign(InputImageHandleOffset);
+    note_tonemap();
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
     cb.size.Assign(0x100);
     rasterizer.temporal = true;

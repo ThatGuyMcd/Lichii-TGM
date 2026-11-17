@@ -1569,6 +1569,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64,
                                   maxwell3d->regs.zpass_pixel_count_enable);
     }
+    const bool track_tonemap =
+        VideoCommon::OotNetwork::BypassEnabled(Settings::GetCurrentProgramID());
+    const u64 tonemap_mapping = track_tonemap ? gpu_memory->HostPointerSerial() : 0;
     {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         scheduler.TraceGraphicsPipeline(pipeline->ShaderHashes());
@@ -1581,6 +1584,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         oot_motion_pipeline = nullptr;
     }
     submitted = true;
+    if (track_tonemap) {
+        TrackOotTonemappedImage(*pipeline, tonemap_mapping);
+    }
     buffer_cache.NoteWorkRecorded(false);
     constexpr u64 final_vertex = 0x16aff33d999f993fULL;
     constexpr u64 final_fragment = 0x52402d8e8ab55263ULL;
@@ -2148,7 +2154,21 @@ VideoCommon::OotNetwork::BypassState* RasterizerVulkan::OotNetworkBypass() {
         }
         return nullptr;
     }
+    oot_network_bypass.ValidateEpoch(render_trace_frame, gpu_memory, gpu_memory->HostPointerSerial());
     return &oot_network_bypass;
+}
+
+void RasterizerVulkan::TrackOotTonemappedImage(const GraphicsPipeline& pipeline, u64 mapping) {
+    const auto& target = maxwell3d->regs.rt[0];
+    VideoCommon::OotNetwork::BypassState::Tonemap image{};
+    if (target.format == Tegra::RenderTargetFormat::B10G11R11_FLOAT &&
+        !target.tile_mode.is_pitch_linear) {
+        image = {target.Address(), target.width, target.height,
+                 target.tile_mode.block_width.Value(), target.tile_mode.block_height.Value(),
+                 target.tile_mode.block_depth.Value()};
+    }
+    oot_network_bypass.NoteDraw(pipeline.ShaderHashes()[5], image, render_trace_frame, gpu_memory,
+                               mapping);
 }
 
 void RasterizerVulkan::TraceDrawFailure(std::string_view reason) {
@@ -2302,7 +2322,7 @@ void RasterizerVulkan::CollectIndirectTrace() {
 }
 
 void RasterizerVulkan::DrawTexture() {
-
+    oot_network_bypass.InvalidateTonemap();
     SCOPE_EXIT {
         gpu.TickWork();
     };
@@ -2435,6 +2455,7 @@ bool RasterizerVulkan::ClearVolumeSlices(const Framebuffer* framebuffer, u32 fir
 /// attachment or a blit when only some channels are written. Also tells the pipeline cache which
 /// targets were cleared (heavy draw skip).
 void RasterizerVulkan::Clear(u32 layer_count) {
+    oot_network_bypass.InvalidateTonemap();
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Clear};
     if (Tegra::Engines::g_nx2_trace_draws_after_upscale > 0) {
         const auto& regs = maxwell3d->regs;

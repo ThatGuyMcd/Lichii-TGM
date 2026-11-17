@@ -428,8 +428,15 @@ TEST_CASE("Ocarina base network copies a smaller tonemap and restores fallback o
 
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
     REQUIRE(rasterizer.copies == 0);
+    const auto note_tonemap = [&] {
+        rasterizer.network.NoteDraw(0xbded5ce917183214ULL,
+                                   {0x400000, source.Width(), source.Height(), 0, 0, 0},
+                                   1, &f.memory, f.memory.HostPointerSerial());
+    };
     for (const auto& program : BaseOutputPrograms) {
+        note_tonemap();
         REQUIRE(compute.BypassOotNetwork(ProgramId, program.key));
+        REQUIRE(rasterizer.copy_source.addr_lower == 0x400000);
         REQUIRE(rasterizer.copy_source.width == 1280);
         REQUIRE(rasterizer.copy_source.height == 720);
         REQUIRE(rasterizer.copy_destination.width == 1920);
@@ -439,7 +446,9 @@ TEST_CASE("Ocarina base network copies a smaller tonemap and restores fallback o
         REQUIRE(rasterizer.copy_config.src_x1 == 1280);
         REQUIRE(rasterizer.copy_config.dst_x1 == 1920);
     }
-    REQUIRE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
+    note_tonemap();
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
     rasterizer.copy_success = false;
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, BaseOutputPrograms[0].key));
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, NetworkProgramKey));
@@ -448,6 +457,7 @@ TEST_CASE("Ocarina base network copies a smaller tonemap and restores fallback o
     REQUIRE_FALSE(compute.BypassOotNetwork(0, BaseOutputPrograms[0].key));
     source.width_minus_one.Assign(2047);
     std::memcpy(backing + 0x200 + sizeof(source), &source, sizeof(source));
+    note_tonemap();
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, BaseOutputPrograms[0].key));
     REQUIRE(rasterizer.copies == copies);
 }

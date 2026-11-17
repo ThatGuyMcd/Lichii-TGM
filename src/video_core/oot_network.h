@@ -5,6 +5,9 @@
 
 #include <array>
 #include <atomic>
+#include <mutex>
+#include <optional>
+#include <utility>
 
 #include "common/common_types.h"
 #include "common/settings.h"
@@ -41,7 +44,7 @@ constexpr std::array BaseOutputPrograms{
     BaseOutputProgram{0x00017919, 0x6250, 0x58bdd5733e364169ULL},
 };
 
-/// Constant buffer 0 texture handle for the tonemapped image sampled by this output pass.
+/// On the update this samples the pre-tonemap HDR scene, not the tonemapped image (#1995).
 constexpr u32 InputImageHandleOffset = 0xc0;
 
 /// Constant buffer 0 offset of the output pass's texture handle for the B10G11R11 image it writes
@@ -58,8 +61,57 @@ constexpr bool IsTonemapShader(u64 hash) {
 
 /// Owned by the rasterizer: the network's passes do not all run on the same compute engine.
 struct BypassState {
+    struct Tonemap {
+        u64 address{};
+        u32 width{}, height{};
+        u32 block_width{}, block_height{}, block_depth{};
+    };
+
+    // Only a successfully recorded, recognized tonemap draw establishes the copy source.
+    // Unknown draws break the proof rather than selecting an image by size/order alone.
+    void NoteDraw(u64 fragment_hash, Tonemap image, u64 frame, const void* channel, u64 mapping) {
+        std::scoped_lock lock{mutex};
+        tonemap.reset();
+        if (IsTonemapShader(fragment_hash) && image.address && image.width && image.height) {
+            tonemap = image;
+            source_frame = frame;
+            source_channel = channel;
+            source_mapping = mapping;
+        }
+    }
+
+    void InvalidateTonemap() {
+        std::scoped_lock lock{mutex};
+        tonemap.reset();
+    }
+
+    void ValidateEpoch(u64 frame, const void* channel, u64 mapping) {
+        std::scoped_lock lock{mutex};
+        if (!tonemap || source_frame != frame || source_channel != channel ||
+            source_mapping != mapping) {
+            tonemap.reset();
+        }
+    }
+
+    bool HasTonemap() const {
+        std::scoped_lock lock{mutex};
+        return tonemap.has_value();
+    }
+
+    std::optional<Tonemap> TakeTonemap() {
+        std::scoped_lock lock{mutex};
+        return std::exchange(tonemap, std::nullopt);
+    }
+
     std::atomic<bool> output_replaced{}; ///< the latest output pass was replaced
-    std::atomic<bool> output_pending{}; ///< a skipped prepass has no replacement output yet
+    std::atomic<bool> output_pending{}; ///< a prepass has no confirmed replacement output yet
+
+private:
+    mutable std::mutex mutex;
+    std::optional<Tonemap> tonemap;
+    u64 source_frame{};
+    const void* source_channel{};
+    u64 source_mapping{};
 };
 
 inline bool BypassEnabled(u64 program_id) {

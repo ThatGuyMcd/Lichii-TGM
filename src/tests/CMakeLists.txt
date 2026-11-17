@@ -12,6 +12,7 @@ add_executable(tests
     video_core/oot_perf_upload_lifetime.cpp
     video_core/oot_perf_deferred_staging.cpp
     video_core/oot_perf_network_input.cpp
+    video_core/oot_tonemap_epoch.cpp
     video_core/oot_perf_descriptor_boundary.cpp
     video_core/oot_perf_retirement_ownership.cpp
     video_core/native60_global_routing.cpp
@@ -94,6 +95,7 @@ add_executable(tests
     core/nx2_movie_vsync.cpp
     core/builtin_patches.cpp
     core/nso_layout.cpp
+    core/upstream_loader_bounds.cpp
     core/oot_ultrawide.cpp
     video_core/oot_ultrawide.cpp
     core/builtin_font_glyphs.cpp

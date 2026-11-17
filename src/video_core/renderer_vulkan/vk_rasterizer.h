@@ -234,6 +234,7 @@ private:
     void CaptureIndirectTrace();
     void CollectIndirectTrace();
     void TraceDrawFailure(std::string_view reason);
+    void TrackOotTonemappedImage(const GraphicsPipeline& pipeline, u64 mapping);
     bool TryNx2IndirectReset(bool is_indexed, u32 instance_count);
 
     void FlushWork();

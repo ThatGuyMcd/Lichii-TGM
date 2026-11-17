@@ -4117,6 +4117,7 @@ public:
              "CalculateDecoderImagePoolBuffer"},
             {901, &INx2GraphicsSystemSession::Stub, "VideoInitialize (guessed)"},
             {902, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSession (guessed)"},
+            {903, &INx2GraphicsSystemSession::Stub, "VideoFinalize (guessed)"},
             {905, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSessionWithFlag"},
             {906, &INx2GraphicsSystemSession::OpenVideoSession, "OpenVideoDecoderSessionWithVersion"},
             {1001, &INx2GraphicsSystemSession::Stub, "VideoInitialize2 (guessed)"},

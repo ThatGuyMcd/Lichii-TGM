@@ -53,6 +53,9 @@ Loader::ResultStatus ProgramMetadata::Load(VirtualFile file) {
     if (sizeof(AciHeader) != file->ReadObject(&aci_header, npdm_header.aci_offset)) {
         return Loader::ResultStatus::ErrorBadACIHeader;
     }
+    if (std::memcmp(aci_header.magic.data(), "ACI0", 4) != 0) {
+        return Loader::ResultStatus::ErrorBadACIHeader;
+    }
 
     // Load acid_file_access per-component instead of the entire struct, since this struct does not
     // reflect the layout of the real data.

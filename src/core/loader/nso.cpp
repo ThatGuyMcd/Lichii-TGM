@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -97,17 +98,76 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         return 0;
     }();
 
-    auto const last_segment_it = &nso_header.segments[nso_header.segments.size() - 1];
+    u64 segments_end = 0;
+    const u64 file_size = nso_file.GetSize();
+    for (size_t i = 0; i < nso_header.segments.size(); ++i) {
+        const auto& segment = nso_header.segments[i];
+        const u64 stored_size = nso_header.segments_compressed_size[i];
+        if (segment.offset > file_size || stored_size > file_size - segment.offset) {
+            LOG_ERROR(Loader, "{}: segment {} is past the end of the file", nso_file.GetName(), i);
+            return std::nullopt;
+        }
+        if (nso_header.IsSegmentCompressed(i) && !nso_header.IsZBICCompressed() &&
+            (stored_size > (std::numeric_limits<int>::max)() ||
+             segment.size > (std::numeric_limits<int>::max)())) {
+            return std::nullopt;
+        }
+        segments_end = (std::max)(segments_end, u64{segment.location} + segment.size);
+        if (!nso_header.IsSegmentCompressed(i) &&
+            segment.size > nso_header.segments_compressed_size[i]) {
+            LOG_ERROR(Loader, "{}: stored segment {} is larger than its data", nso_file.GetName(), i);
+            return std::nullopt;
+        }
+    }
+    const bool pass_arguments =
+        should_pass_arguments && !Settings::values.program_args.GetValue().empty();
+    if (pass_arguments && Settings::values.program_args.GetValue().size() >
+                              NSO_ARGUMENT_DATA_ALLOCATION_SIZE - sizeof(NSOArgumentHeader)) {
+        LOG_ERROR(Loader, "{}: arguments exceed the reserved block", nso_file.GetName());
+        return std::nullopt;
+    }
+    const u64 bss_size = u64{nso_header.segments[2].bss_size} +
+                         (pm ? pm->AdditionalNSOBssSize(nso_header, nso_file.GetName()) : 0);
+    const u64 post_patch_size = [&]() -> u64 {
+#ifdef HAS_NCE
+        if (patches && load_into_process) {
+            const auto& patch = patches->operator[](patch_index);
+            if (patch.GetPatchMode() != Core::NCE::PatchMode::PreText) {
+                return patch.GetSectionSize();
+            }
+        }
+#endif
+        return 0;
+    }();
+    constexpr u64 MaxImage = (std::numeric_limits<u32>::max)();
+    if (module_start > MaxImage || post_patch_size > MaxImage) {
+        return std::nullopt;
+    }
+    // Count TGM's additional OOT BSS in both passes before narrowing or allocating. Applying
+    // executable patches remains restricted to the real load below.
+    const u64 aligned_extent =
+        (u64{module_start} + segments_end +
+         (pass_arguments ? NSO_ARGUMENT_DATA_ALLOCATION_SIZE : 0) + bss_size +
+         Core::Memory::YUZU_PAGEMASK) & ~u64{Core::Memory::YUZU_PAGEMASK};
+    if (aligned_extent + post_patch_size > MaxImage) {
+        LOG_ERROR(Loader, "{}: module extent exceeds a 32-bit image", nso_file.GetName());
+        return std::nullopt;
+    }
+    nso_header.segments[2].bss_size = static_cast<u32>(bss_size);
     // Build program image directly in codeset memory :)
     Kernel::CodeSet codeset;
-    codeset.memory.resize(module_start + last_segment_it->location + last_segment_it->size);
+    codeset.memory.resize(module_start + segments_end);
     {
         std::vector<u8> compressed_data(*std::ranges::max_element(nso_header.segments_compressed_size));
         std::vector<u8> decompressed_size(std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
             return a.size < b.size;
         })->size);
         for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
-            nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset);
+            if (nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i],
+                              nso_header.segments[i].offset) != nso_header.segments_compressed_size[i]) {
+                LOG_ERROR(Loader, "{}: segment {} is past the end of the file", nso_file.GetName(), i);
+                return std::nullopt;
+            }
             if (nso_header.IsSegmentCompressed(i)) {
                 const u32 segment_size = nso_header.segments[i].size;
                 if (nso_header.IsZBICCompressed()) {
@@ -137,7 +197,11 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                         compressed_data.data(),
                         nso_header.segments_compressed_size[i]
                     );
-                    ASSERT(r == int(segment_size));
+                    if (r != static_cast<int>(segment_size)) {
+                        LOG_ERROR(Loader, "{}: segment {} decompressed to {} of {} bytes",
+                                  nso_file.GetName(), i, r, segment_size);
+                        return std::nullopt;
+                    }
                 }
 
                 std::memcpy(
@@ -159,7 +223,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
     }
 
-    if (should_pass_arguments && !Settings::values.program_args.GetValue().empty()) {
+    if (pass_arguments) {
         const auto arg_data{Settings::values.program_args.GetValue()};
 
         codeset.DataSegment().size += NSO_ARGUMENT_DATA_ALLOCATION_SIZE;
@@ -170,9 +234,6 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         std::memcpy(codeset.memory.data() + end_offset + sizeof(NSOArgumentHeader), arg_data.data(), arg_data.size());
     }
 
-    if (pm) {
-        nso_header.segments[2].bss_size += pm->AdditionalNSOBssSize(nso_header, nso_file.GetName());
-    }
     codeset.DataSegment().size += nso_header.segments[2].bss_size;
     u32 image_size = PageAlignSize(u32(codeset.memory.size()) + nso_header.segments[2].bss_size);
     codeset.memory.resize(image_size);

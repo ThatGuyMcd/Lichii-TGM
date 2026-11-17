@@ -29,9 +29,6 @@ SWEEP = ROOT.parent / "nx2" / "shader_sweep.py"
 MAXWELL_EXIT = 0xE30000000007000F
 # FixedPipelineState::driver_id in a graphics key, after the six program hashes
 DRIVER_OFFSET = 48 + 16
-# A bit of the first instruction of a graphics record's first environment: after the environment
-# count, the environment's sizes and parameters and the 80-byte shader program header
-PLANT_OFFSET, PLANT_MASK = 4 + 6 * 8 + 7 * 4 + 80, 0x10
 
 
 @functools.lru_cache(maxsize=None)
@@ -224,9 +221,16 @@ result = subprocess.run([{binary!r}, *sys.argv[1:]], capture_output=True, text=T
 if "--list" in sys.argv:
     listed = json.loads(result.stdout)
     directory = Path(sys.argv[sys.argv.index("--output-dir") + 1])
-    path = directory / listed["records"][{record}]["file"]
+    linked = [row for row in listed["records"] if len(row.get("stages", [])) == 2]
+    if len(linked) != 1:
+        raise RuntimeError("Expected one independently declared linked pipeline")
+    path = directory / linked[0]["file"]
     data = bytearray(path.read_bytes())
-    data[{offset}] ^= {mask}
+    needle = bytes.fromhex({needle!r})
+    if data.count(needle) != 1:
+        raise RuntimeError("Expected one independently declared MOV literal")
+    # Maxwell MOV32I immediate starts at bit 20: flip the stored byte's low bit.
+    data[data.index(needle) + 2] ^= 0x10
     path.write_bytes(data)
 sys.stdout.write(result.stdout)
 sys.stderr.write(result.stderr)
@@ -265,15 +269,19 @@ class V2ReplayTests(ReplayCase):
 
     @unittest.skipIf(os.name == "nt", "the planting compiler needs a POSIX shebang")
     def test_planted_byte_in_a_migrated_record_is_one_mismatch(self):
+        _, producer = fixture("synthetic-byte-store", varying=True)
+        words = [int(word, 16) for word in producer["environment"]["code"]]
+        literals = [word for word in words if (word >> 20) & 0xFFFFFFFF == 0xA1B2C35A]
+        self.assertEqual(len(literals), 1)
         planting = self.root / "planting-shader-sweep"
         planting.write_text(f"#!{sys.executable}\n" + PLANTING_COMPILER.format(
-            binary=str(BINARY), record=1, offset=PLANT_OFFSET, mask=PLANT_MASK))
+            binary=str(BINARY), needle=struct.pack("<Q", literals[0]).hex()))
         planting.chmod(0o755)
         report = self.replay(fixture_cache(), "--path-b", "v2", "--compiler-b", str(planting),
                              code=1)
         bad = [row for row in report["stages"] if row["verdict"] not in ("match", "collapsed")]
         self.assertEqual([(row["verdict"], row["record"]) for row in bad],
-                         [("mismatch", "000-000001")], bad)
+                         [("mismatch", "000-000003")], bad)
 
 
 if __name__ == "__main__":

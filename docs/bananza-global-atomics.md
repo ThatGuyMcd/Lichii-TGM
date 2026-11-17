@@ -21,7 +21,7 @@ The restriction matters. A broader fallback that accepted any paired pointer cha
 ## Verification
 
 - Replay of the nine real v46 environments in four scenarios (all mapped, `0x1d0` unmapped, `0x1e0` unmapped, both unmapped): before the fix, every unmapped scenario fails with the exact error. After the fix, all 36 compile and pass `spirv-val --target-env vulkan1.2`. Each module has two `OpAtomicIAdd`. For each program, the SPIR-V is identical across all four scenarios and identical to the pre-fix all-mapped output.
-- `tools/shader-sweep/fixtures/bananza-unmapped-atomic-counter.json` is the real `c7a1778ec38f628` environment with the counter slots unmapped. The pre-fix compiler fails it; the fixed one passes.
+- I've replaced the original captured regression with `tools/shader-sweep/fixtures/synthetic-unmapped-atomic-counter.json`. Its independent generator declares an initially unmapped counter and a mapped result buffer. Stage tests check the actual storage binding and atomic/store routing, and compare mapped/unmapped SPIR-V.
 - Full Bananza sweep (2,239 dumps and the v46/v47/v48 pipeline caches): the summary is unchanged, and all 10,906 emitted modules are byte-identical to the pre-fix output. No pipeline cache version bump is needed.
 - `[storage_buffer]` tests: 12 cases, 2,953 assertions. They cover rebasing of the counter and record stores, an atomic offset from an unmapped pointer that stays global, and the unchanged scalar rule.
 

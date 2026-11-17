@@ -19,8 +19,9 @@ ctest --test-dir build/shader-sweep --output-on-failure
 
 CMake 3.24 or newer is required. The standalone configuration downloads pinned fmt,
 SPIRV-Headers, sirit, and ZBIC sources. It does not require system SPIRV-Headers.
-The tests include synthetic CLI cases, parser bounds checks, and three small captured
-regression programs. `spirv-val` is required when `BUILD_TESTING` is enabled.
+I've included synthetic CLI cases, parser bounds checks and four independently
+assembled regression programs. Their source and provenance are in
+[synthetic](synthetic). `spirv-val` is required when `BUILD_TESTING` is enabled.
 
 ## Inputs
 

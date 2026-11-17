@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Replay synthetic v54 caches built from the captured fixtures through shader-sweep.
+"""Replay independently assembled v54 caches through shader-sweep.
 
 With --v2 (shader-sweep built in the tree), also replay them against the shader cache v2 path.
 """
 
 import json
+import copy
+import functools
+import hashlib
 import os
 from pathlib import Path
 import struct
@@ -14,7 +17,8 @@ import sys
 import tempfile
 import unittest
 
-from test_captured import serialize_environment
+from test_synthetic import cached_environment, serialize_environment
+from synthetic.common import native
 
 BINARY = Path(sys.argv.pop(1)).resolve()
 V2 = "--v2" in sys.argv
@@ -30,20 +34,46 @@ DRIVER_OFFSET = 48 + 16
 PLANT_OFFSET, PLANT_MASK = 4 + 6 * 8 + 7 * 4 + 80, 0x10
 
 
-def fixture(name):
+@functools.lru_cache(maxsize=None)
+def fixture(name, varying=False):
     data = json.loads((ROOT / "fixtures" / f"{name}.json").read_text())
+    environment = copy.deepcopy(data["environment"])
+    if varying:
+        # Write Generic7; the linked geometry's Generic6 must remain unavailable.
+        environment["native_code"].insert(-1, native(
+            0x322, (24, 8, 255), (32, 8, 255), (40, 10, (32 + 7 * 4) * 4), (74, 2, 3)))
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        source, context, packed = (root / name for name in ("native.bin", "context.env", "packed.bin"))
+        source.write_bytes(b"".join(struct.pack("<4I", *row) for row in environment["native_code"]))
+        context.write_bytes(serialize_environment(environment))
+        result = subprocess.run([str(BINARY), str(source), "--environment", str(context),
+                                 "--cache-version", "54", "--packed-code", str(packed)],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError(result.stdout + result.stderr)
+        data["environment"] = cached_environment(environment, packed.read_bytes())
+        data["test_program_key"] = int.from_bytes(hashlib.blake2b(
+            source.read_bytes(), digest_size=8).digest(), "little")
     return serialize_environment(data["environment"]), data
 
 
 def fixture_hash(data, slot):
-    return struct.unpack_from("<Q", bytes.fromhex(data["pipeline_key"]), slot * 8)[0]
+    return data["test_program_key"]
 
 
 def graphics_key(state_from, hashes):
-    """A fixture's pipeline state with only the given program slots' hashes."""
-    key = bytearray(bytes.fromhex(state_from["pipeline_key"]))
+    """Declared test state with only the given program slots' identifiers."""
+    key = bytearray(1056)
+    struct.pack_into("<II", key, 48, 0, 7 << 1)
+    struct.pack_into("<f", key, 76, 1.0)
     struct.pack_into("<6Q", key, 0, *(hashes.get(slot, 0) for slot in range(6)))
     return bytes(key)
+
+
+def compute_key(data):
+    x, y, z, shared = struct.unpack("<4I", bytes.fromhex(data["environment"]["tail"]))
+    return struct.pack("<Q4I", data["test_program_key"], shared, x, y, z)
 
 
 def synthetic(stage):
@@ -68,18 +98,19 @@ def record(envs, key):
 
 def fixture_cache():
     """Compute, single-stage and linked graphics pipelines, and a duplicate record."""
-    byte_store, byte_store_data = fixture("bananza-byte-store")
-    aliasing, aliasing_data = fixture("global-memory-without-aliasing")
-    passthrough, passthrough_data = fixture("tennis-geometry-passthrough")
-    atomic, atomic_data = fixture("bananza-unmapped-atomic-counter")
+    byte_store, byte_store_data = fixture("synthetic-byte-store")
+    aliasing, aliasing_data = fixture("synthetic-global-memory-no-alias")
+    passthrough, passthrough_data = fixture("synthetic-geometry-passthrough")
+    atomic, atomic_data = fixture("synthetic-unmapped-atomic-counter")
+    producer, producer_data = fixture("synthetic-byte-store", varying=True)
     records = [
         record([byte_store], graphics_key(byte_store_data, {1: fixture_hash(byte_store_data, 1)})),
-        record([aliasing], graphics_key(aliasing_data, {1: fixture_hash(aliasing_data, 1)})),
+        record([aliasing], compute_key(aliasing_data)),
         record([passthrough], graphics_key(passthrough_data,
                                            {4: fixture_hash(passthrough_data, 4)})),
-        record([aliasing, passthrough], graphics_key(passthrough_data, {
-            1: fixture_hash(aliasing_data, 1), 4: fixture_hash(passthrough_data, 4)})),
-        record([atomic], bytes.fromhex(atomic_data["compute_pipeline_key"])),
+        record([producer, passthrough], graphics_key(passthrough_data, {
+            1: fixture_hash(producer_data, 1), 4: fixture_hash(passthrough_data, 4)})),
+        record([atomic], compute_key(atomic_data)),
     ]
     records.append(records[0])
     return b"yuzucach" + struct.pack("<I", 54) + b"".join(records)
@@ -95,7 +126,7 @@ class ReplayCase(unittest.TestCase):
         self.directory.cleanup()
 
     def replay(self, cache, *extra, code=0):
-        title = self.root / "0400d4201c6ea000"
+        title = self.root / "0000000000000001"
         title.mkdir(exist_ok=True)
         (title / "vulkan.fork-v54.bin").write_bytes(cache)
         self.runs += 1
@@ -148,7 +179,7 @@ class ReplayTests(ReplayCase):
 
     def test_pipeline_hash_covers_only_the_compared_key_bytes(self):
         """Bytes past FixedPipelineState::Size() don't change the legacy pipeline hash."""
-        byte_store, data = fixture("bananza-byte-store")
+        byte_store, data = fixture("synthetic-byte-store")
         key = graphics_key(data, {1: fixture_hash(data, 1)})
         hashes = []
         for offset in (None, 1000, 100):
@@ -162,7 +193,7 @@ class ReplayTests(ReplayCase):
         self.assertNotEqual(hashes[0], hashes[2])
 
     def test_unknown_path_and_inconsistent_records_are_input_errors(self):
-        byte_store, data = fixture("bananza-byte-store")
+        byte_store, data = fixture("synthetic-byte-store")
         for key, extra in ((graphics_key(data, {1: fixture_hash(data, 1)}), ["--path", "v3"]),
                            (graphics_key(data, {1: 1, 5: 2}), []),
                            (graphics_key(data, {1: 1}) + b"x", [])):
@@ -212,7 +243,7 @@ class V2ReplayTests(ReplayCase):
         self.assertEqual(sorted(verdicts), ["collapsed"] + ["match"] * 6, report["stages"])
         self.assertEqual(report["collisions"], [])
         migration = report["listings"][0]["b"]["migration"]
-        self.assertEqual(migration, {"source_version": 54, "graphics": 4, "compute": 1,
+        self.assertEqual(migration, {"source_version": 54, "graphics": 3, "compute": 2,
                                      "collapsed": 1})
         collapsed, = (row for row in report["stages"] if row["verdict"] == "collapsed")
         self.assertEqual(collapsed["entry"], 0)
@@ -222,7 +253,7 @@ class V2ReplayTests(ReplayCase):
 
     def test_graphics_record_key_leaves_the_driver_out(self):
         """Records differing only in the driver fields pair, and the earlier one collapses."""
-        byte_store, data = fixture("bananza-byte-store")
+        byte_store, data = fixture("synthetic-byte-store")
         key = graphics_key(data, {1: fixture_hash(data, 1)})
         other_driver = bytearray(key)
         struct.pack_into("<II", other_driver, DRIVER_OFFSET, 1, 2)

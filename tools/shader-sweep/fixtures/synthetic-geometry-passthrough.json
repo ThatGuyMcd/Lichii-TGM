@@ -1,0 +1,65 @@
+{
+  "name": "synthetic-geometry-passthrough",
+  "cache_version": 54,
+  "provenance": "independently authored from production instruction bitfields",
+  "description": "Native finalization passes Position and Generic6 through without declaring stage-specific builtins from the inverted skip mask.",
+  "environment": {
+    "native_code": [
+      [
+        402617124,
+        255,
+        0,
+        0
+      ],
+      [
+        31053,
+        0,
+        58720256,
+        0
+      ]
+    ],
+    "code": [
+      "0000000000000000"
+    ],
+    "parameters": [
+      0,
+      2,
+      0,
+      0,
+      0,
+      1,
+      3
+    ],
+    "texture_types": [],
+    "texture_formats": [],
+    "cbuf_values": [],
+    "storage_pointers": [],
+    "replacements": [],
+    "tail": "0110000100000000000000010000000101000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffff0ffffffff0ffffffffffffffffffffffffffffff4fffffffffffffff7f"
+  },
+  "expected": {
+    "geometry_passthrough": true,
+    "passthrough_attributes": [
+      28,
+      29,
+      30,
+      31,
+      56,
+      57,
+      58,
+      59,
+      188,
+      189,
+      191,
+      255
+    ],
+    "generic_location": 6,
+    "spirv_builtin_allowlist": [
+      0
+    ],
+    "passthrough_decorations": 2,
+    "geometry_emit_count": 0,
+    "geometry_end_count": 0,
+    "regression_fix": "8ff071d330"
+  }
+}

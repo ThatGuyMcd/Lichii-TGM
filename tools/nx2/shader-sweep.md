@@ -209,12 +209,12 @@ The script uses only the standard library and needs no `spirv-val`.
 python3 -m unittest discover -s tools/nx2 -p test_shader_sweep.py -v
 ```
 
-Keep bulk game captures and generated modules outside the repository. The small regression
-environments in `tools/shader-sweep/fixtures` preserve captured programs that exposed backend
-defects. Each records its source cache hash and byte offset. Run them with:
+I keep bulk game captures and generated modules outside the repository. The four small
+regressions in `tools/shader-sweep/fixtures` are independently assembled programs, with
+their generators and provenance in `tools/shader-sweep/synthetic`. Run them with:
 
 ```sh
-python3 tools/shader-sweep/test_captured.py /path/to/shader-sweep
+python3 tools/shader-sweep/test_synthetic.py /path/to/shader-sweep
 ```
 
 `tools/shader-sweep/test_replay.py /path/to/shader-sweep` builds v54 caches from the same

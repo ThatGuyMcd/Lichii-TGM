@@ -388,7 +388,7 @@ if (SHADER_JOBS_SANITIZER)
 endif()
 add_test(NAME shader_jobs_tests COMMAND shader_jobs_tests)
 
-# Stage translation on shader job workers over the tools/shader-sweep fixtures. For
+# Stage translation on shader job workers over independently assembled fixtures. For
 # ThreadSanitizer the shader recompiler needs instrumenting too: configure a separate build with
 # -DCMAKE_C_FLAGS=-fsanitize=thread -DCMAKE_CXX_FLAGS=-fsanitize=thread, then build and run
 # shader_translation_tests.
@@ -403,6 +403,8 @@ target_compile_definitions(shader_translation_tests PRIVATE
 add_test(NAME shader_translation_tests COMMAND shader_translation_tests)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME synthetic_shader_fixtures
+    COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tools/shader-sweep/generate_fixtures.py" --check)
 if(WIN32)
     add_executable(crash_handler_probe EXCLUDE_FROM_ALL common/crash_handler_probe.cpp)
     target_link_libraries(crash_handler_probe PRIVATE common)

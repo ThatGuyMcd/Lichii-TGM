@@ -1,0 +1,128 @@
+{
+  "name": "synthetic-global-memory-no-alias",
+  "cache_version": 54,
+  "provenance": "independently authored from production instruction bitfields",
+  "description": "Lane-selected native buffer pointers retain coherent global vector loads and stores; a host without descriptor aliases assembles/splits them through scalar routing helpers.",
+  "environment": {
+    "native_code": [
+      [
+        4278221698,
+        8192,
+        2560,
+        0
+      ],
+      [
+        4278352770,
+        10240,
+        2560,
+        0
+      ],
+      [
+        293145,
+        0,
+        8448,
+        0
+      ],
+      [
+        67138060,
+        255,
+        66080768,
+        0
+      ],
+      [
+        29191,
+        2,
+        0,
+        0
+      ],
+      [
+        16871943,
+        3,
+        0,
+        0
+      ],
+      [
+        555393,
+        0,
+        203341056,
+        0
+      ],
+      [
+        29574,
+        4104,
+        1092864,
+        0
+      ],
+      [
+        31053,
+        0,
+        58720256,
+        0
+      ]
+    ],
+    "code": [
+      "0000000000000000"
+    ],
+    "parameters": [
+      0,
+      2,
+      0,
+      0,
+      0,
+      1,
+      5
+    ],
+    "texture_types": [],
+    "texture_formats": [],
+    "cbuf_values": [
+      [
+        128,
+        8192
+      ],
+      [
+        132,
+        1
+      ],
+      [
+        160,
+        16384
+      ],
+      [
+        164,
+        1
+      ]
+    ],
+    "storage_pointers": [
+      [
+        128,
+        1
+      ],
+      [
+        132,
+        0
+      ],
+      [
+        160,
+        1
+      ],
+      [
+        164,
+        0
+      ]
+    ],
+    "replacements": [],
+    "tail": "04000000010000000100000000000000"
+  },
+  "expected": {
+    "uses_global_memory": true,
+    "native_global_bounds": true,
+    "requires_coherent_global_memory": true,
+    "storage_buffer_count": 2,
+    "ir_opcodes": [
+      "LoadGlobal128",
+      "WriteGlobal128"
+    ],
+    "no_descriptor_aliases": true,
+    "scalarized_global_vectors": true
+  }
+}

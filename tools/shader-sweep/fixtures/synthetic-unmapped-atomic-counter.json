@@ -1,0 +1,113 @@
+{
+  "name": "synthetic-unmapped-atomic-counter",
+  "provenance": "independently assembled from production instruction bitfields",
+  "environment": {
+    "native_code": [
+      [
+        4278352770,
+        20480,
+        2560,
+        0
+      ],
+      [
+        4278483842,
+        22528,
+        2560,
+        0
+      ],
+      [
+        423938,
+        4,
+        3840,
+        0
+      ],
+      [
+        34108328,
+        6,
+        2023680,
+        0
+      ],
+      [
+        67138438,
+        8,
+        1091840,
+        0
+      ],
+      [
+        33714704,
+        8,
+        134209791,
+        0
+      ],
+      [
+        33584006,
+        4102,
+        1091840,
+        0
+      ],
+      [
+        31053,
+        0,
+        58720256,
+        0
+      ]
+    ],
+    "code": [
+      "0000000000000000"
+    ],
+    "parameters": [
+      0,
+      2,
+      80,
+      0,
+      0,
+      1,
+      5
+    ],
+    "texture_types": [],
+    "texture_formats": [],
+    "cbuf_values": [
+      [
+        320,
+        9437184
+      ],
+      [
+        324,
+        0
+      ],
+      [
+        352,
+        10485760
+      ],
+      [
+        356,
+        0
+      ]
+    ],
+    "storage_pointers": [
+      [
+        320,
+        0
+      ],
+      [
+        352,
+        1
+      ]
+    ],
+    "replacements": [],
+    "tail": "08000000010000000100000000000000"
+  },
+  "expected": {
+    "storage_buffer_offsets": [
+      320,
+      352
+    ],
+    "storage_atomics_iadd32": 1,
+    "global_atomics_iadd32": 0,
+    "storage_writes_u32": 2,
+    "global_writes_u32": 0,
+    "reserve_bytes": 4,
+    "record_offset": 16
+  },
+  "cache_version": 54
+}

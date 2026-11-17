@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +22,8 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
+#include "shader_recompiler/frontend/ampere/instruction.h"
+#include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
@@ -44,8 +47,7 @@ constexpr u64 MakeIndirectCbufKey(u32 index, u32 offset, u32 indirect) {
            MakeCbufKey(index, offset);
 }
 
-/// A captured environment of tools/shader-sweep/fixtures. It answers as FileEnvironment answers
-/// from the record it was taken from (recorded values only), without the rest of video_core.
+/// Independently assembled programs using the same environment/lowering ABI as shader-sweep.
 class FixtureEnvironment final : public Shader::Environment {
 public:
     explicit FixtureEnvironment(const nlohmann::json& env) {
@@ -98,6 +100,36 @@ public:
             }
         }
         is_proprietary_driver = texture_bound == 2 || IsNativeProgram();
+        if (env.contains("native_code")) {
+            std::vector<Shader::Ampere::Instruction> native;
+            for (const auto& words : env.at("native_code")) {
+                REQUIRE(words.size() == 4);
+                native.push_back({words.get<std::array<u32, 4>>()});
+            }
+            const auto lowered = Shader::Ampere::LowerToMaxwell(
+                native, {.geometry = stage == Shader::Stage::Geometry, .tensor = true});
+            INFO(lowered.error);
+            REQUIRE(static_cast<bool>(lowered));
+            code.resize(sizeof(sph) / sizeof(u64));
+            std::memcpy(code.data(), &sph, sizeof(sph));
+            for (u64 instruction : lowered.instructions) {
+                if (code.size() % 4 == 0) {
+                    code.push_back(0);
+                }
+                code.push_back(instruction);
+            }
+            code.push_back(0);
+            if (!env.value("legacy_without_native_map", false)) {
+                Shader::Ampere::AppendNativeAddressMap(code, lowered.source_instruction_offsets);
+            }
+            read_lowest = 0;
+            read_highest = static_cast<u32>(code.size() * sizeof(u64) - sizeof(u64));
+            start_address = stage == Shader::Stage::Compute ? sizeof(sph) : 0;
+            if (lowered.required_texture_buffer != ~0U) {
+                texture_bound = lowered.required_texture_buffer;
+            }
+            is_proprietary_driver = true;
+        }
     }
 
     /// Where PipelineCache starts the control flow graph of this stage
@@ -222,6 +254,7 @@ private:
 struct Fixture {
     std::string name;
     nlohmann::json environment;
+    nlohmann::json expected;
 };
 
 std::vector<Fixture> LoadFixtures() {
@@ -231,11 +264,14 @@ std::vector<Fixture> LoadFixtures() {
             continue;
         }
         std::ifstream file{entry.path()};
-        fixtures.push_back(
-            {entry.path().stem().string(), nlohmann::json::parse(file).at("environment")});
+        const auto data = nlohmann::json::parse(file);
+        REQUIRE(data.contains("provenance"));
+        REQUIRE_FALSE(data.contains("source_cache_sha256"));
+        REQUIRE(data.at("environment").contains("native_code"));
+        fixtures.push_back({entry.path().stem().string(), data.at("environment"), data.at("expected")});
     }
     std::ranges::sort(fixtures, {}, &Fixture::name);
-    REQUIRE(fixtures.size() >= 4);
+    REQUIRE(fixtures.size() == 4);
     return fixtures;
 }
 
@@ -285,7 +321,9 @@ Result Emit(const Shader::Profile& profile, Shader::IR::Program program) {
     Result result;
     try {
         Shader::Backend::Bindings bindings;
-        result.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile, {}, program, bindings);
+        Shader::RuntimeInfo runtime{};
+        runtime.previous_stage_stores.mask.set();
+        result.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime, program, bindings);
         result.info = program.info;
     } catch (const std::exception& exception) {
         result.error = exception.what();
@@ -353,6 +391,121 @@ TEST_CASE("Stages translated at once match the GPU thread's translation", "[stag
     }
 }
 
+namespace {
+size_t Count(const Shader::IR::Program& program, Shader::IR::Opcode opcode) {
+    size_t result = 0;
+    for (const auto* block : program.blocks) {
+        for (const auto& inst : block->Instructions()) {
+            result += inst.GetOpcode() == opcode;
+        }
+    }
+    return result;
+}
+
+void SaveModule(std::string name, const std::vector<u32>& module) {
+    if (const char* folder = std::getenv("LICHII_SYNTHETIC_SPIRV_OUTPUT")) {
+        std::filesystem::create_directories(folder);
+        std::ofstream file{std::filesystem::path{folder} / (name + ".spv"), std::ios::binary};
+        file.write(reinterpret_cast<const char*>(module.data()), module.size() * sizeof(u32));
+        REQUIRE(file.good());
+    }
+}
+
+void CheckGeometryModule(const std::vector<u32>& module) {
+    size_t passthrough = 0;
+    for (size_t i = 5; i < module.size();) {
+        const u32 size = module[i] >> 16;
+        REQUIRE(size > 0);
+        REQUIRE(i + size <= module.size());
+        const u32 opcode = module[i] & 0xffff;
+        if (opcode == 71 && size >= 3) { // OpDecorate
+            if (module[i + 2] == 11) { // BuiltIn
+                REQUIRE(size == 4);
+                CHECK(module[i + 3] == 0); // Position only; no vertex/tessellation/fragment inputs
+            }
+            passthrough += module[i + 2] == 5250; // PassthroughNV
+        }
+        CHECK(opcode != 218); // OpEmitVertex
+        CHECK(opcode != 219); // OpEndPrimitive
+        i += size;
+    }
+    CHECK(passthrough == 2);
+}
+} // namespace
+
+TEST_CASE("Independent shader programs preserve the four regression contracts",
+          "[stage_translation][synthetic_contracts]") {
+    const auto host = Host();
+    const auto profile = Profile(host);
+    REQUIRE_FALSE(profile.support_descriptor_aliasing);
+    REQUIRE_FALSE(profile.support_storage_buffer_8bit);
+    for (const auto& fixture : LoadFixtures()) {
+        INFO(fixture.name);
+        const auto check = [&](const nlohmann::json& data, std::string suffix) {
+            FixtureEnvironment env{data};
+            ShaderPools pools;
+            Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.CfgOffset()};
+            auto program = Shader::Maxwell::TranslateProgram(pools.inst, pools.block, env, cfg, host);
+            using Shader::IR::Opcode;
+            if (fixture.name == "synthetic-byte-store") {
+                CHECK(Count(program, Opcode::WriteStorageU8) == 1);
+                CHECK(Count(program, Opcode::WriteStorage32) == 0);
+                REQUIRE(program.info.storage_buffers_descriptors.size() == 1);
+                CHECK(program.info.storage_buffers_descriptors[0].cbuf_offset == 0x120);
+                CHECK(program.info.storage_buffers_descriptors[0].is_written);
+            } else if (fixture.name == "synthetic-unmapped-atomic-counter") {
+                CHECK(Count(program, Opcode::StorageAtomicIAdd32) == 1);
+                CHECK(Count(program, Opcode::GlobalAtomicIAdd32) == 0);
+                CHECK(Count(program, Opcode::WriteStorage32) == 2);
+                CHECK(Count(program, Opcode::WriteGlobal32) == 0);
+                REQUIRE(program.info.storage_buffers_descriptors.size() == 2);
+                for (const auto& descriptor : program.info.storage_buffers_descriptors) {
+                    CHECK(descriptor.is_written);
+                }
+            } else if (fixture.name == "synthetic-global-memory-no-alias") {
+                CHECK(Count(program, Opcode::LoadGlobal128) == 1);
+                CHECK(Count(program, Opcode::WriteGlobal128) == 1);
+                CHECK(program.info.uses_global_memory);
+                CHECK(program.info.native_global_bounds);
+                CHECK(program.info.requires_coherent_global_memory);
+                CHECK(program.info.storage_buffers_descriptors.size() == 2);
+            } else if (fixture.name == "synthetic-geometry-passthrough") {
+                CHECK(program.is_geometry_passthrough);
+                CHECK(program.info.loads.mask.none());
+                CHECK(program.info.passthrough.Generic(6));
+                CHECK(Count(program, Opcode::EmitVertex) == 0);
+                CHECK(Count(program, Opcode::EndPrimitive) == 0);
+            } else {
+                FAIL("Unexpected synthetic fixture");
+            }
+            auto emit_profile = profile;
+            if (fixture.name == "synthetic-global-memory-no-alias") {
+                // Four-byte alignment already scalarizes vectors independently of alias support.
+                emit_profile.min_ssbo_alignment = 256;
+            }
+            const auto emitted = Emit(emit_profile, std::move(program));
+            REQUIRE(emitted.error.empty());
+            REQUIRE_FALSE(emitted.spirv.empty());
+            if (fixture.name == "synthetic-geometry-passthrough") {
+                CheckGeometryModule(emitted.spirv);
+            }
+            SaveModule(fixture.name + suffix, emitted.spirv);
+            return emitted.spirv;
+        };
+        const auto expected = check(fixture.environment, "");
+        if (fixture.name == "synthetic-unmapped-atomic-counter") {
+            auto mapped = fixture.environment;
+            mapped["storage_pointers"][0][1] = 1;
+            CHECK(check(mapped, "-mapped") == expected);
+        }
+        if (fixture.name == "synthetic-geometry-passthrough") {
+            auto legacy = fixture.environment;
+            legacy["legacy_without_native_map"] = true;
+            check(legacy, "-legacy");
+        }
+    }
+}
+
 TEST_CASE("A stage that fails to translate rethrows on the calling thread", "[stage_translation]") {
     const auto fixtures = LoadFixtures();
     const auto host = Host();
@@ -361,6 +514,7 @@ TEST_CASE("A stage that fails to translate rethrows on the calling thread", "[st
     nlohmann::json empty = fixtures.front().environment;
     empty["parameters"][4] = 0;
     empty["code"] = nlohmann::json::array({"0"});
+    empty.erase("native_code");
     FixtureEnvironment broken{empty};
     FixtureEnvironment good{fixtures.front().environment};
     ShaderPools broken_pools, good_pools;

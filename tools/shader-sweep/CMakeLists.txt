@@ -48,6 +48,10 @@ else()
 endif()
 
 add_executable(shader-sweep main.cpp diagnostics.cpp)
+if(WIN32)
+    target_compile_definitions(shader-sweep PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(shader-sweep PRIVATE iphlpapi)
+endif()
 target_link_libraries(shader-sweep PRIVATE common shader_recompiler)
 target_include_directories(shader-sweep PRIVATE ${REPOSITORY_ROOT}/src)
 create_target_directory_groups(shader-sweep)
@@ -91,8 +95,8 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         add_test(NAME shader-sweep-cli
             COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/test_cli.py" $<TARGET_FILE:shader-sweep>)
         find_program(SPIRV_VAL_EXECUTABLE spirv-val REQUIRED)
-        add_test(NAME shader-sweep-captured
-            COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/test_captured.py"
+        add_test(NAME shader-sweep-synthetic
+            COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/test_synthetic.py"
                     $<TARGET_FILE:shader-sweep> --spirv-val "${SPIRV_VAL_EXECUTABLE}")
         add_test(NAME shader-sweep-replay
             COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/test_replay.py"

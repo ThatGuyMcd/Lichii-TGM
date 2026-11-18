@@ -570,7 +570,7 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 #else
     wchar_t **argv_w = nullptr;
 #endif
-    Core::LaunchParams lp = Core::ParseLaunchParams(state->system, argc, argv, argv_w);
+    Core::LaunchParams lp = Core::ParseLaunchParams(state->system, argc, argv, argv_w, true);
 #ifdef _WIN32
     LocalFree(argv_w);
 #endif
@@ -600,6 +600,9 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");
         return SDL_APP_FAILURE;
     }
+
+    // The configuration may select a different NAND from the one read at construction.
+    Core::ReloadLaunchProfile(lp, state->system);
 
     state->network_initialized = Network::Init();
     if (!state->network_initialized) {

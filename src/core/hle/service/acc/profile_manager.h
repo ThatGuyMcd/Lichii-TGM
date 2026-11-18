@@ -120,6 +120,7 @@ public:
 
 private:
     void ParseUserSaveFile();
+    void OpenCurrentUser();
     std::optional<std::size_t> AddToProfiles(const ProfileInfo& profile);
     void RemoveAllProfiles();
 

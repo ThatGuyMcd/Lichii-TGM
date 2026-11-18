@@ -6,6 +6,9 @@
 
 add_executable(tests
     core/isolated_keys.cpp
+    core/profile_manager_reset.cpp
+    core/launch_user.cpp
+    core/unmapped_write_logging.cpp
     video_core/draw_template.cpp
     video_core/oot_perf_texture_landing.cpp
     video_core/oot_perf_stream_wrap.cpp
@@ -314,6 +317,9 @@ create_target_directory_groups(tests)
 
 target_link_libraries(tests PRIVATE common core audio_core input_common video_core frontend_common)
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
+if (MSVC)
+    target_link_libraries(tests PRIVATE getopt)
+endif()
 
 if (TARGET dynarmic::dynarmic)
     target_sources(tests PRIVATE core/window_trace.cpp)
@@ -328,6 +334,7 @@ add_test(NAME tests COMMAND tests)
 # synthetic encrypted-header fixtures in separate processes from install tests.
 add_test(NAME nca_discovery COMMAND tests "[nca_discovery]")
 add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
+add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 
 if (ENABLE_NVIDIA_DLSS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(ngx_smoke EXCLUDE_FROM_ALL video_core/ngx_smoke.cpp)

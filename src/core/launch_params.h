@@ -21,6 +21,7 @@ struct LaunchParams {
     std::string program_args{};
     std::optional<std::string> config_path{};
     std::optional<int> selected_user{};
+    std::string selected_user_name{};
     std::optional<u16> override_gdb_port{};
     std::optional<std::string> log_filter{};
     // --pack-nup <dump> [<out.nup>]: packs a loose dump instead of booting a game (eden-cli).
@@ -47,7 +48,9 @@ struct LaunchParams {
     bool launch_setup = false;
 };
 
-LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wchar_t *argv_w[]) noexcept;
+LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wchar_t *argv_w[],
+                               bool defer_profile_selection = false) noexcept;
 void ApplyLaunchParams(LaunchParams const& lp) noexcept;
+void ReloadLaunchProfile(LaunchParams const& lp, Core::System& system);
 
 }

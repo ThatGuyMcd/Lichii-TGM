@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
+#include <charconv>
 #include <regex>
 #include <cctype>
+#include <string_view>
 
 #include "common/assert.h"
 #include "common/logging.h"
@@ -20,7 +23,8 @@
 #endif
 
 namespace Core {
-LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wchar_t *argv_w[]) noexcept {
+LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wchar_t *argv_w[],
+                               bool defer_profile_selection) noexcept {
     LaunchParams p{};
 
     int option_index = 0;
@@ -138,9 +142,29 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                 break;
             case 'u': {
                 // Launch game with a specific user
-                bool argument_ok = isdigit(optarg[0]) != 0;
-                p.selected_user = atoi(optarg);
-                if (!argument_ok) {
+                const std::string_view argument{optarg};
+                p.selected_user.reset();
+                p.selected_user_name.clear();
+                if (argument.empty()) {
+                    LOG_ERROR(Frontend, "Invalid empty user argument");
+                    break;
+                }
+                if (std::ranges::all_of(argument, [](unsigned char c) { return isdigit(c) != 0; })) {
+                    int index{};
+                    const auto result = std::from_chars(argument.data(), argument.data() + argument.size(), index);
+                    if (result.ec != std::errc{} ||
+                        index >= static_cast<int>(Service::Account::MAX_USERS)) {
+                        LOG_ERROR(Frontend, "User index '{}' must be between 0 and {}", argument,
+                                  Service::Account::MAX_USERS - 1);
+                        break;
+                    }
+                    p.selected_user = index;
+                } else {
+                    // The CLI resolves this again after its configuration selects the NAND.
+                    p.selected_user_name = argument;
+                    if (defer_profile_selection) {
+                        break;
+                    }
                     // try to look it up by username, only finds the first username that matches.
                     auto const user_idx = system.GetProfileManager().GetUserIndex(optarg);
                     if (user_idx != std::nullopt) {
@@ -149,6 +173,9 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                         LOG_ERROR(Frontend, "Invalid user argument '{}'", optarg);
                         break;
                     }
+                }
+                if (defer_profile_selection) {
+                    break;
                 }
                 if (system.GetProfileManager().UserExistsIndex(*p.selected_user)) {
                     Settings::values.current_user = s32(*p.selected_user);
@@ -251,6 +278,21 @@ void ApplyLaunchParams(LaunchParams const& lp) noexcept {
             " Rewrite default-language NUP metadata in place and exit\n",
             lp.argv0
         );
+    }
+}
+
+void ReloadLaunchProfile(LaunchParams const& lp, Core::System& system) {
+    auto& profiles = system.GetProfileManager();
+    profiles.ResetUserSaveFile();
+    if (lp.selected_user_name.empty()) {
+        return;
+    }
+    const auto index = profiles.GetUserIndex(lp.selected_user_name);
+    if (!index) {
+        LOG_ERROR(Frontend, "Invalid user argument '{}'", lp.selected_user_name);
+    } else if (Settings::values.current_user.GetValue() != static_cast<s32>(*index)) {
+        Settings::values.current_user = static_cast<s32>(*index);
+        profiles.ResetUserSaveFile();
     }
 }
 

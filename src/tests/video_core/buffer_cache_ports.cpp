@@ -387,6 +387,20 @@ struct BufferCacheTestAccess {
     static void Delete(C& cache, BufferId id) {
         cache.DeleteBuffer(id);
     }
+    static void UpdateIndex(Cache& cache) {
+        cache.UpdateIndexBuffer();
+    }
+    static BufferId InlineIndex(const Cache& cache) {
+        return cache.inline_buffer_id;
+    }
+    static u64 BufferBytes(const Cache& cache) {
+        return cache.buffer_bytes;
+    }
+    static size_t LruEntries(Cache& cache) {
+        size_t count{};
+        cache.lru_cache.ForEachItemBelow(cache.frame_tick, [&](BufferId) { ++count; });
+        return count;
+    }
     template <class C>
     static u64 Deletions(const C& cache) {
         return cache.buffer_deletions;
@@ -672,6 +686,72 @@ private:
 };
 
 using Fixture = BasicFixture<Runtime, Cache>;
+
+struct InlineIndexFixture : Fixture {
+    InlineIndexFixture() {
+        state.memory_manager = &*memory;
+        state.payload.emplace(system, *memory, state);
+        cache->CreateChannel(state);
+        cache->BindToChannel(0);
+    }
+    ~InlineIndexFixture() {
+        cache.reset();
+    }
+    VideoCommon::BufferId Draw(size_t size) {
+        auto& channel = Access::Channel(*cache);
+        channel.maxwell3d.draw_manager.draw_state.inline_index_draw_indexes.assign(size, 0x37);
+        channel.maxwell3d.dirty.flags[VideoCommon::Dirty::IndexBuffer] = true;
+        Access::UpdateIndex(*cache);
+        REQUIRE(channel.index_buffer.buffer_id == Access::InlineIndex(*cache));
+        REQUIRE(Access::Get(*cache, channel.index_buffer.buffer_id).SizeBytes() >= size);
+        return channel.index_buffer.buffer_id;
+    }
+    Tegra::Control::ChannelState state{0};
+};
+
+TEST_CASE("Inline index deletion cannot leave a reused slot as its current buffer",
+          "[buffer_ports][inline_index_lifetime]") {
+    InlineIndexFixture f;
+    const u64 initial_bytes = Access::BufferBytes(*f.cache);
+    const size_t initial_lru = Access::LruEntries(*f.cache);
+    const auto old = f.Draw(16);
+    const std::weak_ptr retired = Access::Get(*f.cache, old).lifetime;
+    Access::Delete(*f.cache, old);
+    CHECK(Access::InlineIndex(*f.cache) == VideoCommon::NULL_BUFFER_ID);
+    CHECK(Access::BufferBytes(*f.cache) == initial_bytes);
+    CHECK(Access::LruEntries(*f.cache) == initial_lru);
+    CHECK_FALSE(retired.expired());
+    const auto unrelated = Access::Add(*f.cache, 0x30000, 0x10000);
+    REQUIRE(unrelated == old);
+    const auto replacement = f.Draw(16);
+    CHECK(replacement != unrelated);
+    CHECK(Access::Get(*f.cache, replacement).CpuAddr() == 0);
+    CHECK(Access::Get(*f.cache, unrelated).CpuAddr() == 0x30000);
+}
+
+TEST_CASE("Growing inline indices retires the old allocation and its accounting together",
+          "[buffer_ports][inline_index_lifetime]") {
+    InlineIndexFixture f;
+    const u64 initial_bytes = Access::BufferBytes(*f.cache);
+    const size_t initial_lru = Access::LruEntries(*f.cache);
+    auto id = f.Draw(16);
+    for (size_t size : {0x20001, 0x40001, 0x80001}) {
+        const std::weak_ptr retired = Access::Get(*f.cache, id).lifetime;
+        id = f.Draw(size);
+        CHECK_FALSE(retired.expired());
+        CHECK(Access::BufferBytes(*f.cache) ==
+              initial_bytes + Access::Get(*f.cache, id).SizeBytes());
+        CHECK(Access::LruEntries(*f.cache) == initial_lru + 1);
+        for (size_t frame = 0; frame < 16; ++frame) {
+            Access::TickDestructionRing(*f.cache);
+        }
+        CHECK(retired.expired());
+    }
+    Access::Delete(*f.cache, id);
+    CHECK(Access::BufferBytes(*f.cache) == initial_bytes);
+    CHECK(Access::LruEntries(*f.cache) == initial_lru);
+    CHECK(Access::InlineIndex(*f.cache) == VideoCommon::NULL_BUFFER_ID);
+}
 
 struct ChannelDeletionFixture : BasicFixture<KeepRuntime, PersistentCache> {
     ChannelDeletionFixture() {

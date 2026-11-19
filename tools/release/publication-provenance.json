@@ -29,7 +29,7 @@
       "sha256": "85d944c8557fbeffe02af566c9c4277251ed0ab1a0f2a3ab7a626af6a877c3a1",
       "classification": "emulator_metadata",
       "origin": "Fritchii v5.7 metadata-only recipe; archive and file provenance in dist/recipes/README.md",
-      "license_or_data_basis": "Pipeline state and shader fingerprints; shader code is assembled locally from user-owned files"
+      "license_or_data_basis": "Redistribution permission confirmed by the fork owner on 19 November 2026 for this exact SHA256. Recipe copyright/notice retained in dist/recipes/Fritchii-Recipe-LICENSE.txt and Frizti attribution in README/release notes. Metadata contains pipeline state and shader fingerprints; shader code is assembled locally from user-owned files. This confirmation does not approve other recipes or future versions."
     }
   }
 }

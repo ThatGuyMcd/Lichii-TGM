@@ -5,6 +5,11 @@ title `0400486024DEC000`, game version `131072`, pipeline cache version `54`.
 It contains pipeline state and shader fingerprints. Shader code is assembled
 locally from your own game files.
 
+I've included this exact recipe with redistribution permission.
+Shader precompile recipe by Frizti (Fritchii).
+The recipe's notice is in `Fritchii-Recipe-LICENSE.txt`; its permission does not
+extend to other recipes or future versions.
+
 Source: [Frizti/Fritchii v5.7](https://github.com/Frizti/Fritchii/releases/tag/fritchii-v5.7),
 `recipes/OoT v131072 (cache v54).nx2recipe` inside `Fritchii-v5.7-Windows-x64.zip`.
 

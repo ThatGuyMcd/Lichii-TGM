@@ -1,0 +1,25 @@
+Fritchii shader precompile recipe license
+
+Copyright (c) 2026 Frizti. All rights reserved.
+
+This license covers the Fritchii shader precompile recipes: the *.nx2recipe files shipped in
+the "recipes" folder of Fritchii releases (and any copy, conversion or derivative of them).
+A recipe tells the precompiler which shaders to prepare from the game's own files. The recipes
+were made by Frizti for Fritchii. They are data files distributed alongside Fritchii; they are
+not part of its GPL-licensed source code.
+
+1. You may use the recipes as they come with Fritchii, inside Fritchii.
+
+2. You may not copy, redistribute, convert, or include the recipes, or any recipe derived from
+   them, in any other build, fork, package or program, unless Frizti has given you direct,
+   written permission first. Ask Frizti by direct message on Discord.
+
+3. If you are given permission, keep this notice with the recipe and credit it as
+   "Shader precompile recipe by Frizti (Fritchii)" in your release notes and credits.
+
+4. The recipes are provided "as is", without warranty of any kind. In no event shall Frizti be
+   liable for any claim, damages or other liability arising from their use.
+
+The Fritchii program itself, including the code that reads recipes, stays under the GNU
+General Public License (see LICENSE.txt and LICENSES/Fritchii-Additional-Terms.txt). This
+license only covers the recipe files.

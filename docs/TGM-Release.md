@@ -14,7 +14,8 @@ London calendar day after losing its local journal. An additional release I've
 explicitly requested uses `--manual`; it still requires the next numeric patch,
 an unused tag, matching packages and every publication gate. The publisher's
 `manual_release` input must match the manifest. Nightly runs keep their normal
-date guard. After v1.0.5, the next successful scheduled release is v1.0.6.
+date guard. The next successful scheduled release advances the latest published
+fork patch, including any separately requested manual release.
 Windows Python needs the
 `tzdata` package; Linux can use the system IANA timezone data.
 

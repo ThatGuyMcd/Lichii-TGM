@@ -5,6 +5,7 @@
 #include <atomic>
 #include <barrier>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <exception>
@@ -49,6 +50,7 @@ struct Buffer : VideoCommon::BufferBase {
     std::span<u8> Mapped() {
         return host_mapped ? std::span{bytes} : std::span<u8>{};
     }
+    Buffer* Handle() { return this; }
     u64 LastUsageTick() const {
         return tick;
     }
@@ -246,6 +248,22 @@ struct Runtime {
         }
     }
     void BindUniformBuffer(Buffer&, u32, u32) {}
+    struct VertexBind {
+        u32 index;
+        DAddr address;
+        u32 size;
+        u32 stride;
+    };
+    void BindVertexBuffer(u32 index, Buffer* buffer, u32 offset, u32 size, u32 stride) {
+        vertex_binds.push_back({index, buffer->CpuAddr() + offset, size, stride});
+    }
+    void BindVertexBuffers(const VideoCommon::HostBindings<Buffer>& bindings) {
+        for (size_t i = 0; i < bindings.buffers.size(); ++i) {
+            BindVertexBuffer(bindings.min_index + static_cast<u32>(i), bindings.buffers[i],
+                             bindings.offsets[i], bindings.sizes[i], bindings.strides[i]);
+        }
+    }
+    std::vector<VertexBind> vertex_binds;
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size) {
         stream.resize(size);
         return stream;
@@ -393,6 +411,9 @@ struct BufferCacheTestAccess {
     static BufferId InlineIndex(const Cache& cache) {
         return cache.inline_buffer_id;
     }
+    static void UpdateVertices(Cache& cache) { cache.UpdateVertexBuffers(); }
+    static void BindVertices(Cache& cache) { cache.BindHostVertexBuffers(); }
+    static u32 EnabledVertices(const Cache& cache) { return cache.enabled_vertex_buffers_mask; }
     static u64 BufferBytes(const Cache& cache) {
         return cache.buffer_bytes;
     }
@@ -751,6 +772,103 @@ TEST_CASE("Growing inline indices retires the old allocation and its accounting 
     CHECK(Access::BufferBytes(*f.cache) == initial_bytes);
     CHECK(Access::LruEntries(*f.cache) == initial_lru);
     CHECK(Access::InlineIndex(*f.cache) == VideoCommon::NULL_BUFFER_ID);
+}
+
+TEST_CASE("Disabled vertex streams clear their dirty state without a host binding",
+          "[buffer_ports][disabled_vertex_streams]") {
+    InlineIndexFixture f;
+    auto& channel = Access::Channel(*f.cache);
+    auto& flags = channel.maxwell3d.dirty.flags;
+    for (u32 index = 0; index < channel.vertex_buffers.size(); ++index) {
+        channel.maxwell3d.regs.vertex_streams[index].enable.Assign(0);
+        flags[VideoCommon::Dirty::VertexBuffer0 + index] = true;
+    }
+    flags[VideoCommon::Dirty::VertexBuffers] = true;
+    Access::UpdateVertices(*f.cache);
+    Access::BindVertices(*f.cache);
+    CHECK_FALSE(flags[VideoCommon::Dirty::VertexBuffers]);
+    for (u32 index = 0; index < channel.vertex_buffers.size(); ++index) {
+        CAPTURE(index);
+        CHECK_FALSE(flags[VideoCommon::Dirty::VertexBuffer0 + index]);
+        CHECK(channel.vertex_buffers[index].buffer_id == VideoCommon::NULL_BUFFER_ID);
+        CHECK(Access::VertexSlot(*f.cache, index).buffer_id == VideoCommon::NULL_BUFFER_ID);
+    }
+    CHECK(Access::EnabledVertices(*f.cache) == 0);
+    CHECK(f.runtime.vertex_binds.empty());
+    flags[VideoCommon::Dirty::VertexBuffers] = true;
+    Access::UpdateVertices(*f.cache);
+    CHECK(Access::EnabledVertices(*f.cache) == 0);
+    CHECK(f.runtime.vertex_binds.empty());
+}
+
+TEST_CASE("Vertex enable methods restore resolution and binding after a disabled stream",
+          "[buffer_ports][disabled_vertex_streams]") {
+    using Tegra::Engines::Maxwell3D;
+    InlineIndexFixture f;
+    auto& channel = Access::Channel(*f.cache);
+    auto& engine = channel.maxwell3d;
+    auto& flags = engine.dirty.flags;
+    VideoCommon::Dirty::SetupDirtyFlags(engine.dirty.tables);
+    constexpr u32 index = 2;
+    constexpr u32 base = MAXWELL3D_REG_INDEX(vertex_streams) + index * 4;
+    constexpr u32 limit = MAXWELL3D_REG_INDEX(vertex_stream_limits) + index * 2;
+    const auto write = [&](u32 method, u32 value) { engine.CallMethod(f.system, method, value, true); };
+    write(base + 1, 0);
+    write(base + 2, 0x100100);
+    write(limit, 0);
+    write(limit + 1, 0x1001ff);
+    write(base, (1U << 12) | 16);
+    REQUIRE(flags[VideoCommon::Dirty::VertexBuffers]);
+    Access::UpdateVertices(*f.cache);
+    Access::BindVertices(*f.cache);
+    REQUIRE((Access::EnabledVertices(*f.cache) & (1U << index)) != 0);
+    REQUIRE_FALSE(f.runtime.vertex_binds.empty());
+    CHECK(f.runtime.vertex_binds.back().address == 0x10100);
+    CHECK(f.runtime.vertex_binds.back().size == 0x100);
+    CHECK(f.runtime.vertex_binds.back().stride == 16);
+    write(base, 16);
+    REQUIRE(flags[VideoCommon::Dirty::VertexBuffers]);
+    Access::UpdateVertices(*f.cache);
+    CHECK_FALSE(flags[VideoCommon::Dirty::VertexBuffer0 + index]);
+    CHECK((Access::EnabledVertices(*f.cache) & (1U << index)) == 0);
+    CHECK(channel.vertex_buffers[index].buffer_id == VideoCommon::NULL_BUFFER_ID);
+    CHECK(Access::VertexSlot(*f.cache, index).buffer_id == VideoCommon::NULL_BUFFER_ID);
+    f.runtime.vertex_binds.clear();
+    Access::BindVertices(*f.cache);
+    CHECK(f.runtime.vertex_binds.empty());
+    write(base + 2, 0x100200);
+    write(limit + 1, 0x1002ff);
+    write(base, (1U << 12) | 32);
+    REQUIRE(flags[VideoCommon::Dirty::VertexBuffers]);
+    REQUIRE(flags[VideoCommon::Dirty::VertexBuffer0 + index]);
+    Access::UpdateVertices(*f.cache);
+    Access::BindVertices(*f.cache);
+    REQUIRE_FALSE(f.runtime.vertex_binds.empty());
+    CHECK(f.runtime.vertex_binds.back().index == index);
+    CHECK(f.runtime.vertex_binds.back().address == 0x10200);
+    CHECK(f.runtime.vertex_binds.back().size == 0x100);
+    CHECK(f.runtime.vertex_binds.back().stride == 32);
+}
+
+TEST_CASE("Disabled vertex update component timing", "[.][vertex_disabled_bench]") {
+    InlineIndexFixture f;
+    auto& channel = Access::Channel(*f.cache);
+    auto& flags = channel.maxwell3d.dirty.flags;
+    for (u32 index = 0; index < channel.vertex_buffers.size(); ++index) {
+        channel.maxwell3d.regs.vertex_streams[index].enable.Assign(0);
+        flags[VideoCommon::Dirty::VertexBuffer0 + index] = true;
+    }
+    constexpr u32 iterations = 300000;
+    const auto begin = std::chrono::steady_clock::now();
+    for (u32 i = 0; i < iterations; ++i) {
+        flags[VideoCommon::Dirty::VertexBuffers] = true;
+        Access::UpdateVertices(*f.cache);
+    }
+    const auto elapsed = std::chrono::duration<double, std::nano>(
+        std::chrono::steady_clock::now() - begin).count();
+    std::printf("disabled_vertex_component iterations=%u ns_per_update=%.3f\n", iterations,
+                elapsed / iterations);
+    CHECK(Access::EnabledVertices(*f.cache) == 0);
 }
 
 struct ChannelDeletionFixture : BasicFixture<KeepRuntime, PersistentCache> {

@@ -1242,7 +1242,10 @@ std::pair<size_t, size_t> HostMemory::TrimZeroPages() const {
     };
     for (size_t i = 0; i < trim.size();) {
         size_t j = i + 1;
-        while (j < trim.size() && trim[j] == trim[j - 1] + PageAlignment) {
+        // Bound each working-set operation to 1 MiB rather than unlocking a whole guest heap.
+        constexpr size_t MaxUnlockPages = 256;
+        while (j < trim.size() && j - i < MaxUnlockPages &&
+               trim[j] == trim[j - 1] + PageAlignment) {
             ++j;
         }
         unlock(trim[i], trim[j - 1] + PageAlignment);

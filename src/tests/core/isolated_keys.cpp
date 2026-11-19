@@ -6,6 +6,7 @@
 #include <catch2/reporters/catch_reporter_event_listener.hpp>
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 #include "common/fs/path_util.h"
+#include "common/logging.h"
 
 namespace {
 
@@ -25,6 +26,8 @@ public:
         const auto logs = directory / "log";
         std::filesystem::create_directory(logs);
         Common::FS::SetEdenPath(Common::FS::EdenPath::LogDir, logs);
+        // Bind before a test can reset data paths and rotate the owner's gameplay log.
+        Common::Log::Initialize();
     }
 
     void testRunEnded(const Catch::TestRunStats&) override {

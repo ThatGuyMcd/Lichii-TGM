@@ -6,6 +6,8 @@
 
 add_executable(tests
     core/isolated_keys.cpp
+    core/expired_timing.cpp
+    common/log_isolation.cpp
     core/profile_manager_reset.cpp
     core/launch_user.cpp
     core/unmapped_write_logging.cpp
@@ -335,6 +337,31 @@ add_test(NAME tests COMMAND tests)
 add_test(NAME nca_discovery COMMAND tests "[nca_discovery]")
 add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
+add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
+add_test(NAME expired_timing_event COMMAND tests "[expired_timing_event]")
+set_tests_properties(expired_timing_event PROPERTIES TIMEOUT 15)
+
+if (WIN32)
+    # Compile the production translation units with narrow WinAPI test doubles.
+    # The runtime common library and release executables keep the real APIs.
+    add_executable(host_commit_contract_tests common/host_commit_contract.cpp
+        ../common/memory_detect.cpp)
+    target_include_directories(host_commit_contract_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(host_commit_contract_tests PRIVATE Catch2::Catch2WithMain psapi)
+    add_executable(zero_trim_contract_tests common/zero_trim_contract.cpp ../common/host_memory.cpp)
+    target_link_libraries(zero_trim_contract_tests PRIVATE common Catch2::Catch2WithMain psapi)
+    foreach(contract host_commit zero_trim)
+        if (MSVC)
+            target_compile_options(${contract}_contract_tests PRIVATE
+                "/FI${CMAKE_CURRENT_SOURCE_DIR}/common/${contract}_shim.h")
+        else()
+            target_compile_options(${contract}_contract_tests PRIVATE
+                -include "${CMAKE_CURRENT_SOURCE_DIR}/common/${contract}_shim.h")
+        endif()
+        add_test(NAME ${contract}_contract COMMAND ${contract}_contract_tests)
+    endforeach()
+    add_dependencies(tests host_commit_contract_tests zero_trim_contract_tests)
+endif()
 
 if (ENABLE_NVIDIA_DLSS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(ngx_smoke EXCLUDE_FROM_ALL video_core/ngx_smoke.cpp)

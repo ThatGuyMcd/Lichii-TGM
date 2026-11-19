@@ -218,12 +218,10 @@ u64 GetAvailablePhysicalMemory() {
 
 std::optional<u64> GetSystemCommitRoom() {
 #ifdef _WIN32
-    PERFORMANCE_INFORMATION performance{};
-    performance.cb = sizeof(performance);
-    if (GetPerformanceInfo(&performance, sizeof(performance))) {
-        const u64 limit = performance.CommitLimit;
-        const u64 committed = performance.CommitTotal;
-        return (committed < limit ? limit - committed : 0) * performance.PageSize;
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) {
+        return status.ullAvailPageFile;
     }
 #endif
     return std::nullopt;

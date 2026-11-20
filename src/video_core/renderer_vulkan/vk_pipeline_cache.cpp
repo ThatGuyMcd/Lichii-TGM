@@ -2359,12 +2359,23 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
 
     // Background or cancelled prebuilds can still be building into the driver cache here.
     // Drivers that cannot read concurrently retain the session-end save after worker shutdown.
-    if (use_vulkan_pipeline_cache && device.CanReadPipelineCacheDuringBuilds()) {
-        SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
-                                     CACHE_VERSION);
-        size_t size = 0;
-        vulkan_pipeline_cache.Read(&size, nullptr);
-        last_cache_size.store(size, std::memory_order_relaxed);
+    // Recovery only imports the cache. A normal boot queues its snapshot so exporting gigabytes
+    // does not hold the guest cores stopped after shader loading has completed.
+    if (build_at_boot && use_vulkan_pipeline_cache && device.CanReadPipelineCacheDuringBuilds()) {
+        flush_in_flight.store(true, std::memory_order_release);
+        try {
+            serialization_thread.QueueWork([this] {
+                SCOPE_EXIT { flush_in_flight.store(false, std::memory_order_release); };
+                SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
+                                             CACHE_VERSION);
+                size_t size = 0;
+                vulkan_pipeline_cache.Read(&size, nullptr);
+                last_cache_size.store(size, std::memory_order_relaxed);
+            });
+        } catch (...) {
+            flush_in_flight.store(false, std::memory_order_release);
+            throw;
+        }
         last_flush = std::chrono::steady_clock::now();
     }
     if (state.statistics) {

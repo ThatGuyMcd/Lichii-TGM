@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    video_core/boot_driver_cache.cpp
     core/isolated_keys.cpp
     core/expired_timing.cpp
     common/log_isolation.cpp
@@ -446,6 +447,22 @@ target_compile_definitions(shader_translation_tests PRIVATE
 add_test(NAME shader_translation_tests COMMAND shader_translation_tests)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(BOOT_CACHE_BOUNDARIES
+    "${CMAKE_CURRENT_BINARY_DIR}/boot_driver_cache_tail.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/boot_driver_cache_flush.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/boot_driver_cache_constants.inc")
+add_custom_command(OUTPUT ${BOOT_CACHE_BOUNDARIES}
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${PROJECT_SOURCE_DIR}/tools/nx2/extract_boot_driver_cache_tail.py"
+        --source "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp"
+        --output "${CMAKE_CURRENT_BINARY_DIR}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/tools/nx2/extract_boot_driver_cache_tail.py"
+        "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp"
+    VERBATIM)
+target_sources(tests PRIVATE ${BOOT_CACHE_BOUNDARIES})
+target_include_directories(tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME boot_driver_cache COMMAND tests "[boot_driver_cache]")
+set_tests_properties(boot_driver_cache PROPERTIES TIMEOUT 15)
 add_test(NAME synthetic_shader_fixtures
     COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tools/shader-sweep/generate_fixtures.py" --check)
 if(WIN32)

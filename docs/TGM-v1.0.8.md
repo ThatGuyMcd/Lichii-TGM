@@ -1,5 +1,10 @@
 # Lichii-tgm-v1.0.8
 
+I've stopped recovery launches from rewriting an unchanged Vulkan driver cache before the game
+starts. Normal launches now save that snapshot on the existing background worker, keeping the
+driver safety checks and later cache saves intact. This adapts the startup-save component of
+[Frizti's Fritchii change](https://github.com/Frizti/Fritchii/commit/8b44122bb2fc54c21cc1b5595f77a812cf27ae74).
+
 I've reduced repeated work for disabled vertex streams using the relevant part of
 [Lichii #2215](https://github.com/zortos293/Lichii/pull/2215). Disabled streams leave
 the dirty list and binding mask straight away; enabling them resolves and binds

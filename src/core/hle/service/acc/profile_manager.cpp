@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 
@@ -556,7 +557,15 @@ std::vector<std::string> ProfileManager::FindOrphanedProfiles()
     Common::FS::IterateDirEntries(
         path,
         [&good_uuids, &orphaned_profiles](const std::filesystem::directory_entry& entry) -> bool {
-            const std::string uuid = entry.path().stem().string();
+            const std::string uuid = entry.path().filename().string();
+            const auto is_hex = [](char c) {
+                return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+            };
+            if (uuid.size() != 32 || !std::ranges::all_of(uuid, is_hex)) {
+                LOG_WARNING(Service_ACC, "Ignoring {} in the user saves: not a user ID folder",
+                            Common::FS::PathToUTF8String(entry.path()));
+                return true;
+            }
 
             bool override = false;
 
@@ -577,16 +586,21 @@ std::vector<std::string> ProfileManager::FindOrphanedProfiles()
                         if (file.is_regular_file() || Common::FS::IsSymlink(file.path()))
                             return false;
                     }
-                } catch (const fs::filesystem_error& e) {
+                } catch (const fs::filesystem_error&) {
                     // if we get an error--no worries, just pretend it's not empty
-                    return true;
+                    return false;
                 }
 
                 return true;
             }();
 
             if (is_empty) {
-                fs::remove_all(entry);
+                std::error_code error;
+                fs::remove_all(entry, error);
+                if (error) {
+                    LOG_WARNING(Service_ACC, "Could not remove the empty profile folder {}: {}",
+                                Common::FS::PathToUTF8String(entry.path()), error.message());
+                }
                 return true;
             }
 

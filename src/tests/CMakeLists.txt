@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    core/orphaned_profiles.cpp
     video_core/boot_driver_cache.cpp
     core/isolated_keys.cpp
     core/expired_timing.cpp
@@ -463,6 +464,28 @@ target_sources(tests PRIVATE ${BOOT_CACHE_BOUNDARIES})
 target_include_directories(tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME boot_driver_cache COMMAND tests "[boot_driver_cache]")
 set_tests_properties(boot_driver_cache PROPERTIES TIMEOUT 15)
+add_test(NAME profile_orphan_cleanup COMMAND tests "[profile_orphan_cleanup]")
+set(ZERO_COPY_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/zero_length_copy_source.h")
+add_custom_command(OUTPUT "${ZERO_COPY_SOURCE}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/common/zero_length_copy_source.py"
+        --source-root "${PROJECT_SOURCE_DIR}"
+        --output-dir "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/common/zero_length_copy_source.py"
+        "${PROJECT_SOURCE_DIR}/src/common/scratch_buffer.h"
+        "${PROJECT_SOURCE_DIR}/src/core/file_sys/nup_writer.cpp"
+    VERBATIM)
+add_executable(zero_length_copy_tests common/zero_length_copy.cpp "${ZERO_COPY_SOURCE}")
+target_include_directories(zero_length_copy_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_features(zero_length_copy_tests PRIVATE cxx_std_20)
+if(NOT MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(zero_length_copy_tests PRIVATE -fsanitize=undefined -fno-sanitize-recover=all)
+    target_link_options(zero_length_copy_tests PRIVATE -fsanitize=undefined -fno-sanitize-recover=all)
+endif()
+add_dependencies(tests zero_length_copy_tests)
+foreach(mode scratch-first scratch-reuse nup-empty-source nup-empty-destination controls)
+    add_test(NAME zero_copy_${mode} COMMAND zero_length_copy_tests ${mode})
+endforeach()
 add_test(NAME synthetic_shader_fixtures
     COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tools/shader-sweep/generate_fixtures.py" --check)
 if(WIN32)

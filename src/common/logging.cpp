@@ -28,6 +28,7 @@
 #include <fmt/ranges.h>
 
 #include "common/fs/file.h"
+#include "common/fs/file_lock.h"
 #include "common/fs/fs.h"
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
@@ -252,8 +253,8 @@ struct ColorConsoleBackend final : public Backend {
 /// @brief Backend that writes to a file passed into the constructor
 struct FileBackend final : public Backend {
     explicit FileBackend(const std::filesystem::path filename) noexcept {
-        // Move a log over its ".old.txt" copy. The rename replaces the copy atomically, and fails
-        // if the log is still open elsewhere (e.g. in a Lichii process that hasn't exited yet).
+        // Move a log over its ".old.txt" copy. On Windows the rename fails if the log is still
+        // open elsewhere; POSIX writers also need to own its lifetime lock before rotation.
         // A log that can't even be checked counts as a failure, so it is never truncated.
         const auto rotate = [](const std::filesystem::path& path) {
             std::error_code ec;
@@ -264,11 +265,9 @@ struct FileBackend final : public Backend {
             std::filesystem::rename(path, old_path, ec);
             return !ec;
         };
-        // If the log can't be moved, write this session to a second log (eden_log_2.txt) so that
-        // the previous session is kept and this one still gets the full size limit. If that one
-        // can't be moved either, append to it.
         auto path = filename;
         auto mode = FS::FileAccessMode::Write;
+#ifdef _WIN32
         if (!rotate(path)) {
             path = filename.parent_path() / filename.stem();
             path += "_2";
@@ -276,6 +275,35 @@ struct FileBackend final : public Backend {
             if (!rotate(path))
                 mode = FS::FileAccessMode::Append;
         }
+#else
+        mode = FS::FileAccessMode::Append;
+        for (int slot = 1; slot <= 8; ++slot) {
+            path = filename;
+            if (slot != 1) {
+                path = filename.parent_path() / filename.stem();
+                path += fmt::format("_{}", slot);
+                path += filename.extension();
+            }
+            auto lock_path = path;
+            lock_path += ".lock";
+            lock.emplace(lock_path);
+            if (!lock->Held()) {
+                lock.reset();
+                continue;
+            }
+            if (rotate(path)) {
+                mode = FS::FileAccessMode::Write;
+                break;
+            }
+        }
+        if (!lock) {
+            // Logging is still being initialised; console and ring backends remain available.
+            fmt::print(stderr, "No log slot in {} can be owned: file logging is disabled\n",
+                       FS::PathToUTF8String(filename.parent_path()));
+            enabled = false;
+            return;
+        }
+#endif
         file.emplace(path, mode, FS::FileType::TextFile);
         // Count what is already there so the size limit still applies when appending.
         if (mode == FS::FileAccessMode::Append)
@@ -325,9 +353,14 @@ struct FileBackend final : public Backend {
     }
 
     void Flush() noexcept override {
-        file->Flush();
+        if (file)
+            file->Flush();
     }
 private:
+#ifndef _WIN32
+    // Close the writer before releasing its lifetime lock.
+    std::optional<FS::FileLock> lock;
+#endif
     std::optional<FS::IOFile> file;
     std::size_t bytes_written = 0;
     bool enabled = true;
@@ -461,7 +494,7 @@ void Initialize() {
 #ifndef __OPENORBIS__
         using namespace Common::FS;
         const auto& log_dir = GetEdenPath(EdenPath::LogDir);
-        void(CreateDir(log_dir));
+        void(CreateDirs(log_dir));
         logging_instance->file_backend.emplace(log_dir / LOG_FILE);
 #endif
     }

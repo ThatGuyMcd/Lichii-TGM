@@ -19,6 +19,15 @@ inline bool Enabled() {
     return enabled;
 }
 
+/// Per-command timestamps are expensive and require a separate opt-in before scheduler creation.
+inline bool GpuSitesEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_DKB_GPU_SITES");
+        return Enabled() && value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
 struct RateLimit {
     std::chrono::steady_clock::time_point next{};
 

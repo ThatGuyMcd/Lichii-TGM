@@ -1124,6 +1124,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
                 return fallback;
             }
             AddCapability(spv::Capability::VariablePointersStorageBuffer);
+            AddCapability(spv::Capability::VariablePointers);
             Id ssbo_id{ssbos[candidates[0]].*ssbo_member};
             Id ssbo_index{zero};
             for (size_t i = 0; i < candidates.size(); ++i) {

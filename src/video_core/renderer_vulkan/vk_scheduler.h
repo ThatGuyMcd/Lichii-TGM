@@ -513,7 +513,7 @@ private:
             // Uploads recorded before this command go before it.
             FlushUploads();
         }
-        if (Common::DkbFrameTrace::Enabled()) [[unlikely]] {
+        if (Common::DkbFrameTrace::GpuSitesEnabled()) [[unlikely]] {
             RecordSiteMarker(location);
         }
         pending_submission.Record();

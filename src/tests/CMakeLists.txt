@@ -340,6 +340,33 @@ add_test(NAME nca_discovery COMMAND tests "[nca_discovery]")
 add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(log_session_probe common/log_session_probe.cpp)
+target_link_libraries(log_session_probe PRIVATE common Threads::Threads)
+add_dependencies(tests log_session_probe)
+add_test(NAME log_session_lifetime
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/common/log_sessions.py"
+        "$<TARGET_FILE:log_session_probe>")
+set_tests_properties(log_session_lifetime PROPERTIES TIMEOUT 120)
+set(GPU_SITE_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/gpu_site_contract")
+set(GPU_SITE_OUTPUTS "${GPU_SITE_GENERATED}/gpu_site_record.inc"
+    "${GPU_SITE_GENERATED}/gpu_site_constructor.inc" "${GPU_SITE_GENERATED}/gpu_site_constants.inc")
+add_custom_command(OUTPUT ${GPU_SITE_OUTPUTS}
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/video_core/gpu_site_source.py"
+        "${PROJECT_SOURCE_DIR}" "${GPU_SITE_GENERATED}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/video_core/gpu_site_source.py"
+        "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_scheduler.h"
+        "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_scheduler.cpp"
+    VERBATIM)
+add_executable(gpu_site_contract_tests video_core/gpu_site_contract.cpp ${GPU_SITE_OUTPUTS})
+target_include_directories(gpu_site_contract_tests PRIVATE "${GPU_SITE_GENERATED}")
+target_link_libraries(gpu_site_contract_tests PRIVATE common)
+add_dependencies(tests gpu_site_contract_tests)
+add_test(NAME gpu_site_diagnostics
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/video_core/gpu_site_matrix.py"
+        "$<TARGET_FILE:gpu_site_contract_tests>")
+set_tests_properties(gpu_site_diagnostics PROPERTIES TIMEOUT 120)
+add_test(NAME variable_pointer_capability COMMAND tests "[variable_pointer_capability]")
 add_test(NAME expired_timing_event COMMAND tests "[expired_timing_event]")
 set_tests_properties(expired_timing_event PROPERTIES TIMEOUT 15)
 
@@ -447,7 +474,6 @@ target_compile_definitions(shader_translation_tests PRIVATE
     SHADER_SWEEP_FIXTURES="${PROJECT_SOURCE_DIR}/tools/shader-sweep/fixtures")
 add_test(NAME shader_translation_tests COMMAND shader_translation_tests)
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(BOOT_CACHE_BOUNDARIES
     "${CMAKE_CURRENT_BINARY_DIR}/boot_driver_cache_tail.inc"
     "${CMAKE_CURRENT_BINARY_DIR}/boot_driver_cache_flush.inc"

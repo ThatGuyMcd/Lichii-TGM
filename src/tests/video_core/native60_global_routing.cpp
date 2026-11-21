@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -336,6 +338,53 @@ TEST_CASE("Native60: Global memory helpers with variable pointers select the buf
             }
             CHECK(loads == 3);
             CHECK(writes >= 5);
+        }
+    }
+}
+
+TEST_CASE("Native60: Cross-buffer pointer selects declare full variable pointers",
+          "[shader_recompiler][global_memory][variable_pointer_capability]") {
+    for (bool select : {false, true}) {
+        for (bool native : {false, true}) {
+            for (u32 alignment : {4U, 16U}) {
+                CAPTURE(select, native, alignment);
+                const auto code = EmitUntrackedAccesses(native, alignment, select);
+                std::set<u32> pointer_types;
+                for (const auto& operands : Instructions(code, 32)) { // OpTypePointer
+                    pointer_types.insert(operands[0]);
+                }
+                std::unordered_map<u32, std::set<u32>> origins;
+                for (const auto& operands : Instructions(code, 59)) { // OpVariable
+                    if (operands[2] == 12) { // StorageBuffer
+                        origins[operands[1]] = {operands[1]};
+                    }
+                }
+                size_t cross_buffer_selects{};
+                for (size_t word = 5; word < code.size();) {
+                    const u32 count = code[word] >> 16;
+                    const u32 opcode = code[word] & 0xffff;
+                    REQUIRE(count > 0);
+                    REQUIRE(word + count <= code.size());
+                    if ((opcode == 65 || opcode == 67 || opcode == 83) &&
+                        pointer_types.contains(code[word + 1])) { // AccessChain / CopyObject
+                        origins[code[word + 2]] = origins[code[word + 3]];
+                    } else if (opcode == 169 && pointer_types.contains(code[word + 1])) {
+                        auto selected = origins[code[word + 4]];
+                        const auto& alternative = origins[code[word + 5]];
+                        selected.insert(alternative.begin(), alternative.end());
+                        cross_buffer_selects += selected.size() > 1;
+                        origins[code[word + 2]] = std::move(selected);
+                    }
+                    word += count;
+                }
+                const auto capabilities = Instructions(code, 17); // OpCapability
+                const bool full_variable_pointers = std::ranges::any_of(
+                    capabilities, [](const auto& operands) { return operands[0] == 4442; });
+                CHECK((cross_buffer_selects > 0) == select);
+                // The restricted capability covers pointers within one SSBO, not selections
+                // between distinct storage-buffer variables.
+                CHECK(full_variable_pointers == select);
+            }
         }
     }
 }

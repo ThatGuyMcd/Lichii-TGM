@@ -46,6 +46,31 @@ bindings when a wait submits the command buffer during draw setup.
 [Lichii #2421](https://github.com/zortos293/Lichii/pull/2421),
 [#2125](https://github.com/zortos293/Lichii/pull/2125)
 
+I've made depth feedback checks use the views bound for the current draw
+and made the shader cache retain write tracking for routed native stores
+and atomics. The Ampere shader translator now handles half comparisons
+with a constant-buffer operand. I've also kept overlapping query reports
+in their original traversal order and stopped recording Vulkan indirect
+dispatches with a missing buffer.
+[Lichii #2357](https://github.com/zortos293/Lichii/pull/2357),
+[#1832](https://github.com/zortos293/Lichii/pull/1832),
+[#1511](https://github.com/zortos293/Lichii/pull/1511),
+[Fritchii #72](https://github.com/Frizti/Fritchii/pull/72),
+[Frizti's indirect-dispatch fix](https://github.com/Frizti/Fritchii/commit/763871b779c567cfb569747296c2989ec9dafce6)
+
+I've matched the descriptor used by the Linux FSR 4 library we ship and
+corrected a type mismatch in the vertical-blank diagnostics.
+[Lichii #1595](https://github.com/zortos293/Lichii/pull/1595),
+[#958](https://github.com/zortos293/Lichii/pull/958)
+
+I've brought across tighter checks for NRO and KIP layouts so the loaders
+can reject invalid images before reading or mapping their segments.
+NUP verification now streams archive members and verifies the backing data,
+including when a decoded copy is already in memory.
+[Lichii #2379](https://github.com/zortos293/Lichii/pull/2379),
+[#2375](https://github.com/zortos293/Lichii/pull/2375),
+[#2364](https://github.com/zortos293/Lichii/pull/2364)
+
 I've made Vulkan retry adapter discovery if the list changes while it's being
 read. If the list shrinks, we use just the devices Vulkan returned. [Lichii #2223](https://github.com/zortos293/Lichii/pull/2223)
 

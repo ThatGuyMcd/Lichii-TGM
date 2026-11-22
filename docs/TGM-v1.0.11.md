@@ -40,6 +40,12 @@ saves and OOT aspect-ratio options are retained.
 
 ## Renderer and shader fixes
 
+I've brought across the fragment-depth fix for Vulkan devices that have to
+use floating-point depth in place of 24-bit depth. I've also restored geometry
+bindings when a wait submits the command buffer during draw setup.
+[Lichii #2421](https://github.com/zortos293/Lichii/pull/2421),
+[#2125](https://github.com/zortos293/Lichii/pull/2125)
+
 I've made Vulkan retry adapter discovery if the list changes while it's being
 read. If the list shrinks, we use just the devices Vulkan returned. [Lichii #2223](https://github.com/zortos293/Lichii/pull/2223)
 

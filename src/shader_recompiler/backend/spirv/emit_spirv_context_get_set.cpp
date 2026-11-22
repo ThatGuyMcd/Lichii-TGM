@@ -516,13 +516,38 @@ void EmitSetSampleMask(EmitContext& ctx, Id value) {
 }
 
 void EmitSetFragDepth(EmitContext& ctx, Id value) {
-    if (!ctx.runtime_info.convert_depth_mode || ctx.profile.support_native_ndc) {
-        ctx.OpStore(ctx.frag_depth, value);
-        return;
+    const Id f32{ctx.F32[1]};
+    Id depth{value};
+    if (ctx.runtime_info.convert_depth_mode && !ctx.profile.support_native_ndc) {
+        const Id half{ctx.Const(0.5f)};
+        depth = ctx.OpFma(f32, depth, half, half);
     }
-    const Id unit{ctx.Const(0.5f)};
-    const Id new_depth{ctx.OpFma(ctx.F32[1], value, unit, unit)};
-    ctx.OpStore(ctx.frag_depth, new_depth);
+    if (ctx.runtime_info.quantize_frag_depth_d24) {
+        const Id max_unorm{ctx.Const(16777215.0f)};
+        const Id half{ctx.Const(0.5f)};
+        const Id one{ctx.Const(1.0f)};
+        const Id clamped{ctx.OpNMin(f32, ctx.OpNMax(f32, depth, ctx.f32_zero_value), one)};
+        const Id guess{ctx.OpRoundEven(f32, ctx.OpFMul(f32, clamped, max_unorm))};
+        // The product may round across a half-code. Reconstruct the residual from d * 2^24.
+        const Id scaled{ctx.OpFMul(f32, clamped, ctx.Const(16777216.0f))};
+        const Id residual{ctx.OpFSub(f32, scaled, guess)};
+        const Id residual_up{ctx.OpFSub(f32, residual, half)};
+        const Id residual_down{ctx.OpFAdd(f32, residual, half)};
+        for (const Id exact : {residual, residual_up, residual_down}) {
+            ctx.Decorate(exact, spv::Decoration::NoContraction);
+        }
+        const Id up{ctx.OpFOrdGreaterThan(ctx.U1, residual_up, clamped)};
+        const Id down{ctx.OpFOrdLessThan(ctx.U1, residual_down, clamped)};
+        const Id step{ctx.OpSelect(f32, up, one,
+                                   ctx.OpSelect(f32, down, ctx.OpFNegate(f32, one),
+                                                ctx.f32_zero_value))};
+        const Id rounded{ctx.OpFDiv(f32, ctx.OpFAdd(f32, guess, step), max_unorm)};
+        // Forwarding FragCoord.z must still match the fixed-function depth.
+        const Id frag_z{ctx.OpLoad(f32, ctx.OpAccessChain(ctx.input_f32, ctx.input_position,
+                                                          ctx.Const(2u)))};
+        depth = ctx.OpSelect(f32, ctx.OpFOrdEqual(ctx.U1, depth, frag_z), depth, rounded);
+    }
+    ctx.OpStore(ctx.frag_depth, depth);
 }
 
 void EmitGetZFlag(EmitContext&) {

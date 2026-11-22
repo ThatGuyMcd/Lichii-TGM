@@ -1503,6 +1503,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         scheduler.RequestOutsideRenderPassOperationContext();
     }
 
+    const u64 geometry_tick{scheduler.CurrentTick()};
     {
         Profile::Scope scope{Profile::Zone::UpdateBuffers};
         buffer_cache.UpdateGraphicsBuffers(is_indexed);
@@ -1621,6 +1622,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     if (IsBuilt() && (!has_pipeline || build->Failed())) {
         return false;
     }
+    if (scheduler.CurrentTick() != geometry_tick) {
+        // A render-target wait may have submitted the command buffer holding the binds.
+        buffer_cache.BindHostGeometryBuffers(is_indexed);
+    }
     Profile::Scope scope{Profile::Zone::ConfigureDraw};
     return ConfigureDraw(rescaling, render_area);
 }
@@ -1687,6 +1692,7 @@ bool GraphicsPipeline::ConfigureDelta(bool is_indexed) {
             }
         }
     }
+    const u64 geometry_tick{scheduler.CurrentTick()};
     {
         Profile::Scope scope{Profile::Zone::UpdateBuffers};
         buffer_cache.UpdateGraphicsBuffers(is_indexed);
@@ -1795,6 +1801,9 @@ bool GraphicsPipeline::ConfigureDelta(bool is_indexed) {
     }
     if (IsBuilt() && (!has_pipeline || build->Failed())) {
         return false;
+    }
+    if (scheduler.CurrentTick() != geometry_tick) {
+        buffer_cache.BindHostGeometryBuffers(is_indexed);
     }
     Profile::Scope scope{Profile::Zone::ConfigureDraw};
     return ConfigureDraw(rescaling, render_area);

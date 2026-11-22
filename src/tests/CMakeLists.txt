@@ -179,6 +179,7 @@ add_executable(tests
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_storage_alignment.cpp
     video_core/spirv_fragment_shuffle.cpp
+    video_core/spirv_frag_depth_d24.cpp
     video_core/mesh_fallback.cpp
     video_core/multi_range_refresh.cpp
     video_core/command_fetch_order.cpp

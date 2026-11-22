@@ -97,6 +97,7 @@ struct RuntimeInfo {
     std::map<IR::Attribute, IR::Attribute> previous_stage_legacy_stores_mapping;
 
     bool convert_depth_mode{};
+    bool quantize_frag_depth_d24{};
     bool force_early_z{};
 
     TessPrimitive tess_primitive{};

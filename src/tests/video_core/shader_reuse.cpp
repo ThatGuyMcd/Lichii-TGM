@@ -164,6 +164,9 @@ TEST_CASE("Shader reuse cache finds shaders by key and environment", "[shader_re
     auto emission_key = key;
     emission_key.emission_contract = 1;
     REQUIRE(cache.Find(emission_key, envs) == nullptr);
+    auto d24_fallback_key = key;
+    d24_fallback_key.quantize_frag_depth_d24 = true;
+    REQUIRE(cache.Find(d24_fallback_key, envs) == nullptr);
 
     TestEnvironment different;
     different.pointer = false;

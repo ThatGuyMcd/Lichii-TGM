@@ -331,6 +331,32 @@ Shader::AttributeType ColorOutputType(u8 render_target_format) {
                : Shader::AttributeType::UnsignedInt;
 }
 
+bool QuantizeFragmentDepth(const FixedPipelineState& state, const Device& device) {
+    using VideoCore::Surface::PixelFormat;
+    if (state.depth_enabled == 0) {
+        return false;
+    }
+    PixelFormat guest_format{};
+    switch (static_cast<Tegra::DepthFormat>(state.depth_format.Value())) {
+    case Tegra::DepthFormat::Z24_UNORM_S8_UINT:
+    case Tegra::DepthFormat::V8Z24_UNORM:
+        guest_format = PixelFormat::S8_UINT_D24_UNORM;
+        break;
+    case Tegra::DepthFormat::S8Z24_UNORM:
+        guest_format = PixelFormat::D24_UNORM_S8_UINT;
+        break;
+    case Tegra::DepthFormat::X8Z24_UNORM:
+        guest_format = PixelFormat::X8_D24_UNORM;
+        break;
+    default:
+        return false;
+    }
+    // Match the format picked for the render pass, including depth-only fallbacks.
+    const auto host =
+        MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, true, guest_format).format;
+    return host == VK_FORMAT_D32_SFLOAT || host == VK_FORMAT_D32_SFLOAT_S8_UINT;
+}
+
 // What translation and SPIR-V emission read of a pipeline key, plus the settings they read
 // (see vk_shader_reuse.h). The TGM module factory also adds its motion and emission contracts.
 // A field is only filled when a stage of the pipeline
@@ -388,6 +414,7 @@ ShaderTranslationKey MakeShaderTranslationKey(const GraphicsPipelineCacheKey& pi
             state.UnpackComparisonOp(state.alpha_test_func.Value()));
         key.alpha_test_reference = state.alpha_test_ref;
         key.dual_source_blend = state.attachment0_dual_source_blend != 0;
+        key.quantize_frag_depth_d24 = QuantizeFragmentDepth(state, device);
         key.xfb_requested = state.xfb_enabled != 0;
         if (device.IsMoltenVK()) {
             std::ranges::transform(state.color_formats, key.color_output_types.begin(),
@@ -517,6 +544,8 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
         info.alpha_test_reference = std::bit_cast<float>(key.state.alpha_test_ref);
 
         info.dual_source_blend = key.state.attachment0_dual_source_blend != 0;
+        info.quantize_frag_depth_d24 =
+            program.info.stores_frag_depth && QuantizeFragmentDepth(key.state, device);
 
         if (device.IsMoltenVK()) {
             for (size_t i = 0; i < 8; ++i) {

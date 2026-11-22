@@ -186,6 +186,7 @@ add_executable(tests
     video_core/nx2_semaphore_mirror.cpp
     video_core/async_report_wait.cpp
     video_core/command_writer.cpp
+    video_core/dma_split_resume.cpp
     video_core/split_fence_wait.cpp
     video_core/nx2_written_pages.cpp
     video_core/command_snapshot_suspensions.cpp
@@ -380,6 +381,11 @@ set_tests_properties(texture_budget_override PROPERTIES
     ENVIRONMENT "EDEN_NX2_TC_CRITICAL_MIB=4096")
 add_test(NAME sparse_segment_translation COMMAND tests "[sparse_segment_translation]")
 add_test(NAME dma_clear_mapping COMMAND tests "[dma_clear_mapping]")
+add_test(NAME dma_split_resume COMMAND tests "[dma_split_resume]")
+set_tests_properties(dma_split_resume PROPERTIES TIMEOUT 30)
+add_test(NAME dma_split_override COMMAND tests "[dma_split_override]")
+set_tests_properties(dma_split_override PROPERTIES TIMEOUT 30
+    ENVIRONMENT "EDEN_NX2_PARK_SPLIT_METHODS=1")
 add_executable(log_session_probe common/log_session_probe.cpp)
 target_link_libraries(log_session_probe PRIVATE common Threads::Threads)
 add_dependencies(tests log_session_probe)

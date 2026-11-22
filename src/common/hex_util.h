@@ -30,8 +30,10 @@ namespace Common {
 
 template <std::size_t Size, bool le = false>
 [[nodiscard]] constexpr std::array<u8, Size> HexStringToArray(std::string_view str) {
-    ASSERT_MSG(Size * 2 <= str.size(), "Invalid string size");
-
+    if (Size > str.size() / 2) {
+        ASSERT_MSG(false, "Invalid string size");
+        return {};
+    }
     std::array<u8, Size> out{};
     if constexpr (le) {
         for (std::size_t i = 2 * Size - 2; i <= 2 * Size; i -= 2) {

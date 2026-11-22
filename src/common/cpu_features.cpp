@@ -70,6 +70,7 @@ CPUCaps::Manufacturer CPUCaps::ParseManufacturer(std::string_view brand_string) 
     }
     return Manufacturer::Unknown;
 }
+#endif
 
 std::optional<int> GetProcessorCount() {
 #if defined(_WIN32)
@@ -112,6 +113,7 @@ std::optional<int> GetProcessorCount() {
 #endif
 }
 
+#ifdef ARCHITECTURE_x86_64
 /// @brief Detects the various CPU features
 const CPUCaps g_cpu_caps = [] {
     CPUCaps caps = {};

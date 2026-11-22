@@ -75,6 +75,11 @@ including when a decoded copy is already in memory.
 [#2375](https://github.com/zortos293/Lichii/pull/2375),
 [#2364](https://github.com/zortos293/Lichii/pull/2364)
 
+I've fixed a short-input read in fixed-width hex parsing and kept the
+processor-count query available on non-x86 hosts.
+[Hex parsing fix](https://github.com/zortos293/Lichii/commit/7776a7afe7de99d376948eacc4afd1efd937f31a),
+[processor-count fix](https://github.com/zortos293/Lichii/commit/e0d774c2c8)
+
 I've made Vulkan retry adapter discovery if the list changes while it's being
 read. If the list shrinks, we use just the devices Vulkan returned. [Lichii #2223](https://github.com/zortos293/Lichii/pull/2223)
 

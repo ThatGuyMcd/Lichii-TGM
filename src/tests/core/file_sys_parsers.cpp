@@ -6,18 +6,22 @@
 // same shape must still parse.
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <iterator>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "core/crypto/key_manager.h"
+#include "common/hex_util.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/submission_package.h"
 #include "core/file_sys/card_image.h"
@@ -36,6 +40,21 @@
 #include "core/file_sys/vfs/vfs_vector.h"
 #include "core/loader/loader.h"
 #include "tests/core/parser_keys_context.h"
+
+TEST_CASE("Fixed-width hex readers handle a short string without reading extra bytes",
+          "[core][hex_length]") {
+    const bool debug_asserts = Settings::values.use_debug_asserts.GetValue();
+    Settings::values.use_debug_asserts.SetValue(false);
+    SCOPE_EXIT { Settings::values.use_debug_asserts.SetValue(debug_asserts); };
+    const std::array<char, 1> characters{'9'};
+    const std::string_view short_input{characters.data(), characters.size()};
+    const std::array<u8, 2> absent{};
+    const std::array<u8, 2> decoded{0x92, 0xAf};
+    CHECK(Common::HexStringToArray<2>(short_input) == absent);
+    CHECK((Common::HexStringToArray<2, true>(short_input) == absent));
+    CHECK(Common::HexStringToArray<2>("92aFff") == decoded);
+    CHECK((Common::HexStringToArray<2, true>("92aFff") == decoded));
+}
 
 namespace {
 

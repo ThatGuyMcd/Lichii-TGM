@@ -380,6 +380,9 @@ TEST_CASE("Driver blob offsets follow the committed batch during the same sessio
     }
     store.Close();
     CHECK_FALSE(store.Find(kind, first));
+    const auto written_before_close = store.Counts().written;
+    store.Store(kind, first, TestPayload(9));
+    CHECK(store.Counts().written == written_before_close);
     V2::DriverBlobStore reopened{file, TestIdentity(), {.writer = FastWriter}};
     CHECK(reopened.Find(kind, first) == TestPayload(8));
     CHECK(reopened.Find(kind, second) == TestPayload(19));

@@ -198,7 +198,8 @@ void DriverBlobStore::Reject(RecordKind kind, u64 key) {
 
 void DriverBlobStore::Store(RecordKind kind, u64 key, std::span<const u8> payload) {
     std::scoped_lock lock{mutex};
-    if (!writer || closed || file_bytes + RecordSize(payload.size()) > options.ceiling_bytes) {
+    // Close drains and releases the writer outside this lock after setting closed.
+    if (closed || !writer || file_bytes + RecordSize(payload.size()) > options.ceiling_bytes) {
         return;
     }
     const auto [it, inserted] = index.try_emplace({kind, key});

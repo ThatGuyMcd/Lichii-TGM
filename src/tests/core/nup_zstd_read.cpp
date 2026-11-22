@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -76,7 +77,17 @@ struct Member {
     u64 size;
     u8 codec;
     std::string name{};
+    std::array<u8, 32> sha256{};
 };
+
+std::array<u8, 32> Digest(const std::vector<u8>& content) {
+    std::array<u8, 32> hash{};
+    unsigned int length{};
+    REQUIRE(EVP_Digest(content.data(), content.size(), hash.data(), &length, EVP_sha256(), nullptr) ==
+            1);
+    REQUIRE(length == hash.size());
+    return hash;
+}
 
 Member ZstdMember(const std::vector<u8>& content) {
     return {Zstd(content), content.size(), 1};
@@ -126,8 +137,9 @@ std::vector<u8> BuildNup(const std::vector<Member>& members) {
         Put(bytes, record + 0x04, members[i].name.size(), 4);
         name_offset += members[i].name.size();
         Put(bytes, record + 0x08, members[i].size, 8);
-        Put(bytes, record + 0x10, extent_offsets[i], 8);
+        Put(bytes, record + 0x10, members[i].extent.empty() ? 0 : extent_offsets[i], 8);
         Put(bytes, record + 0x18, members[i].extent.size(), 8);
+        std::copy(members[i].sha256.begin(), members[i].sha256.end(), bytes.begin() + record + 0x20);
         bytes[record + 0x40] = members[i].codec;
         Put(bytes, toc + children_at + i * 4, 1 + i, 4);
     }
@@ -139,6 +151,27 @@ std::vector<u8> BuildNup(const std::vector<Member>& members) {
 FileSys::VirtualFile Backing(std::vector<u8> bytes) {
     return std::make_shared<FileSys::VectorVfsFile>(std::move(bytes));
 }
+
+class VerificationBacking final : public FileSys::VectorVfsFile {
+public:
+    explicit VerificationBacking(std::vector<u8> bytes) : VectorVfsFile(std::move(bytes)) {}
+
+    size_t Read(u8* out, size_t length, size_t offset) const override {
+        if (observe && length != 0) {
+            largest_request = std::max(largest_request, length);
+            if (short_reads) {
+                --length;
+            }
+            bytes_read += length;
+        }
+        return VectorVfsFile::Read(out, length, offset);
+    }
+
+    bool observe{};
+    bool short_reads{};
+    mutable size_t largest_request{};
+    mutable size_t bytes_read{};
+};
 
 bool ReadMatches(const FileSys::VirtualFile& file, const std::vector<u8>& content,
                  std::size_t offset, std::size_t length) {
@@ -161,6 +194,94 @@ std::size_t DirectoryBytes(const fs::path& dir) {
 }
 
 } // namespace
+
+TEST_CASE("NUP verification validates raw and compressed extents in bounded reads",
+          "[nup][nup-read]") {
+    constexpr size_t MiB = 1024 * 1024;
+    const auto content = Content(6 * MiB, 42);
+    const auto hash = Digest(content);
+    for (const bool compressed : {false, true}) {
+        CAPTURE(compressed);
+        const Member member{compressed ? Zstd(content) : content, content.size(),
+                            static_cast<u8>(compressed), "synthetic", hash};
+        const Member empty{{}, 0, 0, "empty", Digest({})};
+        auto backing = std::make_shared<VerificationBacking>(BuildNup({empty, member}));
+        TempDir t;
+        NupContainer nup{backing, MiB, t.path};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        backing->observe = true;
+        size_t verified = 0;
+        CHECK(nup.VerifyIntegrity([&](size_t done, size_t total) {
+                  CHECK(done >= verified);
+                  CHECK(total == member.extent.size());
+                  verified = done;
+                  return true;
+              }) == Loader::ResultStatus::Success);
+        CHECK(verified == member.extent.size());
+        CHECK(backing->largest_request <= MiB);
+        CHECK(backing->bytes_read == member.extent.size());
+        CHECK(fs::is_empty(t.path));
+
+        backing->short_reads = true;
+        CHECK(nup.VerifyIntegrity({}) == Loader::ResultStatus::ErrorIntegrityVerificationFailed);
+    }
+}
+
+TEST_CASE("NUP verification can cancel during raw input and compressed output",
+          "[nup][nup-read]") {
+    constexpr size_t MiB = 1024 * 1024;
+    const std::vector<u8> content(12 * MiB, 0x64);
+    const auto hash = Digest(content);
+    for (const bool compressed : {false, true}) {
+        CAPTURE(compressed);
+        const Member member{compressed ? Zstd(content) : content, content.size(),
+                            static_cast<u8>(compressed), "synthetic", hash};
+        auto backing = std::make_shared<VerificationBacking>(BuildNup({member}));
+        TempDir t;
+        NupContainer nup{backing, MiB, t.path};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        backing->observe = true;
+        int polls = 0;
+        CHECK(nup.VerifyIntegrity([&](size_t done, size_t total) {
+                  ++polls;
+                  CHECK(total == member.extent.size());
+                  CHECK(done == (compressed ? 0 : 4 * MiB));
+                  return false;
+              }) == Loader::ResultStatus::ErrorIntegrityVerificationFailed);
+        CHECK(polls == 1);
+        CHECK(backing->bytes_read == (compressed ? member.extent.size() : 4 * MiB));
+        CHECK(fs::is_empty(t.path));
+    }
+}
+
+TEST_CASE("NUP large-window verification reads backing bytes independently of the live cache",
+          "[nup][nup-read]") {
+    const std::vector<u8> content(64 * 1024, 0x35);
+    // A synthetic frame with a 256 MiB window declaration and one uncompressed last block.
+    std::vector<u8> frame{0x28, 0xB5, 0x2F, 0xFD, 0, 18 << 3, 1, 0, 8};
+    frame.insert(frame.end(), content.begin(), content.end());
+    const Member member{frame, content.size(), 1, "large-window", Digest(content)};
+    const auto bytes = BuildNup({member});
+    auto backing = std::make_shared<FileSys::VectorVfsFile>(bytes);
+    TempDir t;
+    NupContainer nup{backing, 2 * content.size(), t.path};
+    REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+    const auto opened = nup.OpenFile(0);
+    REQUIRE(opened->ReadAllBytes() == content);
+    CHECK(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+    CHECK(fs::is_empty(t.path));
+
+    const u8 replacement = content.back() ^ 1;
+    REQUIRE(backing->Write(&replacement, 1, bytes.size() - 1) == 1);
+    CHECK(opened->ReadAllBytes() == content);
+    CHECK(nup.VerifyIntegrity({}) == Loader::ResultStatus::ErrorIntegrityVerificationFailed);
+    CHECK(fs::is_empty(t.path));
+
+    NupContainer would_spill{Backing(bytes), content.size(), t.path};
+    REQUIRE(would_spill.GetStatus() == Loader::ResultStatus::Success);
+    CHECK(would_spill.VerifyIntegrity({}) == Loader::ResultStatus::ErrorIntegrityVerificationFailed);
+    CHECK(fs::is_empty(t.path));
+}
 
 TEST_CASE("NUP zstd random reads match the source in memory and spilled", "[nup][nup-read]") {
     const std::vector<std::size_t> sizes{1, 100, 64 * 1024, 300 * 1024, 3 * 1024 * 1024};

@@ -100,7 +100,8 @@ public:
     VirtualDir GetRomFSDir(std::size_t package_index);
     VirtualDir GetPackageDir(std::size_t package_index);
 
-    /// Stream-hashes every member file against its stored SHA-256.
+    /// Hashes member contents from their extents against the stored SHA-256.
+    /// Progress reports extent bytes done and total extent bytes. Return false to cancel.
     Loader::ResultStatus VerifyIntegrity(
         std::function<bool(std::size_t, std::size_t)> progress_callback) const;
 
@@ -134,7 +135,6 @@ private:
     bool ValidateDirTree() const;
     void BuildDirTree(u32 dir_index, VectorVfsDirectory& out);
     VirtualDir BuildPackageDir(u32 dir_index);
-    std::vector<u8> ReadExtentRaw(const FileNode& node) const;
 
     VirtualFile file;
     Loader::ResultStatus status{Loader::ResultStatus::ErrorNullFile};

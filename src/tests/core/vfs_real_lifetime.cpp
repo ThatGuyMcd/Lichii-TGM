@@ -13,7 +13,11 @@
 #include <thread>
 #include <vector>
 
+#include "common/fs/file.h"
+#include "common/fs/path_util.h"
+#include "core/file_sys/errors.h"
 #include "core/file_sys/vfs/vfs_real.h"
+#include "core/hle/service/filesystem/filesystem.h"
 
 namespace {
 
@@ -220,3 +224,125 @@ TEST_CASE("RealVfsFile does not open a lazy handle after filesystem teardown", "
     CHECK(file->GetContainingDirectory() == nullptr);
     file.reset();
 }
+
+TEST_CASE("Replacing a deleted VFS file keeps the two file identities separate",
+          "[core][file_sys][vfs_mutation]") {
+    const TempDir temp;
+    const auto path = MakeTempFile(temp, "original.bin", "old");
+    const auto host_path = Common::FS::PathToUTF8String(path);
+    FileSys::RealVfsFilesystem owner;
+    auto original = owner.OpenFile(host_path, FileSys::OpenMode::ReadWrite);
+    REQUIRE(original);
+
+    SECTION("already open") {
+        REQUIRE(original->ReadByte(0) == 'o');
+        REQUIRE(owner.DeleteFile(host_path));
+        REQUIRE_FALSE(owner.OpenFile(host_path));
+        const auto replacement = owner.CreateFile(host_path);
+        REQUIRE(replacement);
+        REQUIRE(replacement->WriteByte('n'));
+#ifdef _WIN32
+        CHECK_FALSE(original->ReadByte(0).has_value());
+        CHECK_FALSE(original->WriteByte('x'));
+#else
+        CHECK(original->ReadByte(0) == 'o');
+        REQUIRE(original->WriteByte('x'));
+#endif
+        CHECK_FALSE(original->Rename("other.bin"));
+        CHECK(replacement->ReadByte(0) == 'n');
+        original.reset();
+        CHECK(owner.OpenFile(host_path) == replacement);
+    }
+
+    SECTION("lazy directory entry") {
+        const auto directory = owner.OpenDirectory(Common::FS::PathToUTF8String(temp.path));
+        original.reset();
+        auto entries = directory->GetFiles();
+        REQUIRE(entries.size() == 1);
+        original = entries.front();
+        REQUIRE(original->GetSize() == 3);
+        REQUIRE(directory->DeleteFileWithResult("original.bin") == ResultSuccess);
+        const auto replacement = owner.CreateFile(host_path);
+        REQUIRE(replacement);
+        REQUIRE(replacement->WriteByte('n'));
+        CHECK(original->GetSize() == 0);
+        CHECK_FALSE(original->ReadByte(0).has_value());
+        CHECK(replacement->ReadByte(0) == 'n');
+    }
+}
+
+TEST_CASE("A live VFS rename retains its cache entry and rolls back on failure",
+          "[core][file_sys][vfs_mutation]") {
+    const TempDir temp;
+    const auto old_path = MakeTempFile(temp, "original.bin", "a");
+    const auto new_path = MakeTempFile(temp, "destination.bin", "b");
+    const auto old_host_path = Common::FS::PathToUTF8String(old_path);
+    const auto new_host_path = Common::FS::PathToUTF8String(new_path);
+    FileSys::RealVfsFilesystem owner;
+    const auto original = owner.OpenFile(old_host_path);
+    const auto destination = owner.OpenFile(new_host_path);
+    REQUIRE(original);
+    REQUIRE(destination);
+    REQUIRE(original->ReadByte(0) == 'a');
+    REQUIRE(destination->ReadByte(0) == 'b');
+
+    CHECK_FALSE(original->Rename("destination.bin"));
+    CHECK(owner.OpenFile(old_host_path) == original);
+    CHECK(owner.OpenFile(new_host_path) == destination);
+    CHECK(original->ReadByte(0) == 'a');
+    CHECK(destination->ReadByte(0) == 'b');
+
+    REQUIRE(owner.DeleteFile(new_host_path));
+    REQUIRE(original->Rename("destination.bin"));
+    CHECK_FALSE(owner.OpenFile(old_host_path));
+    CHECK(owner.OpenFile(new_host_path) == original);
+    CHECK(original->GetName() == "destination.bin");
+    CHECK(Common::FS::SanitizePath(original->GetHostPath()) ==
+          Common::FS::SanitizePath(new_host_path));
+    CHECK(original->ReadByte(0) == 'a');
+}
+
+TEST_CASE("Creating over an open VFS file truncates it", "[core][file_sys][vfs_mutation]") {
+    const TempDir temp;
+    const auto path = MakeTempFile(temp, "original.bin", "abc");
+    const auto host_path = Common::FS::PathToUTF8String(path);
+    FileSys::RealVfsFilesystem owner;
+    const auto original = owner.OpenFile(host_path);
+    REQUIRE(original);
+    REQUIRE(original->ReadByte(0) == 'a');
+
+    const auto replacement = owner.CreateFile(host_path);
+    REQUIRE(replacement);
+    CHECK(replacement != original);
+    CHECK(replacement->GetSize() == 0);
+    REQUIRE(replacement->WriteByte('n'));
+    CHECK(replacement->ReadByte(0) == 'n');
+#ifdef _WIN32
+    CHECK_FALSE(original->ReadByte(0).has_value());
+#endif
+}
+
+#ifdef _WIN32
+TEST_CASE("Guest file deletion distinguishes an independent Windows lock",
+          "[core][file_sys][vfs_mutation]") {
+    const TempDir temp;
+    const auto path = MakeTempFile(temp, "original.bin", "abc");
+    FileSys::RealVfsFilesystem owner;
+    const auto dir = owner.OpenDirectory(Common::FS::PathToUTF8String(temp.path));
+    const auto original = dir->GetFile("original.bin");
+    REQUIRE(original);
+    REQUIRE(original->ReadByte(0) == 'a');
+    Common::FS::IOFile external{path, Common::FS::FileAccessMode::Read};
+    REQUIRE(external.IsOpen());
+    const Service::FileSystem::VfsDirectoryServiceWrapper guest{dir};
+
+    CHECK(guest.DeleteFile("/original.bin") == FileSys::ResultTargetLocked);
+    CHECK(fs::exists(path));
+    CHECK(dir->GetFile("original.bin") == original);
+    CHECK(original->ReadByte(1) == 'b');
+    external.Close();
+    CHECK(guest.DeleteFile("/original.bin") == ResultSuccess);
+    CHECK_FALSE(fs::exists(path));
+    CHECK_FALSE(original->ReadByte(0).has_value());
+}
+#endif

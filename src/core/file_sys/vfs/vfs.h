@@ -25,6 +25,8 @@
 #undef DeleteFile
 #undef CreateDirectory
 
+union Result;
+
 namespace FileSys {
 
 // An enumeration representing what can be at the end of a path in a VfsFilesystem
@@ -284,6 +286,7 @@ public:
 
     // Returns whether or not the file with name name was deleted successfully.
     virtual bool DeleteFile(std::string_view name) = 0;
+    virtual Result DeleteFileWithResult(std::string_view name);
 
     // Returns whether or not this directory was renamed to name.
     virtual bool Rename(std::string_view name) = 0;

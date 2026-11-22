@@ -23,7 +23,10 @@ class IOFile;
 namespace FileSys {
 
 struct FileReference : public Common::IntrusiveListBaseNode<FileReference> {
+    std::string path;
+    std::optional<u64> size;
     std::shared_ptr<Common::FS::IOFile> file{};
+    bool detached{};
 };
 
 class RealVfsFile;
@@ -37,7 +40,13 @@ class RealVfsDirectory;
 struct RealVfsSharedState {
     using ReferenceListType = Common::IntrusiveListBaseTraits<FileReference>::ListType;
 
-    std::map<std::string, std::weak_ptr<VfsFile>, std::less<>> cache;
+    struct CacheEntry {
+        std::weak_ptr<VfsFile> file;
+        // File destruction removes this entry before releasing the reference.
+        FileReference* reference{};
+    };
+    using FileCache = std::map<std::string, CacheEntry, std::less<>>;
+    FileCache cache;
     ReferenceListType open_references;
     ReferenceListType closed_references;
     std::mutex list_lock;
@@ -73,11 +82,9 @@ private:
 
 private:
     friend class RealVfsFile;
-    static std::unique_lock<std::mutex> RefreshReference(RealVfsSharedState& state,
-                                                         const std::string& path, OpenMode perms,
-                                                         FileReference& reference);
-    static void DropReference(RealVfsSharedState& state,
-                              std::unique_ptr<FileReference>&& reference, const std::string& path);
+    static void RefreshReferenceLocked(RealVfsSharedState& state, FileReference& reference,
+                                       OpenMode perms);
+    static void DropReference(RealVfsSharedState& state, FileReference& reference);
 
 private:
     friend class RealVfsDirectory;
@@ -85,6 +92,13 @@ private:
                                   OpenMode perms = OpenMode::Read);
 
 private:
+    VirtualFile OpenFileLocked(const std::string& path, std::optional<u64> size, OpenMode perms);
+    Result DeleteFileWithResult(std::string_view path);
+    static bool RenameFileLocked(RealVfsSharedState& state, const std::string& old_path,
+                                 std::string new_path);
+    static void DetachReferenceLocked(RealVfsSharedState& state,
+                                      RealVfsSharedState::FileCache::iterator entry);
+    static void CloseReferenceLocked(RealVfsSharedState& state, FileReference& reference);
     static void EvictSingleReferenceLocked(RealVfsSharedState& state);
     static void InsertReferenceIntoListLocked(RealVfsSharedState& state, FileReference& reference);
     static void RemoveReferenceFromListLocked(RealVfsSharedState& state, FileReference& reference);
@@ -97,8 +111,7 @@ class RealVfsFile : public VfsFile {
 
 public:
     RealVfsFile(RealVfsFilesystem& base, std::shared_ptr<RealVfsSharedState> state,
-                std::unique_ptr<FileReference> reference, const std::string& path,
-                OpenMode perms = OpenMode::Read, std::optional<u64> size = {});
+                std::unique_ptr<FileReference> reference, OpenMode perms);
     ~RealVfsFile() override;
 
     std::string GetName() const override;
@@ -111,18 +124,13 @@ public:
     std::size_t Write(const u8* data, std::size_t length, std::size_t offset) override;
     bool Rename(std::string_view name) override;
 
-    std::string GetHostPath() const override {
-        return path;
-    }
+    std::string GetHostPath() const override;
 
 private:
 
     RealVfsFilesystem& base;
     std::shared_ptr<RealVfsSharedState> state;
     std::unique_ptr<FileReference> reference;
-    // Only the path: a loose RomFS keeps one of these per file (title 1: 206k).
-    std::string path;
-    std::optional<u64> size;
     OpenMode perms;
 };
 
@@ -153,6 +161,7 @@ public:
     VirtualFile CreateFile(std::string_view name) override;
     bool DeleteSubdirectory(std::string_view name) override;
     bool DeleteFile(std::string_view name) override;
+    Result DeleteFileWithResult(std::string_view name) override;
     bool Rename(std::string_view name) override;
     std::string GetFullPath() const override;
     std::map<std::string, VfsEntryType, std::less<>> GetEntries() const override;

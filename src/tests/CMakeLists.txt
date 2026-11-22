@@ -348,6 +348,20 @@ add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(TEXTURE_CHUNK_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/texture_cache.h")
+set(TEXTURE_CHUNK_DIR "${CMAKE_CURRENT_BINARY_DIR}/texture-chunk")
+set(TEXTURE_CHUNK_BODY "${TEXTURE_CHUNK_DIR}/texture_chunk_upload.inc")
+add_custom_command(OUTPUT "${TEXTURE_CHUNK_BODY}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/texture_chunk_source.py"
+        "${TEXTURE_CHUNK_SOURCE}" "${TEXTURE_CHUNK_BODY}"
+    DEPENDS video_core/texture_chunk_source.py "${TEXTURE_CHUNK_SOURCE}"
+    VERBATIM)
+add_executable(texture_chunk_layout_tests video_core/texture_chunk_layout.cpp "${TEXTURE_CHUNK_BODY}")
+target_compile_features(texture_chunk_layout_tests PRIVATE cxx_std_20)
+target_include_directories(texture_chunk_layout_tests PRIVATE "${TEXTURE_CHUNK_DIR}")
+add_dependencies(tests texture_chunk_layout_tests)
+add_test(NAME texture_chunk_layout COMMAND texture_chunk_layout_tests)
 set(ASTC_ALLOCATION_DIR "${CMAKE_CURRENT_BINARY_DIR}/astc-allocation")
 set(ASTC_ALLOCATION_OUTPUTS "${ASTC_ALLOCATION_DIR}/astc_decode_allocation.inc"
     "${ASTC_ALLOCATION_DIR}/astc_decode_budget.inc")

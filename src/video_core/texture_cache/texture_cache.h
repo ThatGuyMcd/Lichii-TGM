@@ -2944,6 +2944,9 @@ bool TextureCache<P>::UploadInChunks(Image& image) {
         MapSizeBytes(image) < min_size) {
         return false;
     }
+    // Each chunk transitions only its copied mip/layer range. Give the remaining
+    // subresources a layout before a later chunk uses the image-wide initialized flag.
+    runtime.TransitionImageLayout(image);
     for (u64 offset = 0; offset < image.guest_size_bytes; offset += chunk_size) {
         const std::array range{
             std::pair<u64, u64>{offset, std::min<u64>(offset + chunk_size, image.guest_size_bytes)}};

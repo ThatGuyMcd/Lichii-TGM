@@ -20,9 +20,10 @@ class JoyconPoller {
 public:
     JoyconPoller(ControllerType device_type_, JoyStickCalibration left_stick_calibration_,
                  JoyStickCalibration right_stick_calibration_,
-                 MotionCalibration motion_calibration_);
+                 MotionCalibration motion_calibration_, JoyconCallbacks callbacks_);
 
-    void SetCallbacks(const JoyconCallbacks& callbacks_);
+    /// Initialise the battery status before polling devices that may never report it.
+    void SeedBattery();
 
     /// Handles data from passive packages
     void ReadPassiveMode(std::span<u8> buffer);

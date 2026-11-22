@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <utility>
+
 #include "common/input.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
@@ -53,11 +55,14 @@ Common::Input::DriverResult JoyconDriver::RequestDeviceAccess(SDL_hid_device_inf
     return Common::Input::DriverResult::Success;
 }
 
-Common::Input::DriverResult JoyconDriver::InitializeDevice() {
+Common::Input::DriverResult JoyconDriver::InitializeDevice(JoyconCallbacks callbacks) {
+    // Registration only reuses disconnected handles. Join the previous input thread before
+    // replacing its protocols and callbacks.
+    input_thread = {};
+    std::unique_lock lock{mutex};
     if (!hidapi_handle->handle) {
         return Common::Input::DriverResult::InvalidHandle;
     }
-    std::scoped_lock lock{mutex};
     disable_input_thread = true;
 
     // Reset Counters
@@ -123,23 +128,22 @@ Common::Input::DriverResult JoyconDriver::InitializeDevice() {
 
     // Initialize joycon poller
     joycon_poller = std::make_unique<JoyconPoller>(device_type, left_stick_calibration,
-                                                   right_stick_calibration, motion_calibration);
-
-    // Start polling for data
-    is_connected = true;
-    if (!input_thread_running) {
-        input_thread =
-            std::jthread([this](std::stop_token stop_token) { InputThread(stop_token); });
-    }
+                                                   right_stick_calibration, motion_calibration,
+                                                   std::move(callbacks));
 
     disable_input_thread = false;
+    lock.unlock();
+    // Publish the fallback without holding the device lock. The first real report can now only
+    // arrive after the fallback, and replaces it even if the real battery is empty.
+    joycon_poller->SeedBattery();
+    is_connected = true;
+    input_thread = std::jthread([this](std::stop_token stop_token) { InputThread(stop_token); });
     return Common::Input::DriverResult::Success;
 }
 
 void JoyconDriver::InputThread(std::stop_token stop_token) {
     LOG_INFO(Input, "Joycon Adapter input thread started");
     Common::SetCurrentThreadName("JoyconInput");
-    input_thread_running = true;
 
     // Max update rate is 5ms, ensure we are always able to read a bit faster
     constexpr int ThreadDelay = 3;
@@ -149,8 +153,7 @@ void JoyconDriver::InputThread(std::stop_token stop_token) {
         int status = 0;
 
         if (!IsInputThreadValid()) {
-            input_thread.request_stop();
-            continue;
+            break;
         }
 
         // By disabling the input thread we can ensure custom commands will succeed as no package is
@@ -181,7 +184,6 @@ void JoyconDriver::InputThread(std::stop_token stop_token) {
     }
 
     is_connected = false;
-    input_thread_running = false;
     LOG_INFO(Input, "Joycon Adapter input thread stopped");
 }
 
@@ -687,10 +689,6 @@ SerialNumber JoyconDriver::GetSerialNumber() const {
 SerialNumber JoyconDriver::GetHandleSerialNumber() const {
     std::scoped_lock lock{mutex};
     return handle_serial_number;
-}
-
-void JoyconDriver::SetCallbacks(const JoyconCallbacks& callbacks) {
-    joycon_poller->SetCallbacks(callbacks);
 }
 
 Common::Input::DriverResult JoyconDriver::GetDeviceType(SDL_hid_device_info* device_info,

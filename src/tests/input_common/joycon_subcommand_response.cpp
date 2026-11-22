@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 
+#include "input_common/helpers/joycon_protocol/poller.h"
 #include "input_common/helpers/joycon_protocol/subcommand_response.h"
 
 namespace {
@@ -115,4 +117,39 @@ TEST_CASE("Joy-Con unmatched replies exhaust a bounded read budget", "[joycon_re
         CHECK(reader.reads == 12);
         CHECK(output.command_data[0] == 0x55);
     }
+}
+
+TEST_CASE("Joy-Con battery fallback survives passive input and yields to the first report",
+          "[joycon_battery]") {
+    std::vector<u8> batteries;
+    JoyconCallbacks callbacks{
+        .on_battery_data = [&](Battery battery) { batteries.push_back(battery.raw); },
+        .on_button_data = [](int, bool) {},
+        .on_stick_data = [](int, float) {},
+    };
+    constexpr JoyStickCalibration stick{{.max = 2047, .min = 2048, .center = 2048},
+                                        {.max = 2047, .min = 2048, .center = 2048}};
+    JoyconPoller poller{ControllerType::Left, stick, {}, {}, std::move(callbacks)};
+    poller.SeedBattery();
+    REQUIRE(batteries == std::vector<u8>{0x80});
+
+    InputReportPassive passive{};
+    passive.report_mode = ReportMode::SIMPLE_HID_MODE;
+    std::array<u8, sizeof(passive)> passive_bytes{};
+    std::memcpy(passive_bytes.data(), &passive, sizeof(passive));
+    poller.ReadPassiveMode(passive_bytes);
+    REQUIRE(batteries == std::vector<u8>{0x80});
+
+    InputReportActive active{};
+    active.report_mode = ReportMode::STANDARD_FULL_60HZ;
+    active.battery_status.raw = 0;
+    std::array<u8, sizeof(active)> active_bytes{};
+    std::memcpy(active_bytes.data(), &active, sizeof(active));
+    poller.ReadActiveMode(active_bytes, {}, {});
+    REQUIRE(batteries == std::vector<u8>{0x80, 0x00});
+
+    active.battery_status.raw = 0x30;
+    std::memcpy(active_bytes.data(), &active, sizeof(active));
+    poller.ReadActiveMode(active_bytes, {}, {});
+    CHECK(batteries == std::vector<u8>{0x80, 0x00, 0x30});
 }

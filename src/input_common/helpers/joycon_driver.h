@@ -32,7 +32,7 @@ public:
     ~JoyconDriver();
 
     Common::Input::DriverResult RequestDeviceAccess(SDL_hid_device_info* device_info);
-    Common::Input::DriverResult InitializeDevice();
+    Common::Input::DriverResult InitializeDevice(JoyconCallbacks callbacks);
     void Stop();
 
     bool IsConnected() const;
@@ -61,8 +61,6 @@ public:
     Common::Input::DriverResult ReadMifareData(std::span<const MifareReadChunk> request,
                                                std::span<MifareReadData> out_data);
     Common::Input::DriverResult WriteMifareData(std::span<const MifareWriteChunk> request);
-
-    void SetCallbacks(const JoyconCallbacks& callbacks);
 
     // Returns device type from hidapi handle
     static Common::Input::DriverResult GetDeviceType(SDL_hid_device_info* device_info,
@@ -160,7 +158,6 @@ private:
     // Thread related
     mutable std::mutex mutex;
     std::jthread input_thread;
-    bool input_thread_running{};
     bool disable_input_thread{};
 };
 

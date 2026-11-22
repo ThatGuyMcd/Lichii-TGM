@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <utility>
 #include <vector>
 #include "input_common/helpers/joycon_protocol/poller.h"
 
@@ -11,12 +12,15 @@ namespace InputCommon::Joycon {
 
 JoyconPoller::JoyconPoller(ControllerType device_type_, JoyStickCalibration left_stick_calibration_,
                            JoyStickCalibration right_stick_calibration_,
-                           MotionCalibration motion_calibration_)
+                           MotionCalibration motion_calibration_, JoyconCallbacks callbacks_)
     : device_type{device_type_}, left_stick_calibration{left_stick_calibration_},
-      right_stick_calibration{right_stick_calibration_}, motion_calibration{motion_calibration_} {}
+      right_stick_calibration{right_stick_calibration_}, motion_calibration{motion_calibration_},
+      callbacks{std::move(callbacks_)} {}
 
-void JoyconPoller::SetCallbacks(const JoyconCallbacks& callbacks_) {
-    callbacks = std::move(callbacks_);
+void JoyconPoller::SeedBattery() {
+    Battery battery{};
+    battery.raw = decltype(Battery::status)::FormatValue(4);
+    callbacks.on_battery_data(battery);
 }
 
 void JoyconPoller::ReadActiveMode(std::span<u8> buffer, const MotionStatus& motion_status,

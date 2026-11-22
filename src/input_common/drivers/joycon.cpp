@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <fmt/ranges.h>
+#include <utility>
 
 #include "common/param_package.h"
 #include <ranges>
@@ -181,7 +182,7 @@ void Joycons::RegisterNewDevice(SDL_hid_device_info* device_info) {
         LOG_WARNING(Input, "Initialize device");
 
         const std::size_t port = handle->GetDevicePort();
-        const Joycon::JoyconCallbacks callbacks{
+        Joycon::JoyconCallbacks callbacks{
             .on_battery_data = {[this, port, type](Joycon::Battery value) {
                 OnBatteryUpdate(port, type, value);
             }},
@@ -207,8 +208,7 @@ void Joycons::RegisterNewDevice(SDL_hid_device_info* device_info) {
             }},
         };
 
-        handle->InitializeDevice();
-        handle->SetCallbacks(callbacks);
+        handle->InitializeDevice(std::move(callbacks));
     }
 }
 

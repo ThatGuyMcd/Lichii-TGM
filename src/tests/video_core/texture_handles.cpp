@@ -932,6 +932,31 @@ TEST_CASE("Bit-indexed textures narrow only when the search cannot return a sent
     }
 }
 
+TEST_CASE("An unrestricted reader keeps its shared texture array intact",
+          "[video_core][texture_handles][bit_indexed_descriptors]") {
+    HandleProgram shader;
+    const Value general_index{shader.Storage(0)};
+    const Value bits{shader.Emit(Opcode::BitwiseOr32, {general_index, Value{1U}})};
+    const Value bit_index{shader.Emit(Opcode::FindUMsb32, {bits})};
+    for (const Value index : {general_index, bit_index}) {
+        const Value offset{shader.Emit(Opcode::ShiftLeftLogical32, {index, Value{4U}})};
+        const Value texture{shader.Emit(Opcode::GetCbufU32, {Value{0U}, offset})};
+        shader.Sample(texture);
+    }
+    Shader::HostTranslateInfo host;
+    host.ApplyDescriptorLimitPolicy();
+    host.max_per_stage_descriptor_sampled_images = 128;
+    host.max_descriptor_set_sampled_images = 128;
+    host.max_per_stage_descriptor_samplers = 128;
+    host.max_descriptor_set_samplers = 128;
+    host.max_per_stage_resources = 256;
+    Shader::Optimization::TexturePass(shader.env, shader.program, host);
+
+    const auto& descriptors = shader.program.info.texture_descriptors;
+    REQUIRE(descriptors.size() == 1);
+    CHECK(descriptors[0].count == 128);
+}
+
 TEST_CASE("Storage handle words are read from the host-aligned buffer base",
           "[video_core][texture_handles]") {
     // The program's storage offsets are relative to the buffer address aligned down to the host

@@ -1330,7 +1330,6 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
                                                          host_info.max_descriptor_set_sampled_images));
     auto const resource_limit = (std::max)(1U, host_info.max_per_stage_resources);
     const u32 descriptor_limit = (std::min)({DESCRIPTOR_MAX_COUNT, sampled_limit, resource_limit});
-    const u32 count = DynamicDescriptorCount(base_offset, size_shift, descriptor_limit);
     return ConstBufferAddr{
         .index = index.U32(),
         .offset = base_offset,
@@ -1339,7 +1338,7 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
         .secondary_offset = 0,
         .secondary_shift_left = 0,
         .dynamic_offset = dynamic_offset,
-        .count = LimitBitIndexedDescriptors(dynamic_offset, size_shift, count),
+        .count = DynamicDescriptorCount(base_offset, size_shift, descriptor_limit),
         .has_secondary = false,
     };
 }
@@ -1711,6 +1710,27 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         if (a.cbuf.index != b.cbuf.index) return a.cbuf.index < b.cbuf.index;
         return a.cbuf.offset < b.cbuf.offset;
     });
+    for (auto first = to_replace.begin(); first != to_replace.end();) {
+        const auto last = std::find_if(first, to_replace.end(), [&](const TextureInst& next) {
+            return next.cbuf.index != first->cbuf.index || next.cbuf.offset != first->cbuf.offset;
+        });
+        const auto needs_full_count = [](const TextureInst& texture) {
+            const auto& cbuf = texture.cbuf;
+            return cbuf.handle_program == ~0U && cbuf.count > 32 &&
+                   LimitBitIndexedDescriptors(cbuf.dynamic_offset, DescriptorSizeShift(cbuf),
+                                              cbuf.count) == cbuf.count;
+        };
+        // Keep a single descriptor array when the same table has an unrestricted reader.
+        if (std::none_of(first, last, needs_full_count)) {
+            for (auto texture = first; texture != last; ++texture) {
+                auto& cbuf = texture->cbuf;
+                if (cbuf.handle_program == ~0U) {
+                    cbuf.count = (std::min)(cbuf.count, 32U);
+                }
+            }
+        }
+        first = last;
+    }
     Descriptors descriptors{
         program.info.texture_buffer_descriptors,
         program.info.image_buffer_descriptors,

@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include "common/logging.h"
 #include "common/random.h"
@@ -447,6 +448,9 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     // Define an nce patch context for each potential module.
     PatchCollection patch_ctx{is_application};
 
+    // The sizing and mapping passes must use the same arguments and module offsets.
+    const std::string program_args = Settings::values.program_args.GetValue();
+
     // Use the NSO module loader to figure out the code layout
     for (size_t i = 0; i < static_modules.size(); i++) {
         const auto& module = static_modules[i];
@@ -455,9 +459,10 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
             continue;
         }
 
-        const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+        const auto arguments = std::string_view{module} == "rtld"
+                                   ? std::string_view{program_args} : std::string_view{};
         const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
-            process, system, *module_file, code_size, should_pass_arguments, false, pm,
+            process, system, *module_file, code_size, arguments, false, pm,
             patch_ctx.GetPatchers(), patch_ctx.GetLastIndex());
         if (!tentative_next_load_addr) {
             return {ResultStatus::ErrorLoadingNSO, {}};
@@ -501,9 +506,10 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
         }
 
         const VAddr load_addr{next_load_addr};
-        const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+        const auto arguments = std::string_view{module} == "rtld"
+                                   ? std::string_view{program_args} : std::string_view{};
         const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
-            process, system, *module_file, load_addr, should_pass_arguments, true, pm,
+            process, system, *module_file, load_addr, arguments, true, pm,
             patch_ctx.GetPatchers(), patch_ctx.GetIndex(i));
         if (!tentative_next_load_addr) {
             return {ResultStatus::ErrorLoadingNSO, {}};

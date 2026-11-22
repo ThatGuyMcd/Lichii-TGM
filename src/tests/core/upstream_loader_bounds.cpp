@@ -208,7 +208,7 @@ std::vector<u8> KipBytes(const std::vector<u8>& payload, u32 decompressed = 32, 
 
 TEST_CASE("Upstream NSO bounds reject corrupt images before loading", "[core][loader_bounds]") {
     WithProcess([](Kernel::KProcess& process, Core::System& system) {
-        const auto load = [&](FileSys::VirtualFile file, bool arguments = false) {
+        const auto load = [&](FileSys::VirtualFile file, std::string_view arguments = {}) {
             return Loader::AppLoader_NSO::LoadModule(process, system, *file, 0, arguments, false);
         };
         auto header = NsoHeader();
@@ -269,13 +269,41 @@ TEST_CASE("Upstream NSO bounds reject corrupt images before loading", "[core][lo
             header.segments_compressed_size[0] = 1;
             CHECK_FALSE(load(File(NsoBytes(header, {0xF0}))));
         }
-        SECTION("arguments fit exactly in the reserved block") {
-            Settings::values.program_args.SetValue(std::string(
-                Loader::NSO_ARGUMENT_DATA_ALLOCATION_SIZE - sizeof(Loader::NSOArgumentHeader), 'a'));
-            CHECK(load(File(NsoBytes(header)), true) == 0xD000);
-            Settings::values.program_args.SetValue(Settings::values.program_args.GetValue() + 'a');
-            CHECK_FALSE(load(File(NsoBytes(header)), true));
+        SECTION("argument space grows only at page boundaries") {
+            const auto file = File(NsoBytes(header));
+            CHECK(load(file, "") == 0x4000);
+            CHECK(load(file, "one argument") == 0xD000);
+            CHECK(load(file, std::string(0x7FC, 'a')) == 0xD000);
+            CHECK(load(file, std::string(0x7FD, 'b')) == 0xE000);
+            CHECK(load(file, std::string(0x7FFF, 'c')) == 0x1D000);
         }
+        SECTION("overlong arguments are omitted without failing the program load") {
+            const auto file = File(NsoBytes(header));
+            CHECK(load(file, std::string(0x8000, 'a')) == 0x4000);
+            CHECK(load(file, std::string(0x10000, 'b')) == 0x4000);
+        }
+        SECTION("argument space counts toward the image limit before a segment is read") {
+            header.segments[2].bss_size = 0xFFFF0000;
+            const auto file = std::make_shared<ObservedNsoFile>(NsoBytes(header));
+            CHECK_FALSE(load(file, std::string(0x7FFF, 'a')));
+            CHECK(file->text_read_size == 0);
+        }
+    });
+}
+
+TEST_CASE("Standalone NSO still maps its image when the saved arguments are overlong",
+          "[core][loader_bounds]") {
+    WithProcess([](Kernel::KProcess& process, Core::System& system) {
+        auto& kernel = system.Kernel();
+        REQUIRE(process.LoadFromMetadata(kernel, FileSys::ProgramMetadata::GetDefault(),
+                                         0x4000, 0, 0).IsSuccess());
+        Settings::values.program_args.SetValue(std::string(0x10000, 'x'));
+        Loader::AppLoader_NSO loader{File(NsoBytes(NsoHeader()))};
+        REQUIRE(loader.Load(process, system).first == Loader::ResultStatus::Success);
+        const u64 base = GetInteger(process.GetEntryPoint());
+        CHECK(process.GetMemory().Read8(base + 0x200F) == 0x42);
+        CHECK(process.GetMemory().Read8(base + 0x2010) == 0);
+        CHECK_FALSE(process.GetMemory().IsValidVirtualAddress(base + 0x4000));
     });
 }
 

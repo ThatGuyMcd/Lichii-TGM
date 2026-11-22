@@ -4,6 +4,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -88,6 +89,21 @@ FileSys::VirtualFile Nso(std::string name, bool supported_build = true) {
     std::memcpy(bytes.data(), &header, sizeof(header));
     return std::make_shared<FileSys::VectorVfsFile>(std::move(bytes), std::move(name));
 }
+
+class RtldWithSettingChange final : public FileSys::VectorVfsFile {
+public:
+    RtldWithSettingChange() : VectorVfsFile(Nso("rtld")->ReadAllBytes(), "rtld") {}
+
+    size_t Read(u8* data, size_t length, size_t offset) const override {
+        if (offset == sizeof(Loader::NSOHeader) && !changed) {
+            Settings::values.program_args.SetValue("--replacement");
+            changed = true;
+        }
+        return VectorVfsFile::Read(data, length, offset);
+    }
+
+    mutable bool changed{};
+};
 } // namespace
 
 TEST_CASE("NSO layout reserves patched BSS before mapping later modules", "[core][nso_layout]") {
@@ -156,7 +172,7 @@ TEST_CASE("NSO layout reserves patched BSS before mapping later modules", "[core
     // apply executable patches, reset accepted rendering policy, or create NSO dumps.
     Settings::SetAppliedOcarinaRenderScale(Settings::NvidiaDlssQuality::Performance);
     Settings::values.dump_nso.SetValue(true);
-    const auto dry_end = Loader::AppLoader_NSO::LoadModule(process, system, *main, 0, false,
+    const auto dry_end = Loader::AppLoader_NSO::LoadModule(process, system, *main, 0, {},
                                                           false, pm);
     REQUIRE(dry_end.has_value());
     CHECK(*dry_end == main_size);
@@ -165,21 +181,36 @@ TEST_CASE("NSO layout reserves patched BSS before mapping later modules", "[core
     CHECK(std::filesystem::is_empty(Common::FS::GetEdenPath(Common::FS::EdenPath::DumpDir)));
     Settings::values.dump_nso.SetValue(false);
 
+    const auto rtld = std::make_shared<RtldWithSettingChange>();
+    const std::string original_arguments(0x7FFF, 'q');
+    Settings::values.program_args.SetValue(original_arguments);
     auto exefs = std::make_shared<FileSys::VectorVfsDirectory>(
-        std::vector<FileSys::VirtualFile>{Npdm(), Nso("rtld"), main, Nso("subsdk0"), Nso("sdk")});
+        std::vector<FileSys::VirtualFile>{Npdm(), rtld, main, Nso("subsdk0"), Nso("sdk")});
     Loader::AppLoader_DeconstructedRomDirectory loader{exefs};
     REQUIRE(loader.Load(process, system).first == Loader::ResultStatus::Success);
     Loader::AppLoader::Modules modules;
     REQUIRE(loader.ReadNSOModules(modules) == Loader::ResultStatus::Success);
     REQUIRE(modules.size() == 4);
     const u64 base = GetInteger(process.GetEntryPoint());
+    constexpr u64 ArgumentBlockSize = 0x19000;
+    constexpr u64 RtldSize = SmallModuleSize + ArgumentBlockSize;
     CHECK(modules.at(base) == "rtld");
-    CHECK(modules.at(base + SmallModuleSize) == "main");
-    CHECK(modules.at(base + SmallModuleSize + main_size) == "subsdk0");
-    const u64 sdk_base = base + 2 * SmallModuleSize + main_size;
+    CHECK(modules.at(base + RtldSize) == "main");
+    CHECK(modules.at(base + RtldSize + main_size) == "subsdk0");
+    const u64 sdk_base = base + RtldSize + main_size + SmallModuleSize;
     CHECK(modules.at(sdk_base) == "sdk");
     const u64 end = sdk_base + SmallModuleSize;
     auto& memory = process.GetMemory();
+    CHECK(rtld->changed);
+    const u64 args_start = base + 0x3000;
+    Loader::NSOArgumentHeader args{};
+    memory.ReadBlock(args_start, &args, sizeof(args));
+    CHECK(args.allocated_size == ArgumentBlockSize);
+    CHECK(args.actual_size == original_arguments.size());
+    std::string loaded_arguments(original_arguments.size(), '\0');
+    memory.ReadBlock(args_start + sizeof(args), loaded_arguments.data(), loaded_arguments.size());
+    CHECK(loaded_arguments == original_arguments);
+    CHECK(memory.Read8(args_start + sizeof(args) + loaded_arguments.size()) == 0);
     // The original mismatched reservation leaves exactly this final SDK page unmapped while
     // Load still reports success. Assert mapping before reading so the failure is explicit.
     REQUIRE(memory.IsValidVirtualAddressRange(end - 0x1000, 0x1000));

@@ -8,6 +8,7 @@
 
 #include <array>
 #include <optional>
+#include <string_view>
 #include <type_traits>
 #include "common/common_types.h"
 #include "common/swap.h"
@@ -68,7 +69,7 @@ struct NSOHeader {
 static_assert(sizeof(NSOHeader) == 0x100, "NSOHeader has incorrect size.");
 static_assert(std::is_trivially_copyable_v<NSOHeader>, "NSOHeader must be trivially copyable.");
 
-constexpr u32 NSO_ARGUMENT_DATA_ALLOCATION_SIZE = 0x9000;
+constexpr u32 NSO_ARGUMENT_BUFFER_SIZE = 0x8000;
 
 struct NSOArgumentHeader {
     u32_le allocated_size;
@@ -97,7 +98,7 @@ public:
 
     static std::optional<VAddr> LoadModule(Kernel::KProcess& process, Core::System& system,
                                            const FileSys::VfsFile& nso_file, VAddr load_base,
-                                           bool should_pass_arguments, bool load_into_process,
+                                           std::string_view arguments, bool load_into_process,
                                            std::optional<FileSys::PatchManager> pm = {},
                                            std::vector<Core::NCE::Patcher>* patches = nullptr,
                                            s32 patch_index = -1);

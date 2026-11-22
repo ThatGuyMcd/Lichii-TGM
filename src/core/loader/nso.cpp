@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "common/common_funcs.h"
@@ -72,7 +73,11 @@ FileType AppLoader_NSO::IdentifyType(const FileSys::VirtualFile& in_file) {
     return FileType::NSO;
 }
 
-std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::System& system, const FileSys::VfsFile& nso_file, VAddr load_base, bool should_pass_arguments, bool load_into_process, std::optional<FileSys::PatchManager> pm, std::vector<Core::NCE::Patcher>* patches, s32 patch_index) {
+std::optional<VAddr> AppLoader_NSO::LoadModule(
+    Kernel::KProcess& process, Core::System& system, const FileSys::VfsFile& nso_file,
+    VAddr load_base, std::string_view arguments, bool load_into_process,
+    std::optional<FileSys::PatchManager> pm, std::vector<Core::NCE::Patcher>* patches,
+    s32 patch_index) {
     if (nso_file.GetSize() < sizeof(NSOHeader))
         return std::nullopt;
     NSOHeader nso_header{};
@@ -134,13 +139,20 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             return std::nullopt;
         }
     }
-    const bool pass_arguments =
-        should_pass_arguments && !Settings::values.program_args.GetValue().empty();
-    if (pass_arguments && Settings::values.program_args.GetValue().size() >
-                              NSO_ARGUMENT_DATA_ALLOCATION_SIZE - sizeof(NSOArgumentHeader)) {
-        LOG_ERROR(Loader, "{}: arguments exceed the reserved block", nso_file.GetName());
-        return std::nullopt;
+    if (arguments.size() >= NSO_ARGUMENT_BUFFER_SIZE) {
+        if (load_into_process) {
+            LOG_WARNING(Loader,
+                        "{}: ignoring {} bytes of program arguments (limit is {} bytes)",
+                        nso_file.GetName(), arguments.size(), NSO_ARGUMENT_BUFFER_SIZE - 1);
+        }
+        arguments = {};
     }
+    // The loader ABI reserves space for the original argument bytes, an argv expansion and
+    // 32 KiB of additional space. Keep the existing header and placement before BSS.
+    const u32 argument_block_size = arguments.empty()
+        ? 0
+        : PageAlignSize(static_cast<u32>(2 * sizeof(u32) + 2 * arguments.size() +
+                                         NSO_ARGUMENT_BUFFER_SIZE));
     const u64 bss_size = u64{nso_header.segments[2].bss_size} +
                          (pm ? pm->AdditionalNSOBssSize(nso_header, nso_file.GetName()) : 0);
     const u64 post_patch_size = [&]() -> u64 {
@@ -161,8 +173,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // Count TGM's additional OOT BSS in both passes before narrowing or allocating. Applying
     // executable patches remains restricted to the real load below.
     const u64 aligned_extent =
-        (u64{module_start} + segments_end +
-         (pass_arguments ? NSO_ARGUMENT_DATA_ALLOCATION_SIZE : 0) + bss_size +
+        (u64{module_start} + segments_end + argument_block_size + bss_size +
          Core::Memory::YUZU_PAGEMASK) & ~u64{Core::Memory::YUZU_PAGEMASK};
     if (aligned_extent + post_patch_size > MaxImage) {
         LOG_ERROR(Loader, "{}: module extent exceeds a 32-bit image", nso_file.GetName());
@@ -222,15 +233,15 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         }
     }
 
-    if (pass_arguments) {
-        const auto arg_data{Settings::values.program_args.GetValue()};
-
-        codeset.DataSegment().size += NSO_ARGUMENT_DATA_ALLOCATION_SIZE;
-        NSOArgumentHeader args_header{NSO_ARGUMENT_DATA_ALLOCATION_SIZE, static_cast<u32_le>(arg_data.size()), {}};
+    if (argument_block_size != 0) {
+        codeset.DataSegment().size += argument_block_size;
+        const NSOArgumentHeader args_header{argument_block_size,
+                                            static_cast<u32>(arguments.size()), {}};
         const auto end_offset = codeset.memory.size();
-        codeset.memory.resize(u32(codeset.memory.size()) + NSO_ARGUMENT_DATA_ALLOCATION_SIZE);
-        std::memcpy(codeset.memory.data() + end_offset, &args_header, sizeof(NSOArgumentHeader));
-        std::memcpy(codeset.memory.data() + end_offset + sizeof(NSOArgumentHeader), arg_data.data(), arg_data.size());
+        codeset.memory.resize(end_offset + argument_block_size);
+        std::memcpy(codeset.memory.data() + end_offset, &args_header, sizeof(args_header));
+        std::memcpy(codeset.memory.data() + end_offset + sizeof(args_header), arguments.data(),
+                    arguments.size());
     }
 
     codeset.DataSegment().size += nso_header.segments[2].bss_size;
@@ -450,7 +461,8 @@ AppLoader_NSO::LoadResult AppLoader_NSO::Load(Kernel::KProcess& process, Core::S
 
     // Load module
     const VAddr base_address = GetInteger(process.GetEntryPoint());
-    if (!LoadModule(process, system, *file, base_address, true, true)) {
+    const std::string arguments = Settings::values.program_args.GetValue();
+    if (!LoadModule(process, system, *file, base_address, arguments, true)) {
         return {ResultStatus::ErrorLoadingNSO, {}};
     }
 

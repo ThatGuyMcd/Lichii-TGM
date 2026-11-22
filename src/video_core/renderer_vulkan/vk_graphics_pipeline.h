@@ -663,6 +663,7 @@ private:
     std::array<std::pair<u32, u32>, NUM_STAGES> kept_image_ranges{};
     std::array<u32, Shader::Backend::SPIRV::NUM_TEXTURE_AND_IMAGE_SCALING_WORDS> kept_rescaling{};
     u64 kept_scale_epoch{};
+    u64 delta_view_serial{};
     bool kept_images_valid{};
 
     /// Graphics pipeline libraries (EDEN_NX2_GPL): one descriptor set per stage (set index =

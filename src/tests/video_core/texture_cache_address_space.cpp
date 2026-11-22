@@ -22,6 +22,7 @@ struct Runtime {
     size_t downloads = 0;
     size_t waits = 0;
     size_t freed = 0;
+    size_t feedback_barriers = 0;
     bool capped_share = false;
     u64 heap_budget = 0;
     size_t heap_reads = 0;
@@ -39,6 +40,7 @@ struct Runtime {
     void Finish() { ++waits; }
     void FreeDeferredStagingBuffer(const Download&) { ++freed; }
     void FlushDeferredClear() {}
+    void BarrierFeedbackLoop() { ++feedback_barriers; }
 };
 struct Image : VideoCommon::ImageBase {
     using ImageBase::ImageBase;
@@ -47,6 +49,7 @@ struct Image : VideoCommon::ImageBase {
 };
 struct ImageView {
     ImageView(Runtime&, VideoCommon::NullImageViewParams) {}
+    VideoCommon::ImageId image_id{};
 };
 struct Sampler {
     Sampler(Runtime&, const Tegra::Texture::TSCEntry&) {}
@@ -76,6 +79,28 @@ using Cache = VideoCommon::TextureCache<Params>;
 
 namespace VideoCommon {
 struct TextureCacheTestAccess {
+    static ImageViewId View(Cache& cache, ImageId image) {
+        const auto id = cache.slot_image_views.insert(cache.runtime, NullImageViewParams{});
+        cache.slot_image_views[id].image_id = image;
+        return id;
+    }
+    static void RetireView(Cache& cache, ImageViewId id) {
+        cache.RemoveImageViewReferences(std::span{&id, 1});
+        cache.slot_image_views.erase(id);
+        cache.BumpImageViewGeneration(id);
+    }
+    static void FeedbackTargets(Cache& cache, ImageViewId depth, ImageViewId color = {}) {
+        cache.render_targets.depth_buffer_id = depth;
+        cache.render_targets.color_buffer_ids[0] = color;
+        cache.rt_depth_image_id = depth ? cache.slot_image_views[depth].image_id : ImageId{};
+        cache.rt_image_id[0] = color ? cache.slot_image_views[color].image_id : ImageId{};
+        const u32 depth_bit = 1U << cache.rt_image_id.size();
+        cache.rt_active_mask = (depth ? depth_bit : 0U) | (color ? 1U : 0U);
+        ++cache.render_targets_serial;
+    }
+    static void WritesDepth(Cache& cache, bool value) {
+        cache.maxwell3d->regs.depth_write_enabled = value;
+    }
     static ImageId Register(Cache& cache, size_t address_space, DAddr cpu, bool sparse,
                             GPUVAddr gpu = 0x100000) {
         const auto id = cache.slot_images.insert(NullImageParams{});
@@ -174,6 +199,75 @@ struct TextureCacheTestAccess {
         CHECK(cache.page_table.at(cpu >> 20).empty() == !present);
     }
 };
+}
+
+TEST_CASE("Depth feedback follows the views bound by each draw",
+          "[video_core][bound_view_feedback]") {
+    ScopedSystemTestContext context;
+    Core::System system;
+    system.Initialize();
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device{physical};
+    Tegra::MemoryManager memory{system, device, 32, 1ULL << 31, 16};
+    Tegra::Control::ChannelState channel{0};
+    channel.memory_manager = &memory;
+    channel.payload.emplace(system, memory, channel);
+    Runtime runtime;
+    Cache cache{runtime, device};
+    cache.CreateChannel(channel);
+    cache.BindToChannel(channel.bind_id);
+    using Access = VideoCommon::TextureCacheTestAccess;
+    using VideoCommon::ImageViewInOut;
+    const auto depth_view = Access::View(cache, VideoCommon::ImageId{120});
+    const auto depth_sample = Access::View(cache, VideoCommon::ImageId{120});
+    const auto other_sample = Access::View(cache, VideoCommon::ImageId{121});
+    const std::array depth{ImageViewInOut{.id = depth_sample}};
+    const std::array other{ImageViewInOut{.id = other_sample}};
+    const std::array attachment{ImageViewInOut{.id = depth_view}};
+    REQUIRE(Settings::values.barrier_feedback_loops.GetValue());
+    Access::WritesDepth(cache, false);
+    Access::FeedbackTargets(cache, depth_view);
+
+    const u64 bound_view_serial = cache.ImageViewRemovalSerial();
+    cache.CheckFeedbackLoop(other, bound_view_serial);
+    cache.CheckFeedbackLoop(attachment, bound_view_serial);
+    CHECK(runtime.feedback_barriers == 0);
+    CHECK_FALSE(cache.SamplesRenderTarget(other, bound_view_serial));
+    CHECK(cache.SamplesRenderTarget(depth, bound_view_serial));
+    cache.CheckFeedbackLoop(depth, bound_view_serial);
+    CHECK(runtime.feedback_barriers == 1);
+    cache.CheckFeedbackLoop(depth, bound_view_serial);
+    CHECK(runtime.feedback_barriers == 1);
+
+    Access::WritesDepth(cache, true);
+    cache.CheckFeedbackLoop(other, bound_view_serial);
+    Access::WritesDepth(cache, false);
+    cache.CheckFeedbackLoop(depth, bound_view_serial);
+    CHECK(runtime.feedback_barriers == 2);
+
+    Access::FeedbackTargets(cache, depth_view, depth_sample);
+    cache.CheckFeedbackLoop(depth, bound_view_serial);
+    CHECK(runtime.feedback_barriers == 2);
+
+    // The draw bound the view before the render-target work retired its slot.
+    Access::FeedbackTargets(cache, depth_view);
+    Access::RetireView(cache, depth_sample);
+    CHECK(cache.ImageViewRemovalSerial() != bound_view_serial);
+    cache.CheckFeedbackLoop(depth, bound_view_serial);
+    CHECK(runtime.feedback_barriers == 3);
+    CHECK(cache.SamplesRenderTarget(depth, bound_view_serial));
+
+    REQUIRE(Access::View(cache, VideoCommon::ImageId{122}) == depth_sample);
+    const u64 fresh_view_serial = cache.ImageViewRemovalSerial();
+    cache.CheckFeedbackLoop(depth, fresh_view_serial);
+    CHECK(runtime.feedback_barriers == 3);
+    CHECK_FALSE(cache.SamplesRenderTarget(depth, fresh_view_serial));
+    CHECK(cache.SamplesRenderTarget(depth, bound_view_serial));
+
+    Access::FeedbackTargets(cache, {});
+    cache.CheckFeedbackLoop(depth, bound_view_serial);
+    CHECK(runtime.feedback_barriers == 3);
+    CHECK_FALSE(cache.SamplesRenderTarget(depth, bound_view_serial));
 }
 
 TEST_CASE("Texture spill collection backs off without pretending an allocation failed",

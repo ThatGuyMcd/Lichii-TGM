@@ -1373,6 +1373,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }
         ReportTextureMemo();
     }
+    const u64 bound_view_serial = texture_cache.ImageViewRemovalSerial();
     if (RecordingSampledTextures()) {
         sampled_images.clear();
         size_t view_index{};
@@ -1411,6 +1412,7 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
                              !std::ranges::equal(samplers, delta_samplers);
         }
         delta_views.assign(views.begin(), views.end());
+        delta_view_serial = bound_view_serial;
         delta_samplers.assign(samplers.begin(), samplers.end());
         delta_computed_handles.assign(computed_handles.begin(), computed_handles.end());
         delta_computed_values.assign(computed_values.begin(), computed_values.end());
@@ -1613,9 +1615,10 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         Profile::Scope scope{Profile::Zone::RenderTargets};
         texture_cache.UpdateRenderTargets(false);
         const std::span<const VideoCommon::ImageViewInOut> view_span{views.data(), views.size()};
-        texture_cache.CheckFeedbackLoop(view_span);
+        texture_cache.CheckFeedbackLoop(view_span, bound_view_serial);
         if (scheduler.HasFragmentBarrier() &&
-            (scheduler.RenderPassHasStores() || texture_cache.SamplesRenderTarget(view_span))) {
+            (scheduler.RenderPassHasStores() ||
+             texture_cache.SamplesRenderTarget(view_span, bound_view_serial))) {
             scheduler.RequestOutsideRenderPassOperationContext();
         }
     }
@@ -1631,6 +1634,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 }
 
 bool GraphicsPipeline::DeltaImagesChange() const noexcept {
+    if (!delta_views.empty() && delta_view_serial != texture_cache.ImageViewRemovalSerial()) {
+        return true;
+    }
     return texture_cache.SampledViewsChange(delta_views);
 }
 
@@ -1793,9 +1799,10 @@ bool GraphicsPipeline::ConfigureDelta(bool is_indexed) {
         Profile::Scope scope{Profile::Zone::RenderTargets};
         texture_cache.UpdateRenderTargets(false);
         const std::span<const VideoCommon::ImageViewInOut> view_span{delta_views};
-        texture_cache.CheckFeedbackLoop(view_span);
+        texture_cache.CheckFeedbackLoop(view_span, delta_view_serial);
         if (scheduler.HasFragmentBarrier() &&
-            (scheduler.RenderPassHasStores() || texture_cache.SamplesRenderTarget(view_span))) {
+            (scheduler.RenderPassHasStores() ||
+             texture_cache.SamplesRenderTarget(view_span, delta_view_serial))) {
             scheduler.RequestOutsideRenderPassOperationContext();
         }
     }

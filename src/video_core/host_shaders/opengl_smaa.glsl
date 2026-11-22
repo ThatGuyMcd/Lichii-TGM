@@ -690,9 +690,9 @@ float2 SMAALumaEdgeDetectionPS(float2 texcoord,
     delta.xy = abs(L - float2(Lleft, Ltop));
     float2 edges = step(threshold, delta.xy);
 
-    // Then discard if there is no edge:
+    // Vulkan loads the previous edge image, so overwrite pixels that no longer have an edge.
     if (dot(edges, float2(1.0, 1.0)) == 0.0)
-        discard;
+        return float2(0.0, 0.0);
 
     // Calculate right and bottom deltas:
     float Lright = dot(SMAASamplePoint(colorTex, offset[1].xy).rgb, weights);

@@ -522,7 +522,8 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::vector<std::fi
 void GameListWorker::run() {
     const auto started = std::chrono::steady_clock::now();
     watch_list.clear();
-    provider->ClearAllEntries();
+    FileSys::ManualContentProvider previous;
+    provider->SwapEntries(previous);
     patch_cache.Clear();
 
     const auto DirEntryReady = [&](GameListDir* game_list_dir) {
@@ -579,11 +580,15 @@ void GameListWorker::run() {
         }
     }
 
+    const bool cancelled = stop_requested.load();
+    if (cancelled) {
+        provider->SwapEntries(previous);
+    }
     watch_list.removeDuplicates();
     LOG_INFO(Frontend, "Game discovery finished: elapsed_ms={} watched={} cancelled={}",
              std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::steady_clock::now() - started).count(),
-             watch_list.size(), stop_requested.load());
+             watch_list.size(), cancelled);
     RecordEvent([this](GameListModel* model) { model->DonePopulating(watch_list); });
     processing_completed.Set();
 }

@@ -106,10 +106,11 @@ Result IUserLocalCommunicationService::GetIpv4Address(Out<Ipv4Address> out_curre
     *out_current_address = {Network::TranslateIPv4(network_interface->ip_address)};
     *out_subnet_mask = {Network::TranslateIPv4(network_interface->subnet_mask)};
 
-    // When we're connected to a room, spoof the hosts IP address
+    // Room traffic uses fake /24 addresses. Match the mask so a game broadcasts to the room.
     if (auto room_member = Network::GetRoomMember().lock()) {
         if (room_member->IsConnected()) {
             *out_current_address = room_member->GetFakeIpAddress();
+            *out_subnet_mask = {255, 255, 255, 0};
         }
     }
 

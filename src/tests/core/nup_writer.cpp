@@ -216,6 +216,28 @@ TEST_CASE("NUP add-ons are readable through the manual content provider", "[nup]
     CHECK(provider.ListEntriesFilter({}, {}, {}).empty());
 }
 
+TEST_CASE("Cancelled discovery retains installed update versions", "[core][nup]") {
+    using FileSys::ContentRecordType;
+    using FileSys::TitleType;
+    FileSys::ManualContentProvider provider;
+    FileSys::ManualContentProvider previous;
+    constexpr u64 id = TitleId + 0x800;
+    const auto old = std::make_shared<FileSys::VectorVfsFile>(std::vector<u8>{1}, "installed");
+    const auto discovered =
+        std::make_shared<FileSys::VectorVfsFile>(std::vector<u8>{2}, "discovered");
+    provider.AddEntryWithVersion(TitleType::Patch, ContentRecordType::Program, id, 1, "1", old);
+    provider.SwapEntries(previous);
+    CHECK_FALSE(provider.HasEntry(id, ContentRecordType::Program));
+    provider.AddEntryWithVersion(TitleType::Patch, ContentRecordType::Program, id, 2, "2",
+                                 discovered);
+    REQUIRE(provider.GetEntryForVersion(id, ContentRecordType::Program, 2) == discovered);
+
+    provider.SwapEntries(previous);
+    CHECK(provider.GetEntryUnparsed(id, ContentRecordType::Program) == old);
+    CHECK(provider.GetEntryForVersion(id, ContentRecordType::Program, 1) == old);
+    CHECK(provider.GetEntryForVersion(id, ContentRecordType::Program, 2) == nullptr);
+}
+
 void MakeDump(const fs::path& root) {
     Put(root / "Base/ExeFS/main", "base main");
     Put(root / "Base/ExeFS/main.npdm", Npdm(TitleId));

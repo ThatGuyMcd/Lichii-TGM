@@ -30,6 +30,7 @@
 #include "core/file_sys/fssystem/fssystem_integrity_verification_storage.h"
 #include "core/file_sys/fssystem/fssystem_nca_file_system_driver.h"
 #include "core/file_sys/fssystem/fssystem_nca_header.h"
+#include "core/file_sys/ips_layer.h"
 #include "core/file_sys/partition_filesystem.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/vfs/vfs_vector.h"
@@ -50,6 +51,16 @@ void Put(std::vector<u8>& out, size_t offset, const T& value) {
 
 VirtualFile MakeFile(std::vector<u8> bytes) {
     return std::make_shared<VectorVfsFile>(std::move(bytes), "test.bin");
+}
+
+TEST_CASE("IPSwitch empty values keep the original bytes", "[core][file_sys]") {
+    const std::string patch{"@enabled\n00000004 AB\n00000004 4\n00000008 ''\n"
+                            "00000040 ''\n00000044 4\n0000000C CD\n"};
+    const IPSwitchCompiler compiler{MakeFile(std::vector<u8>(patch.begin(), patch.end()))};
+    const auto out = compiler.Apply(MakeFile(std::vector<u8>(16, 0xFF)))->ReadAllBytes();
+    auto expected = std::vector<u8>(16, 0xFF);
+    expected[12] = 0xCD;
+    CHECK(out == expected);
 }
 
 // PFS0 with one 0x18-byte entry per name, the names packed into the string table.

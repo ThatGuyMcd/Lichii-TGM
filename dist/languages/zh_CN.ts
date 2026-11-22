@@ -854,7 +854,11 @@ Immediate is the fastest option, but can introduce some issues.
 Balanced offers better compatibility and may fix issues in some games.
 Accurate further improves compatibility at the cost of some performance.
 Default follows the GPU Mode setting.</source>
-        <translation>控制 GPU 围栏同步行为。\n“即时”最快，但可能引入一些问题。\n“均衡”兼容性更好，可能修复部分游戏的问题。\n“精确”进一步提升兼容性，但会牺牲一些性能。\n“默认”跟随 GPU 模式设置。</translation>
+        <translation>控制 GPU 围栏同步行为。
+“即时”最快，但可能引入一些问题。
+“均衡”兼容性更好，可能修复部分游戏的问题。
+“精确”进一步提升兼容性，但会牺牲一些性能。
+“默认”跟随 GPU 模式设置。</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/config/shared_translation.cpp" line="238"/>

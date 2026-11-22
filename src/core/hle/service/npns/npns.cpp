@@ -41,7 +41,7 @@ public:
             {23, nullptr, "DestroyToken"},
             {24, nullptr, "DestroyTokenWithApplicationId"},
             {25, nullptr, "QueryIsTokenValid"},
-            {26, nullptr, "ListenToMyApplicationId"},
+            {26, C<&INpnsSystem::ListenToMyApplicationId>, "ListenToMyApplicationId"},
             {27, nullptr, "DestroyTokenAll"},
             {28, nullptr, "CreateTokenWithName"}, // 18.0.0+
             {29, nullptr, "DestroyTokenWithName"}, // 18.0.0+
@@ -99,6 +99,11 @@ public:
 private:
     Result ListenTo(u32 program_id) {
         LOG_WARNING(Service_NPNS, "(STUBBED) called, program_id={}", program_id);
+        R_SUCCEED();
+    }
+
+    Result ListenToMyApplicationId() {
+        LOG_WARNING(Service_NPNS, "(STUBBED) called");
         R_SUCCEED();
     }
 
@@ -161,7 +166,7 @@ public:
             {21, nullptr, "CreateToken"},
             {23, nullptr, "DestroyToken"},
             {25, nullptr, "QueryIsTokenValid"},
-            {26, nullptr, "ListenToMyApplicationId"},
+            {26, C<&INpnsUser::ListenToMyApplicationId>, "ListenToMyApplicationId"},
             {101, nullptr, "Suspend"},
             {102, nullptr, "Resume"},
             {103, nullptr, "GetState"},
@@ -179,6 +184,11 @@ public:
     }
 
 private:
+    Result ListenToMyApplicationId() {
+        LOG_WARNING(Service_NPNS, "(STUBBED) called");
+        R_SUCCEED();
+    }
+
     Result ListenToByName(InBuffer<BufferAttr_HipcMapAlias> name_buffer) {
         const std::string name(reinterpret_cast<const char*>(name_buffer.data()), name_buffer.size());
         LOG_DEBUG(Service_NPNS, "called, name={}", name);

@@ -9,6 +9,7 @@ add_executable(tests
     core/filesystem_buffer_bounds.cpp
     video_core/maxwell_fmz.cpp
     video_core/astc_bcn_batches.cpp
+    video_core/astc_decompress.cpp
     core/orphaned_profiles.cpp
     video_core/boot_driver_cache.cpp
     core/isolated_keys.cpp
@@ -135,6 +136,7 @@ add_executable(tests
     core/vfs_real_lifetime.cpp
     core/ncz_io_guards.cpp
     core/file_sys_parsers.cpp
+    core/aes_ctr_decryptor.cpp
     input_common/calibration_lifetime.cpp
     video_core/ampere_logged_numeric.cpp
     video_core/ampere_logged_textures.cpp

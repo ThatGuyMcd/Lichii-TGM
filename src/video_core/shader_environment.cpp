@@ -1588,7 +1588,8 @@ bool FileEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
             return index == 0 ? guess->storage_pointer_bank0 : guess->storage_pointer_other;
         }
         lacks_recorded_value = true;
-        throw Shader::LogicError("Uncached storage pointer classification");
+        throw Shader::LogicError("Uncached storage pointer classification of cbuf {} offset {:#x}",
+                                 index, offset);
     }
     return it->second != 0;
 }
@@ -1601,7 +1602,9 @@ bool FileEnvironment::IsCbufIndirectStorageBufferPointer(u32 index, u32 offset, 
             return index == 0 ? guess->storage_pointer_bank0 : guess->storage_pointer_other;
         }
         lacks_recorded_value = true;
-        throw Shader::LogicError("Uncached storage pointer table classification");
+        throw Shader::LogicError(
+            "Uncached storage pointer table classification of cbuf {} offset {:#x} entry {:#x}",
+            index, offset, indirect);
     }
     return it->second != 0;
 }
@@ -1622,7 +1625,7 @@ u32 FileEnvironment::ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) {
             return cbuf_index == 0 ? guess->cbuf_bank0 : guess->cbuf_other;
         }
         lacks_recorded_value = true;
-        throw Shader::LogicError("Uncached read texture type");
+        throw Shader::LogicError("Uncached read cbuf {} offset {:#x}", cbuf_index, cbuf_offset);
     }
     return it->second;
 }
@@ -1635,7 +1638,7 @@ Shader::TextureType FileEnvironment::ReadTextureType(u32 handle) {
             return guess->texture_type;
         }
         lacks_recorded_value = true;
-        throw Shader::LogicError("Uncached read texture type");
+        throw Shader::LogicError("Uncached read texture type of handle {:#x}", handle);
     }
     return it->second;
 }
@@ -1649,7 +1652,7 @@ Shader::TexturePixelFormat FileEnvironment::ReadTexturePixelFormat(u32 handle) {
             return guess->pixel_format;
         }
         lacks_recorded_value = true;
-        throw Shader::LogicError("Uncached read texture pixel format");
+        throw Shader::LogicError("Uncached read texture pixel format of handle {:#x}", handle);
     }
     return it->second;
 }

@@ -21,6 +21,7 @@
 
 #include <boost/crc.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #ifndef _WIN32
 #include <csignal>
@@ -373,6 +374,30 @@ TEST_CASE("Shader cache log reads accumulate chunks and preserve a short final p
         CHECK(std::all_of(source.requests.begin(), source.requests.end(),
                           [](auto size) { return size <= 64; }));
     }
+}
+
+TEST_CASE("Shader cache reports which environment value is missing", "[video_core][shader_cache_v2]") {
+    const std::array<u64, 2> code{0x123456789abcdef0, 0xfedcba9876543210};
+    NativeTestEnvironment source{Shader::Stage::Fragment, code, 2};
+    source.SetTextureInfo(3, Shader::TextureType::Color2D, Shader::TexturePixelFormat::R16_FLOAT);
+    std::ostringstream serialized(std::ios::binary);
+    source.Serialize(serialized, ReadProperties);
+    const std::string bytes = serialized.str();
+    std::istringstream file(bytes, std::ios::binary);
+    VideoCommon::FileEnvironment env;
+    env.Deserialize(file, std::streampos{static_cast<std::streamoff>(bytes.size())});
+
+    using Catch::Matchers::ContainsSubstring;
+    CHECK_THROWS_WITH(static_cast<void>(env.ReadCbufValue(2, 0x1c0)),
+                      ContainsSubstring("cbuf 2 offset 0x1c0"));
+    CHECK_THROWS_WITH(static_cast<void>(env.ReadTextureType(0x4380)),
+                      ContainsSubstring("texture type of handle 0x4380"));
+    CHECK_THROWS_WITH(static_cast<void>(env.ReadTexturePixelFormat(0x4380)),
+                      ContainsSubstring("texture pixel format of handle 0x4380"));
+    CHECK_THROWS_WITH(static_cast<void>(env.IsCbufStorageBufferPointer(3, 0x40)),
+                      ContainsSubstring("cbuf 3 offset 0x40"));
+    CHECK_THROWS_WITH(static_cast<void>(env.IsCbufIndirectStorageBufferPointer(3, 0x40, 0x8)),
+                      ContainsSubstring("cbuf 3 offset 0x40 entry 0x8"));
 }
 
 TEST_CASE("Shader cache v2: every kind of record reads back as written", "[video_core][shader_cache_v2]") {

@@ -42,6 +42,20 @@ public:
     }
 };
 
+class ObservedNsoFile : public FileSys::VectorVfsFile {
+public:
+    explicit ObservedNsoFile(std::vector<u8> bytes) : VectorVfsFile(std::move(bytes)) {}
+
+    size_t Read(u8* out, size_t length, size_t offset) const override {
+        if (offset == sizeof(Loader::NSOHeader)) {
+            text_read_size = length;
+        }
+        return VectorVfsFile::Read(out, length, offset);
+    }
+
+    mutable size_t text_read_size{};
+};
+
 Loader::NSOHeader NsoHeader() {
     Loader::NSOHeader header{};
     header.magic = Common::MakeMagic('N', 'S', 'O', '0');
@@ -180,6 +194,20 @@ TEST_CASE("Upstream NSO bounds reject corrupt images before loading", "[core][lo
         }
         SECTION("short VFS read is not accepted as a full segment") {
             CHECK_FALSE(load(std::make_shared<ShortReadFile>(NsoBytes(header))));
+        }
+        SECTION("impossible compressed expansion is rejected before reading the segment") {
+            header.flags = 1;
+            header.segments_compressed_size[0] = 1;
+            header.segments[0].size = 256;
+            const auto file = std::make_shared<ObservedNsoFile>(NsoBytes(header));
+            CHECK_FALSE(load(file));
+            CHECK(file->text_read_size == 0);
+        }
+        SECTION("stored padding is not copied into the image") {
+            header.segments[0].size = 12;
+            const auto file = std::make_shared<ObservedNsoFile>(NsoBytes(header));
+            CHECK(load(file) == 0x4000);
+            CHECK(file->text_read_size == 12);
         }
         SECTION("LZ4 must produce the complete declared segment") {
             header.flags = 1;

@@ -68,6 +68,9 @@ is incomplete.
 I've fixed NCA verification hanging when a read stops returning data, and made
 NUP reject raw entries whose stored and declared sizes differ. [Lichii #2372](https://github.com/zortos293/Lichii/pull/2372), [#1922](https://github.com/zortos293/Lichii/pull/1922)
 
+I've kept the previous diagnostic lines when the log formatter runs out of
+memory. [Lichii #1475](https://github.com/zortos293/Lichii/pull/1475)
+
 I've reduced the work the CPU does when decoding ASTC textures by expanding
 colour endpoints once per partition. The decoder outputs match the previous
 decoder on the block regression fixtures.

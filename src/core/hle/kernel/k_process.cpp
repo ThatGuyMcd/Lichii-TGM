@@ -1278,7 +1278,9 @@ Result KProcess::LoadFromMetadata(KernelCore& kernel, const FileSys::ProgramMeta
 
 void KProcess::LoadModule(KernelCore& kernel, CodeSet code_set, KProcessAddress base_addr) {
     const auto ReprotectSegment = [&](const CodeSet::Segment& segment, Svc::MemoryPermission permission) {
-        m_page_table.SetProcessMemoryPermission(segment.addr + base_addr, segment.size, permission);
+        if (segment.size != 0) {
+            m_page_table.SetProcessMemoryPermission(segment.addr + base_addr, segment.size, permission);
+        }
     };
 
     this->GetMemory().WriteBlock(base_addr, code_set.memory.data(), code_set.memory.size());

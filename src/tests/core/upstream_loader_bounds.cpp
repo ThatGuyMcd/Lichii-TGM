@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -19,6 +20,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/loader/nro.h"
 #include "core/loader/nso.h"
 #include "tests/core/system_test_context.h"
 
@@ -107,10 +109,48 @@ void WithProcess(F&& run) {
     Kernel::KProcess process{kernel};
     Kernel::KAutoObject::Create(&process);
     SCOPE_EXIT { kernel.UnregisterKernelObject(&process); };
-    run([&](FileSys::VirtualFile file, bool arguments = false) {
-        return Loader::AppLoader_NSO::LoadModule(process, system, *file, 0, arguments, false);
-    });
+    run(process, system);
 }
+
+constexpr u32 NroFileSize = 0x2800;
+constexpr u32 NroImageSize = 0x4000;
+
+std::vector<u8> NroBytes() {
+    std::vector<u8> bytes(0x3000, 0x77);
+    std::fill_n(bytes.begin(), NroFileSize, u8{});
+    Put(bytes, 0x10, Common::MakeMagic('N', 'R', 'O', '0'));
+    Put(bytes, 0x18, NroFileSize);
+    Put(bytes, 0x24, u32{0x1000});
+    Put(bytes, 0x28, u32{0x1000});
+    Put(bytes, 0x2C, u32{0x1000});
+    Put(bytes, 0x30, u32{0x2000});
+    Put(bytes, 0x34, u32{0x800});
+    Put(bytes, 0x38, u32{0x1000});
+    bytes[0x1800] = 0x62;
+    bytes[NroFileSize - 1] = 0x63;
+    return bytes;
+}
+
+class ObservedNroFile : public FileSys::VectorVfsFile {
+public:
+    explicit ObservedNroFile(bool short_read)
+        : VectorVfsFile(NroBytes(), "synthetic.nro"), short_read{short_read} {}
+
+    size_t Read(u8* out, size_t length, size_t offset) const override {
+        if (offset == 0 && length > 0x80) {
+            program_read_size = length;
+            if (short_read) {
+                --length;
+            }
+        }
+        return VectorVfsFile::Read(out, length, offset);
+    }
+
+    mutable size_t program_read_size{};
+
+private:
+    bool short_read;
+};
 
 std::vector<u8> Npdm(bool switch2) {
     const size_t aci = switch2 ? 0x500 : 0x400;
@@ -161,7 +201,10 @@ FileSys::VirtualFile Kip(std::vector<u8> payload, u32 decompressed = 32,
 } // namespace
 
 TEST_CASE("Upstream NSO bounds reject corrupt images before loading", "[core][loader_bounds]") {
-    WithProcess([](auto load) {
+    WithProcess([](Kernel::KProcess& process, Core::System& system) {
+        const auto load = [&](FileSys::VirtualFile file, bool arguments = false) {
+            return Loader::AppLoader_NSO::LoadModule(process, system, *file, 0, arguments, false);
+        };
         auto header = NsoHeader();
         REQUIRE(load(File(NsoBytes(header))) == 0x4000);
         SECTION("furthest segment determines the image extent") {
@@ -227,6 +270,82 @@ TEST_CASE("Upstream NSO bounds reject corrupt images before loading", "[core][lo
             Settings::values.program_args.SetValue(Settings::values.program_args.GetValue() + 'a');
             CHECK_FALSE(load(File(NsoBytes(header)), true));
         }
+    });
+}
+
+TEST_CASE("NRO layout limits page extents and treats empty sections explicitly",
+          "[core][loader_bounds]") {
+    auto bytes = NroBytes();
+    bytes.resize(NroFileSize);
+    const auto valid = Loader::ValidateNroLayout(*File(bytes));
+    REQUIRE(valid);
+    CHECK(valid->image_size == NroImageSize);
+    CHECK(valid->segments[2].offset == 0x2000);
+    CHECK(valid->segments[2].size == 0x2000);
+
+    SECTION("a missing data section maps only BSS") {
+        Put(bytes, 0x30, u32{0xFFFFFFFF});
+        Put(bytes, 0x34, u32{0});
+        const auto layout = Loader::ValidateNroLayout(*File(bytes));
+        REQUIRE(layout);
+        CHECK(layout->segments[2].offset == 0x3000);
+        CHECK(layout->segments[2].size == 0x1000);
+    }
+    SECTION("invalid MOD0 falls back to the declared BSS") {
+        Put(bytes, 4, u32{NroFileSize - 1});
+        auto layout = Loader::ValidateNroLayout(*File(bytes));
+        REQUIRE(layout);
+        CHECK_FALSE(layout->ignored_module_header.empty());
+        CHECK(layout->image_size == NroImageSize);
+        Put(bytes, 4, u32{0x100});
+        Put(bytes, 0x100, Common::MakeMagic('M', 'O', 'D', '0'));
+        Put(bytes, 0x108, u32{0x2000});
+        Put(bytes, 0x10C, u32{0x1FFF});
+        layout = Loader::ValidateNroLayout(*File(bytes));
+        REQUIRE(layout);
+        CHECK_FALSE(layout->ignored_module_header.empty());
+        CHECK(layout->image_size == NroImageSize);
+        Put(bytes, 0x10C, u32{0x4000});
+        layout = Loader::ValidateNroLayout(*File(bytes));
+        REQUIRE(layout);
+        CHECK(layout->ignored_module_header.empty());
+        CHECK(layout->image_size == 0x5000);
+    }
+    SECTION("invalid program extents fail layout validation") {
+        for (const auto [offset, value] :
+             {std::pair{0x18U, NroFileSize + 1}, std::pair{0x28U, 0U},
+              std::pair{0x30U, 0x1FFFU}, std::pair{0x34U, 0x801U},
+              std::pair{0x38U, 0xFFFFFFFFU}}) {
+            auto invalid = bytes;
+            Put(invalid, offset, value);
+            CHECK_FALSE(Loader::ValidateNroLayout(*File(std::move(invalid))));
+        }
+    }
+}
+
+TEST_CASE("NRO loader copies exactly the program bytes and preserves argument placement",
+          "[core][loader_bounds]") {
+    WithProcess([](Kernel::KProcess& process, Core::System& system) {
+        const auto short_file = std::make_shared<ObservedNroFile>(true);
+        Loader::AppLoader_NRO incomplete{short_file};
+        CHECK(incomplete.Load(process, system).first == Loader::ResultStatus::ErrorLoadingNRO);
+        CHECK(short_file->program_read_size == NroFileSize);
+
+        Settings::values.program_args.SetValue("--synthetic");
+        const auto file = std::make_shared<ObservedNroFile>(false);
+        Loader::AppLoader_NRO loader{file};
+        REQUIRE(loader.Load(process, system).first == Loader::ResultStatus::Success);
+        CHECK(file->program_read_size == NroFileSize);
+        constexpr u32 ArgvOffset = NroImageSize + 4 * 0x18;
+        constexpr std::string_view Arguments{"homebrew --synthetic\0", 21};
+        std::vector<u8> image(ArgvOffset + Arguments.size());
+        process.GetMemory().ReadBlock(process.GetEntryPoint(), image.data(), image.size());
+        CHECK(image[0x1800] == 0x62);
+        CHECK(image[NroFileSize - 1] == 0x63);
+        CHECK(std::all_of(image.begin() + NroFileSize, image.begin() + NroImageSize,
+                          [](u8 byte) { return byte == 0; }));
+        CHECK(std::string_view{reinterpret_cast<const char*>(image.data() + ArgvOffset),
+                               Arguments.size()} == Arguments);
     });
 }
 

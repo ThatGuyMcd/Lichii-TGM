@@ -3,8 +3,11 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "common/common_types.h"
 #include "core/loader/loader.h"
@@ -22,6 +25,22 @@ class KProcess;
 }
 
 namespace Loader {
+
+struct NroLayout {
+    struct Segment {
+        u64 offset{};
+        u64 size{};
+    };
+    // .text, .rodata and .data, with .data extended to cover .bss.
+    std::array<Segment, 3> segments{};
+    u64 file_size{};
+    u64 image_size{};
+    std::string_view ignored_module_header{};
+};
+
+/// Checks the program image using only bounded header reads. Assets are outside its extent.
+std::optional<NroLayout> ValidateNroLayout(const FileSys::VfsFile& file,
+                                          std::string_view* reason = nullptr);
 
 /// Loads an NRO file
 class AppLoader_NRO final : public AppLoader {

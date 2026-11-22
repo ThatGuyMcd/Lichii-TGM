@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -24,9 +25,11 @@
 #include "core/file_sys/romfs_factory.h"
 #include "core/file_sys/vfs/vfs_offset.h"
 #include "core/hle/kernel/code_set.h"
+#include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/kernel.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/nro.h"
 #include "core/memory.h"
@@ -148,53 +151,83 @@ bool AppLoader_NRO::IsHomebrew() {
            nro_header.magic_ext2 == Common::MakeMagic('B', 'R', 'E', 'W');
 }
 
-static constexpr u32 PageAlignSize(u32 size) {
-    return static_cast<u32>((size + Core::Memory::YUZU_PAGEMASK) & ~Core::Memory::YUZU_PAGEMASK);
+std::optional<NroLayout> ValidateNroLayout(const FileSys::VfsFile& file, std::string_view* reason) {
+    constexpr u64 PageSize = Core::Memory::YUZU_PAGESIZE;
+    const auto reject = [reason](std::string_view message) -> std::optional<NroLayout> {
+        if (reason != nullptr) {
+            *reason = message;
+        }
+        return std::nullopt;
+    };
+    NroHeader header{};
+    if (file.ReadObject(&header) != sizeof(header) ||
+        header.magic != Common::MakeMagic('N', 'R', 'O', '0')) {
+        return reject("invalid NRO header");
+    }
+    const u64 file_size = header.file_size;
+    if (file_size < sizeof(header) || file_size > file.GetSize()) {
+        return reject("the declared program size is outside the file");
+    }
+
+    NroLayout layout{};
+    u64 previous_end = 0;
+    for (size_t i = 0; i < header.segments.size(); ++i) {
+        const u64 offset = header.segments[i].offset;
+        const u64 size = header.segments[i].size;
+        if (size == 0) {
+            layout.segments[i] = {previous_end, 0};
+            continue;
+        }
+        if ((i == 0 && offset != 0) || offset % PageSize != 0 || offset < previous_end ||
+            offset + size > file_size) {
+            return reject("a program segment is outside the image, unaligned or overlapping");
+        }
+        const u64 page_size = Common::AlignUp(size, PageSize);
+        layout.segments[i] = {offset, page_size};
+        previous_end = offset + page_size;
+    }
+
+    const u64 file_image_size = Common::AlignUp(file_size, PageSize);
+    u64 bss_size = Common::AlignUp(u64{header.bss_size}, PageSize);
+    const u64 module_offset = header.module_header_offset;
+    ModHeader module{};
+    if (module_offset + sizeof(module) > file_size ||
+        file.ReadObject(&module, static_cast<size_t>(module_offset)) != sizeof(module)) {
+        layout.ignored_module_header = "the module header is outside the program or incomplete";
+    } else if (module.magic == Common::MakeMagic('M', 'O', 'D', '0')) {
+        if (module.bss_end_offset < module.bss_start_offset) {
+            layout.ignored_module_header = "the module's .bss ends before it starts";
+        } else {
+            bss_size = Common::AlignUp(u64{module.bss_end_offset} - module.bss_start_offset,
+                                       PageSize);
+        }
+    }
+
+    layout.file_size = file_size;
+    layout.image_size = file_image_size + bss_size;
+    if (layout.image_size > std::numeric_limits<u32>::max()) {
+        return reject("the program image and .bss exceed the code set size limit");
+    }
+    auto& data = layout.segments.back();
+    if (data.size == 0) {
+        data.offset = file_image_size;
+    }
+    data.size = layout.image_size - data.offset;
+    return layout;
 }
 
 static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
-                        const std::vector<u8>& data) {
-    if (data.size() < sizeof(NroHeader)) {
-        return {};
+                       const FileSys::VfsFile& file) {
+    std::string_view reason;
+    const auto layout = ValidateNroLayout(file, &reason);
+    if (!layout) {
+        LOG_ERROR(Loader, "NRO not loaded: {}", reason);
+        return false;
+    }
+    if (!layout->ignored_module_header.empty()) {
+        LOG_WARNING(Loader, "NRO using .bss size from its header: {}", layout->ignored_module_header);
     }
 
-    // Read NSO header
-    NroHeader nro_header{};
-    std::memcpy(&nro_header, data.data(), sizeof(NroHeader));
-    if (nro_header.magic != Common::MakeMagic('N', 'R', 'O', '0')) {
-        return {};
-    }
-
-    // Build program image
-    std::vector<u8> program_image(PageAlignSize(nro_header.file_size));
-    std::memcpy(program_image.data(), data.data(), program_image.size());
-    if (program_image.size() != PageAlignSize(nro_header.file_size)) {
-        return {};
-    }
-
-    Kernel::CodeSet codeset;
-    for (std::size_t i = 0; i < nro_header.segments.size(); ++i) {
-        codeset.segments[i].addr = nro_header.segments[i].offset;
-        codeset.segments[i].offset = nro_header.segments[i].offset;
-        codeset.segments[i].size = PageAlignSize(nro_header.segments[i].size);
-    }
-
-    // Default .bss to NRO header bss size if MOD0 section doesn't exist
-    u32 bss_size{PageAlignSize(nro_header.bss_size)};
-
-    // Read MOD header
-    ModHeader mod_header{};
-    std::memcpy(&mod_header, program_image.data() + nro_header.module_header_offset,
-                sizeof(ModHeader));
-
-    const bool has_mod_header{mod_header.magic == Common::MakeMagic('M', 'O', 'D', '0')};
-    if (has_mod_header) {
-        // Resize program image to include .bss section and page align each section
-        bss_size = PageAlignSize(mod_header.bss_end_offset - mod_header.bss_start_offset);
-    }
-
-    codeset.DataSegment().size += bss_size;
-    program_image.resize(static_cast<u32>(program_image.size()) + bss_size);
     struct ConfigEntry {
         u32_le key;
         u32_le flags;
@@ -206,16 +239,46 @@ static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
     constexpr size_t kNumEntries = 4; // MainThreadHandle, AppletType, Argv, EndOfList
     constexpr size_t kConfigTableSize = kNumEntries * sizeof(ConfigEntry);
     std::string argv_string;
-    size_t args_offset_in_image = 0;
-    std::optional<size_t> exit_process_offset_in_image;
-    const auto& program_args = Settings::values.program_args.GetValue();
+    const auto program_args = Settings::values.program_args.GetValue();
     if (!program_args.empty()) {
         argv_string = "homebrew ";
         argv_string += program_args;
         argv_string.push_back('\0');
+    }
 
+    const u64 args_offset_in_image = layout->image_size;
+    const u64 entries_and_argv =
+        argv_string.empty()
+            ? 0
+            : Common::AlignUp(u64{kConfigTableSize} + argv_string.size(),
+                              u64{Core::Memory::YUZU_PAGESIZE});
+    const u64 total_size = args_offset_in_image + entries_and_argv;
+    const auto metadata = FileSys::ProgramMetadata::GetDefault();
+    const auto pool = static_cast<Kernel::KMemoryManager::Pool>(metadata.GetPoolPartition());
+    const u64 pool_size = system.Kernel().MemoryManager().GetSize(pool);
+    if (total_size > std::numeric_limits<u32>::max() || total_size > pool_size) {
+        LOG_ERROR(Loader, "NRO not loaded: process cannot hold the {:#x}-byte image", total_size);
+        return false;
+    }
+
+    Kernel::CodeSet codeset;
+    for (size_t i = 0; i < layout->segments.size(); ++i) {
+        const auto& segment = layout->segments[i];
+        codeset.segments[i] = {segment.offset, segment.offset, static_cast<u32>(segment.size)};
+    }
+    codeset.DataSegment().size += static_cast<u32>(entries_and_argv);
+
+    std::vector<u8> program_image(static_cast<size_t>(total_size));
+    const auto file_size = static_cast<size_t>(layout->file_size);
+    if (file.Read(program_image.data(), file_size) != file_size) {
+        LOG_ERROR(Loader, "NRO not loaded: incomplete program image");
+        return false;
+    }
+
+    std::optional<size_t> exit_process_offset_in_image;
+    if (!argv_string.empty()) {
         const auto& code = codeset.CodeSegment();
-        const size_t code_end = (std::min)(program_image.size(), code.offset + code.size);
+        const size_t code_end = (std::min)(file_size, code.offset + code.size);
         for (size_t offset = code.offset; offset + sizeof(u32) <= code_end; offset += sizeof(u32)) {
             u32 instruction{};
             std::memcpy(&instruction, program_image.data() + offset, sizeof(instruction));
@@ -229,12 +292,6 @@ static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
                         "Unable to find svcExitProcess in NRO; returning from main may fault");
         }
 
-        const size_t entries_and_argv =
-            Common::AlignUp(kConfigTableSize + argv_string.size(), Core::Memory::YUZU_PAGESIZE);
-
-        args_offset_in_image = program_image.size();
-        codeset.DataSegment().size += static_cast<u32>(entries_and_argv);
-        program_image.resize(args_offset_in_image + entries_and_argv);
     }
     size_t image_size = program_image.size();
 
@@ -249,15 +306,23 @@ static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
 
     if (Settings::IsNceEnabled()) {
         // Patch SVCs and MRS calls in the guest code
-        patch.PatchText(program_image, code);
-
         // We only support PostData patching for NROs.
-        ASSERT(patch.GetPatchMode() == Core::NCE::PatchMode::PostData);
+        if (!patch.PatchText(program_image, code) ||
+            patch.GetPatchMode() != Core::NCE::PatchMode::PostData) {
+            LOG_ERROR(Loader, "NRO not loaded: unsupported native code patch layout");
+            return false;
+        }
+        const u64 patch_size = patch.GetSectionSize();
+        if (patch_size > std::numeric_limits<u32>::max() - image_size ||
+            patch_size > pool_size - image_size) {
+            LOG_ERROR(Loader, "NRO not loaded: native code patch exceeds process capacity");
+            return false;
+        }
 
         // Update patch section.
         auto& patch_segment = codeset.PatchSegment();
         patch_segment.addr = image_size;
-        patch_segment.size = static_cast<u32>(patch.GetSectionSize());
+        patch_segment.size = static_cast<u32>(patch_size);
 
         // Add patch section size to the module size.
         image_size += patch_segment.size;
@@ -280,7 +345,7 @@ static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
 
     // Setup the process code layout
     if (process
-            .LoadFromMetadata(system.Kernel(), FileSys::ProgramMetadata::GetDefault(), image_size, fastmem_base, aslr_offset)
+            .LoadFromMetadata(system.Kernel(), metadata, image_size, fastmem_base, aslr_offset)
             .IsError()) {
         return false;
     }
@@ -288,9 +353,10 @@ static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
     // Relocate code patch and copy to the program_image if running under NCE.
     // This needs to be after LoadFromMetadata so we can use the process entry point.
 #ifdef HAS_NCE
-    if (Settings::IsNceEnabled()) {
-        patch.RelocateAndCopy(process.GetEntryPoint(), code, program_image,
-                              &process.GetPostHandlers());
+    if (Settings::IsNceEnabled() &&
+        !patch.RelocateAndCopy(process.GetEntryPoint(), code, program_image,
+                               &process.GetPostHandlers())) {
+        return false;
     }
 #endif
 
@@ -329,7 +395,7 @@ static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
 
 bool AppLoader_NRO::LoadNro(Core::System& system, Kernel::KProcess& process,
                             const FileSys::VfsFile& nro_file) {
-    return LoadNroImpl(system, process, nro_file.ReadAllBytes());
+    return LoadNroImpl(system, process, nro_file);
 }
 
 AppLoader_NRO::LoadResult AppLoader_NRO::Load(Kernel::KProcess& process, Core::System& system) {

@@ -1029,6 +1029,7 @@ void CollectShaderInfoPass(Environment& env, IR::Program& program) {
             Visit(info, inst);
         }
     }
+    info.MarkNativeGlobalStoreDestinations();
     GatherInfoFromHeader(env, info);
 }
 

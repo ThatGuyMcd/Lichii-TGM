@@ -19,7 +19,8 @@ namespace Shader {
 void SerializeInfo(const Info& info, std::vector<u8>& out);
 
 /// Reads an info written by SerializeInfo from the front of `in`, advancing it; false when `in`
-/// is too short or holds more descriptors than an info has room for.
+/// is too short or holds more descriptors than an info has room for. Restores writable metadata
+/// for native global store targets in older prepared infos.
 [[nodiscard]] bool DeserializeInfo(std::span<const u8>& in, Info& info);
 
 } // namespace Shader

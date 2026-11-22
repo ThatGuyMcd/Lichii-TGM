@@ -398,6 +398,7 @@ bool DeserializeInfo(std::span<const u8>& in, Info& info) {
     try {
         Reader reader{in};
         VisitInfo(reader, info);
+        info.MarkNativeGlobalStoreDestinations();
         return true;
     } catch (const std::out_of_range&) {
         return false;

@@ -433,6 +433,16 @@ struct Info {
 
     bool operator==(const Info&) const = default;
 
+    /// Native global stores can select any bound storage buffer at runtime.
+    void MarkNativeGlobalStoreDestinations() noexcept {
+        if (native_global_bounds && stores_global_memory) {
+            for (auto& descriptor : storage_buffers_descriptors) {
+                descriptor.is_written = true;
+                descriptor.write_extent = {};
+            }
+        }
+    }
+
     /// True when the shader only runs correctly if a subgroup spans a whole guest warp.
     /// Cooperative matrices multiply whole warps lane-coherently, so they count too (the HMMA
     /// upscaler network) - compute already forced the guest warp size for them before this

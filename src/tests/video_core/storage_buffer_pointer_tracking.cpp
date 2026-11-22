@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -14,6 +15,7 @@
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
 #include "shader_recompiler/host_translate_info.h"
+#include "shader_recompiler/info_serialize.h"
 #include "shader_recompiler/ir_opt/passes.h"
 
 namespace {
@@ -629,6 +631,79 @@ TEST_CASE("NVN fallback descriptors use guest slots rather than compact binding 
     auto reversed = descriptors;
     std::ranges::reverse(reversed);
     CHECK(selected(reversed) == std::vector<u32>{0x400, 0x340});
+}
+
+TEST_CASE("Native global writers can reach buffers bound by a separate load",
+          "[shader][storage_buffer][native_global_write]") {
+    const auto access = GENERATE(IR::Opcode::LoadGlobal32, IR::Opcode::WriteGlobal32,
+                                 IR::Opcode::GlobalAtomicIAdd32);
+    CAPTURE(access);
+    KernelProgram fixture;
+    fixture.env.native = true;
+    IR::IREmitter ir{fixture.entry};
+    constexpr u32 first_slot = 0x280;
+    constexpr u32 separately_bound_slot = 0x308;
+    const IR::U32 slot{ir.IAdd(ir.ShiftLeftLogical(ir.LocalInvocationIdX(), ir.Imm32(3)),
+                               ir.Imm32(first_slot))};
+    const IR::U64 routed{Address(ir, ir.GetCbuf(ir.Imm32(0), slot),
+                                 ir.GetCbuf(ir.Imm32(0), ir.IAdd(slot, ir.Imm32(4))))};
+    const IR::U64 separately_bound{
+        Address(ir, Word(ir, separately_bound_slot), Word(ir, separately_bound_slot + 4))};
+    const IR::U32 loaded{ir.LoadGlobal32(separately_bound)};
+    switch (access) {
+    case IR::Opcode::LoadGlobal32:
+        static_cast<void>(ir.LoadGlobal32(routed));
+        break;
+    case IR::Opcode::WriteGlobal32:
+        ir.WriteGlobal32(routed, loaded);
+        break;
+    default:
+        static_cast<void>(ir.GlobalAtomicIAdd(routed, loaded));
+        break;
+    }
+
+    static_cast<void>(fixture.TrackedOffsets());
+    auto& program = fixture.program;
+    REQUIRE(program.info.native_global_bounds);
+    REQUIRE(fixture.entry.back().GetOpcode() == access);
+    Shader::Optimization::CollectShaderInfoPass(fixture.env, program);
+    const bool writes = access != IR::Opcode::LoadGlobal32;
+    CHECK(program.info.stores_global_memory == writes);
+    const auto& buffers = program.info.storage_buffers_descriptors;
+    const auto other = std::ranges::find(buffers, separately_bound_slot,
+                                         &Shader::StorageBufferDescriptor::cbuf_offset);
+    REQUIRE(other != buffers.end());
+    CHECK(other->is_written == writes);
+    CHECK_FALSE(other->write_extent.bounded);
+    CHECK(std::ranges::all_of(buffers, [writes](const auto& buffer) {
+        return buffer.is_written == writes && !buffer.write_extent.bounded;
+    }));
+}
+
+TEST_CASE("Prepared native shader metadata marks all reachable store destinations",
+          "[shader][storage_buffer][native_global_write]") {
+    const bool native_routing = GENERATE(false, true);
+    const bool global_store = GENERATE(false, true);
+    CAPTURE(native_routing, global_store);
+    Shader::Info before{};
+    before.native_global_bounds = native_routing;
+    before.stores_global_memory = global_store;
+    before.storage_buffers_descriptors.push_back({.cbuf_offset = 0x80, .count = 1});
+    before.storage_buffers_descriptors.push_back({
+        .cbuf_offset = 0x88, .count = 1, .is_written = true, .write_extent = {.bounded = true}});
+
+    std::vector<u8> bytes;
+    Shader::SerializeInfo(before, bytes);
+    std::span<const u8> input{bytes};
+    Shader::Info restored{};
+    REQUIRE(Shader::DeserializeInfo(input, restored));
+    REQUIRE(input.empty());
+    REQUIRE(restored.storage_buffers_descriptors.size() == 2);
+    const bool routed_write = native_routing && global_store;
+    CHECK(restored.storage_buffers_descriptors[0].is_written == routed_write);
+    CHECK_FALSE(restored.storage_buffers_descriptors[0].write_extent.bounded);
+    CHECK(restored.storage_buffers_descriptors[1].is_written);
+    CHECK(restored.storage_buffers_descriptors[1].write_extent.bounded == !routed_write);
 }
 
 TEST_CASE("Iterator analysis handles deep loop-carried shader graphs",

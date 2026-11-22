@@ -1,6 +1,6 @@
 # User Handbook - Graphics
 
-Graphical enhancements and visual quality improvments. This doesn't cover texture mods.
+Graphical enhancements and visual quality improvements. This doesn't cover texture mods.
 
 ## Visual Enhancements
 

@@ -40,7 +40,7 @@ Everyone has their own way of viewing good/bad C++ practices, my general outline
     ```cpp
     struct Child {
         Parent& parent;
-        void Mehod() {
+        void Method() {
             parent.Something();
         }
     };
@@ -50,7 +50,7 @@ Everyone has their own way of viewing good/bad C++ practices, my general outline
 
     ```cpp
     struct Child {
-        void Mehod(Parent& parent) {
+        void Method(Parent& parent) {
             parent.Something();
         }
     };

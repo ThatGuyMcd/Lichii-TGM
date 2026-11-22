@@ -17,6 +17,7 @@ Tools for Eden and other subprojects. When adding new scripts please use `#!/bin
 - `generate_converters.py`: Generates converters for given formats of textures (C++ helper).
 - `svc_generator.py`: Generates the files `src/core/hle/kernel/svc.cpp` and `src/core/hle/kernel/svc.h` based off prototypes.
 - `shellcheck.sh`: Ensure POSIX compliance (and syntax sanity) for all tools in this directory and subdirectories.
+- I use `check_docs_links.py` to check local Markdown links and heading anchors.
 - `llvmpipe-run.sh`: Sets environment variables needed to run any command (or Eden) with llvmpipe.
 - `optimize-assets.sh`: Optimizes PNG assets with OptiPng.
 - `update-cpm.sh`: Updates CPM.cmake to the latest version.

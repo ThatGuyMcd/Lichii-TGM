@@ -20,6 +20,17 @@ Shader cache removal now leaves an entry in the log. [Lichii #2349](https://gith
 I've included the shader identifier in compute pipeline binding logs when
 GPU logging is enabled, using Zortos's change. [Lichii #2347](https://github.com/zortos293/Lichii/pull/2347)
 
+I've corrected how Maxwell shaders handle a zero factor with FMZ. Fused
+multiply-add instructions keep their addend before applying saturation, and
+half-precision comparisons now use matching types. [Lichii #811](https://github.com/zortos293/Lichii/pull/811)
+
+I've brought across the file and storage request bounds checks. A request for
+more bytes than its mapped buffer now returns an invalid size error before
+calling the filesystem. [Lichii #973](https://github.com/zortos293/Lichii/pull/973)
+
+I've brought across luimu64's documentation corrections and added the Markdown
+link checker. [Fritchii #68](https://github.com/Frizti/Fritchii/pull/68), [#69](https://github.com/Frizti/Fritchii/pull/69), [#71](https://github.com/Frizti/Fritchii/pull/71)
+
 Frame generation remains off. Forest Lantern, handheld and Couch Mode settings,
 saves and OOT aspect-ratio options are retained.
 

@@ -3,7 +3,7 @@
 > [!WARNING]
 > This guide is intended for developers ONLY. If you're looking for configuring the emulator itself, read **[the user handbook](./user/README.md)**.
 
-Settings on the emulator are very important, toggles and such can be used to guard and/or add branches to paths where some games may crash while others won't, and viceversa.
+Settings on the emulator are very important, toggles and such can be used to guard and/or add branches to paths where some games may crash while others won't, and vice versa.
 
 However, this process can be tedious for those unfamiliar; this document serves as an outline/documentation for the settings subsystem.
 
@@ -25,10 +25,10 @@ However, this process can be tedious for those unfamiliar; this document serves 
   * [Step 1 - Common Setting](#step-1-common-setting)
   * [Step 2 - Qt Toggle](#step-2-qt-toggle)
   * [Step 3 - Kotlin (Android)](#step-3-kotlin-android)
-    * [Step 3.1 - BooleanSetting.kt](#step-3-1-booleansetting-kt)
-    * [Step 3.2 - SettingsItem.kt](#step-3-2-settingsitem-kt)
-    * [Step 3.3 - SettingsFragmentPresenter.kt](#step-3-3-settingsfragmentpresenter-kt)
-    * [Step 3.4 - Localization](#step-3-4-localization)
+    * [Step 3.1 - BooleanSetting.kt](#step-31-booleansettingkt)
+    * [Step 3.2 - SettingsItem.kt](#step-32-settingsitemkt)
+    * [Step 3.3 - SettingsFragmentPresenter.kt](#step-33-settingsfragmentpresenterkt)
+    * [Step 3.4 - Localization](#step-34-localization)
   * [Step 4 - Use Your Toggle](#step-4-use-your-toggle)
   * [Best Practices](#best-practices)
 
@@ -38,7 +38,7 @@ This guide will walk you through adding a new boolean toggle setting to Eden's c
 
 ---
 
-### Step 1 - Common Setting
+### Step 1: Common Setting
 
 Firstly add your desired toggle:
 
@@ -63,7 +63,7 @@ Common Categories:
 
 ---
 
-### Step 2 - Qt Toggle
+### Step 2: Qt Toggle
 
 Add the toggle to the Qt UI, where you wish for it to appear and place it there.
 
@@ -86,9 +86,9 @@ INSERT(Settings,
 
 ---
 
-### Step 3 - Kotlin (Android)
+### Step 3: Kotlin (Android)
 
-#### Step 3.1 - BooleanSetting.kt
+#### Step 3.1: BooleanSetting.kt
 
 Add where it should be in the settings.
 
@@ -104,7 +104,7 @@ RENDERER_YOUR_SETTING_NAME("your_setting_name"),
 
 ---
 
-#### Step 3.2 - SettingsItem.kt
+#### Step 3.2: SettingsItem.kt
 
 Add the toggle to the Kotlin (Android) UI
 
@@ -122,7 +122,7 @@ put(
 
 ---
 
-#### Step 3.3 - SettingsFragmentPresenter.kt
+#### Step 3.3: SettingsFragmentPresenter.kt
 
 Add your setting within the right category.
 
@@ -137,7 +137,7 @@ add(BooleanSetting.RENDERER_YOUR_SETTING_NAME.key)
 
 ---
 
-#### Step 3.4 - Localization
+#### Step 3.4: Localization
 
 Add your setting and description in the appropriate place.
 
@@ -150,7 +150,7 @@ Example: `src/android/app/src/main/res/values/strings.xml`
 
 ---
 
-### Step 4 - Use Your Toggle!
+### Step 4: Use Your Toggle!
 
 Now the UI part is done find a place in the code for the toggle,
 And use it to your heart's desire!

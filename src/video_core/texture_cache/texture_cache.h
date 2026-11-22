@@ -3225,17 +3225,22 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
 
     Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
         *gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
-    if (True(image.flags & ImageFlagBits::Converted)) {
+    const bool converted = True(image.flags & ImageFlagBits::Converted);
+    std::span<u8> unswizzled = mapped_span;
+    if (converted) {
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
-        auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data,
-                                    unswizzle_data_buffer, &unswizzle_worker);
-        ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
-        image.UploadMemory(staging, copies);
-    } else {
-        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data,
-                                          mapped_span, &unswizzle_worker);
-        image.UploadMemory(staging, copies);
+        unswizzled = {unswizzle_data_buffer.data(), unswizzle_data_buffer.size()};
     }
+    auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzled,
+                                &unswizzle_worker);
+    if (copies.empty()) {
+        runtime.TransitionImageLayout(image);
+        return;
+    }
+    if (converted) {
+        ConvertImage(unswizzled, image.info, mapped_span, copies);
+    }
+    image.UploadMemory(staging, copies);
 }
 
 template <class P>
@@ -3514,6 +3519,17 @@ u64 TextureCache<P>::ImageAllocationBytes(const Image& image) const {
 template <class P>
 void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     UNIMPLEMENTED_IF(False(image.flags & ImageFlagBits::Converted));
+
+    std::vector<u8> local_unswizzle_data_buffer(image.unswizzled_size_bytes, 0);
+    Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
+        *gpu_memory, image.gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
+    auto copies = UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, swizzle_data,
+                                local_unswizzle_data_buffer);
+    if (copies.empty()) {
+        runtime.TransitionImageLayout(image);
+        return;
+    }
+
     LOG_DEBUG(HW_GPU, "Queuing async texture decode {:#x}", image.gpu_addr);
 
     image.flags |= ImageFlagBits::IsDecoding;
@@ -3523,9 +3539,6 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     decode->image_id = image_id;
     async_decodes.push_back(std::move(decode));
 
-    std::vector<u8> local_unswizzle_data_buffer(image.unswizzled_size_bytes, 0);
-    Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(*gpu_memory, image.gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
-    auto copies = UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, swizzle_data, local_unswizzle_data_buffer);
     const size_t out_size = MapSizeBytes(image);
     if (False(image.flags & ImageFlagBits::ZeroFilled)) {
         // Until the decode lands (a second or more while title 1 streams ~40 textures a second)

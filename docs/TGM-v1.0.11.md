@@ -31,7 +31,11 @@ calling the filesystem. [Lichii #973](https://github.com/zortos293/Lichii/pull/9
 I've brought across luimu64's documentation corrections and added the Markdown
 link checker. [Fritchii #68](https://github.com/Frizti/Fritchii/pull/68), [#69](https://github.com/Frizti/Fritchii/pull/69), [#71](https://github.com/Frizti/Fritchii/pull/71)
 
-Frame generation remains off. Forest Lantern, handheld and Couch Mode settings,
+I've fixed pitch-linear texture uploads so a buffer that is too short doesn't
+produce a partial upload. This builds on azeselh's bounds fix, brought into
+Lichii by Zortos. [Lichii #2414](https://github.com/zortos293/Lichii/pull/2414), [Eglantine #925](https://github.com/Eglantine-Community/Eglantine/pull/925)
+
+Frame generation is off by default. Forest Lantern, handheld and Couch Mode settings,
 saves and OOT aspect-ratio options are retained.
 
 Shader precompile system by Frizti (Fritchii). Shader precompile recipe by Frizti

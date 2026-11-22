@@ -35,6 +35,7 @@
 #include "video_core/nx2_profile.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
 #include "video_core/textures/upload_snapshot.h"
 
@@ -360,6 +361,47 @@ struct ConstantDiagnosticFixture : DeltaFixture {
     u8* backing{};
     size_t mapping_size;
 };
+
+TEST_CASE("Pitch-linear unswizzle only submits complete regions", "[fast_draw][linear_unswizzle]") {
+    ConstantDiagnosticFixture fixture;
+    VideoCommon::ImageInfo info;
+    info.type = VideoCommon::ImageType::Linear;
+    info.format = VideoCore::Surface::PixelFormat::R8_UNORM;
+    info.size = {6, 3, 1};
+    info.pitch = 8;
+
+    constexpr size_t copy_size = 24;
+    constexpr size_t guard_size = 8;
+    constexpr u8 guard = 0xC7;
+    const std::span source{fixture.backing, copy_size + guard_size};
+    for (size_t i = 0; i < source.size(); ++i) {
+        source[i] = static_cast<u8>(i * 7 + 3);
+    }
+
+    std::array<u8, copy_size + guard_size> output;
+    output.fill(guard);
+    SECTION("Allow full regions and preserve the destination tail") {
+        const size_t input_size = GENERATE(24, 32);
+        const auto copies = VideoCommon::UnswizzleImage(fixture.memory, fixture.Gpu, info,
+                                                       source.first(input_size), output);
+        REQUIRE(copies.size() == 1);
+        CHECK(copies.front().buffer_size == copy_size);
+        CHECK(copies.front().buffer_row_length == info.pitch);
+        CHECK(copies.front().image_extent == info.size);
+        CHECK(std::ranges::equal(source.first(copy_size), std::span{output}.first(copy_size)));
+        CHECK(std::ranges::all_of(std::span{output}.last(guard_size),
+                                 [](u8 byte) { return byte == guard; }));
+    }
+    SECTION("Reject short spans before touching destination bytes") {
+        const auto sizes = GENERATE(std::pair{0, 24}, std::pair{23, 24}, std::pair{24, 0},
+                                    std::pair{24, 23});
+        const auto copies =
+            VideoCommon::UnswizzleImage(fixture.memory, fixture.Gpu, info, source.first(sizes.first),
+                                        std::span{output}.first(sizes.second));
+        CHECK(copies.empty());
+        CHECK(std::ranges::all_of(output, [](u8 byte) { return byte == guard; }));
+    }
+}
 
 TEST_CASE("Inline uploads select the address space's native GOB layout", "[fast_draw][native_tiling]") {
     const bool native = GENERATE(false, true);

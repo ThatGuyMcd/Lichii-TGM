@@ -948,11 +948,14 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
     Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
     std::span<const u8> input, std::span<u8> output, Tegra::Texture::UnswizzleWorker* worker) {
     if (info.type == ImageType::Linear) {
-        ASSERT(output.size_bytes() >= input.size_bytes());
-        gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), input.size_bytes());
-        auto copies = UnswizzleImageImpl(info, {}, {}, false, nullptr, true);
-        copies.front().buffer_size = input.size_bytes();
-        return copies;
+        const u64 copy_size =
+            u64{info.pitch} * Common::DivCeil(info.size.height, DefaultBlockHeight(info.format));
+        if (copy_size == 0 || copy_size > input.size_bytes() || copy_size > output.size_bytes()) {
+            // The renderer reads the full region using its extent and row pitch.
+            return {};
+        }
+        gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), static_cast<size_t>(copy_size));
+        return UnswizzleImageImpl(info, {}, {}, false, nullptr, true);
     }
     return UnswizzleImageImpl(info, input, output, gpu_memory.UsesNativeTiling(), worker, false);
 }

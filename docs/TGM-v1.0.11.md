@@ -169,5 +169,24 @@ queues, storage pointer tracking and Apple power queries.
 [#2398](https://github.com/zortos293/Lichii/pull/2398),
 [Fritchii #46](https://github.com/Frizti/Fritchii/pull/46)
 
+## Further upstream fixes
+
+I've brought across more bindless image loads, stores and atomics for Switch 2
+shaders. I've also reduced descriptor work for texture tables indexed by a
+bit search that is guaranteed to find a set bit. Tables with an unrestricted
+reader keep their existing range.
+[Lichii #2093](https://github.com/zortos293/Lichii/pull/2093),
+[#1914](https://github.com/zortos293/Lichii/pull/1914)
+
+I've deferred the directory scan for content archives until the emulator needs
+the files, while keeping archive validation and update overlays working as
+before. Small GPU command submissions now use inline input storage and keep
+the existing command snapshot behaviour. Joy-Con polling now installs its
+callbacks and publishes the initial battery level before the first report.
+[Lichii #1784](https://github.com/zortos293/Lichii/pull/1784),
+[#2312](https://github.com/zortos293/Lichii/pull/2312),
+[#2225](https://github.com/zortos293/Lichii/pull/2225),
+[Fritchii GPU submission work](https://github.com/Frizti/Fritchii/commit/8799a851451c244ff5f62802416b27583ec1e705)
+
 Shader precompile system by Frizti (Fritchii). Shader precompile recipe by Frizti
 (Fritchii), included with redistribution permission and its original notice.

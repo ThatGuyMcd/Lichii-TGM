@@ -1455,7 +1455,7 @@ bool TextureCache<P>::RescaleRenderTargets() {
             }
             check_rescale(color_buffer_id, tmp_color_images[index]);
         }
-        if (flags[Dirty::ZetaBuffer] || force) {
+        if (flags[Dirty::ZetaBuffer] || force || depth_target_padded) {
             flags[Dirty::ZetaBuffer] = false;
             BindRenderTarget(&render_targets.depth_buffer_id, FindDepthBuffer());
         }
@@ -1539,6 +1539,7 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
         }
     } clearing_scope{clearing_render_targets};
     clearing_render_targets = is_clear;
+    InvalidatePaddedDepthTargetForResolution();
     auto& flags = maxwell3d->dirty.flags;
     if (!flags[Dirty::RenderTargets]) {
         for (size_t index = 0; index < NUM_RT; ++index) {
@@ -4331,6 +4332,7 @@ ImageViewId TextureCache<P>::FindColorBuffer(size_t index) {
 template <class P>
 ImageViewId TextureCache<P>::FindDepthBuffer() {
     const auto& regs = maxwell3d->regs;
+    depth_target_padded = false;
     if (!regs.zeta_enable) {
         return ImageViewId{};
     }
@@ -4338,8 +4340,86 @@ ImageViewId TextureCache<P>::FindDepthBuffer() {
     if (gpu_addr == 0) {
         return ImageViewId{};
     }
-    const ImageInfo info(regs.zeta, regs.zeta_size, regs.anti_alias_samples_mode);
+    ImageInfo info(regs.zeta, regs.zeta_size, regs.anti_alias_samples_mode);
+    info = NarrowPaddedDepthTarget(info, gpu_addr);
     return FindRenderTargetView(info, gpu_addr);
+}
+
+template <class P>
+void TextureCache<P>::InvalidatePaddedDepthTargetForResolution() {
+    if (!depth_target_padded) {
+        return;
+    }
+    const auto& resolution = Settings::values.resolution_info;
+    const u64 current = (u64{resolution.up_scale} << 32) | resolution.down_shift;
+    if (padded_depth_resolution != current) {
+        maxwell3d->dirty.flags[Dirty::RenderTargets] = true;
+    }
+}
+
+template <class P>
+ImageInfo TextureCache<P>::NarrowPaddedDepthTarget(const ImageInfo& info, GPUVAddr gpu_addr) {
+    const auto& resolution = Settings::values.resolution_info;
+    padded_depth_resolution = (u64{resolution.up_scale} << 32) | resolution.down_shift;
+    // D32 shadow targets can describe GOB padding as texels, then sample the square.
+    // Keep the existing ownership path for other formats, layers and scaling modes.
+    if (info.type != ImageType::e2D || info.format != PixelFormat::D32_FLOAT ||
+        info.resources.levels != 1 || info.resources.layers != 1 || info.num_samples != 1 ||
+        info.size.depth != 1 || info.size.height == 0 || info.size.width > 32768 ||
+        info.size.width <= info.size.height || info.block.width != 0 || info.block.height > 5 ||
+        info.block.depth != 0 ||
+        info.is_sparse) {
+        return info;
+    }
+    ImageInfo square = info;
+    square.size.width = info.size.height;
+    const u32 bytes = CalculateGuestSizeInBytes(info);
+    if (bytes == 0) {
+        return info;
+    }
+    depth_target_padded = IsBlockLinearSizeCompatible(info, square, 0, 0, false) &&
+                          bytes == CalculateGuestSizeInBytes(square);
+    const auto& clip = maxwell3d->regs.surface_clip;
+    if (!depth_target_padded || clip.x != 0 || clip.width == 0 ||
+        clip.width > info.size.height || clip.y != 0 || clip.height == 0 ||
+        clip.height > info.size.height || padded_depth_resolution != (u64{1} << 32)) {
+        return info;
+    }
+    const auto cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+    constexpr u64 device_limit = u64{1} << Tegra::MaxwellDeviceMemoryManager::AS_BITS;
+    if (!cpu_addr || *cpu_addr >= device_limit || bytes > device_limit - *cpu_addr ||
+        !gpu_memory->IsContinuousRange(gpu_addr, bytes)) {
+        return info;
+    }
+    bool compatible = true;
+    const auto inspect = [&](ImageId, ImageBase& image) {
+        constexpr auto excluded = ImageFlagBits::Sparse | ImageFlagBits::Remapped |
+                                  ImageFlagBits::Rescaled | ImageFlagBits::Converted |
+                                  ImageFlagBits::Unbacked | ImageFlagBits::TrimmedLevels |
+                                  ImageFlagBits::IsDecoding | ImageFlagBits::AsynchronousDecode |
+                                  ImageFlagBits::SparseLayers | ImageFlagBits::SparseTiles |
+                                  ImageFlagBits::UnwrittenSparse | ImageFlagBits::BadOverlap |
+                                  ImageFlagBits::Alias;
+        const auto& other = image.info;
+        // A wider existing image can own live padding. Never crop or replace it here.
+        compatible = compatible && image.address_space == current_address_space &&
+                     image.gpu_addr == gpu_addr && image.cpu_addr == *cpu_addr &&
+                     image.guest_size_bytes == bytes && False(image.flags & excluded) &&
+                     image.aliased_images.empty() && image.overlapping_images.empty() &&
+                     other.type == square.type && other.format == square.format &&
+                     other.size == square.size && other.block == square.block &&
+                     other.resources == square.resources && other.num_samples == 1 &&
+                     !other.is_sparse &&
+                     other.layer_stride == square.layer_stride &&
+                     other.tile_width_spacing == square.tile_width_spacing &&
+                     other.native_tiling == square.native_tiling;
+        return !compatible;
+    };
+    ForEachImageInRegion(*cpu_addr, bytes, inspect);
+    if (compatible) {
+        ForEachImageInRegionGPU(current_address_space, gpu_addr, bytes, inspect);
+    }
+    return compatible ? square : info;
 }
 
 template <class P>

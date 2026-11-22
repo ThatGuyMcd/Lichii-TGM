@@ -11,6 +11,8 @@
 #include "tests/core/system_test_context.h"
 #include "tests/video_core/null_rasterizer.h"
 #include "video_core/texture_cache/texture_cache.h"
+#include "video_core/textures/decoders.h"
+#include "padded_depth_presence.inc"
 
 namespace {
 struct Runtime {
@@ -24,6 +26,8 @@ struct Runtime {
     size_t freed = 0;
     size_t feedback_barriers = 0;
     bool capped_share = false;
+    bool HasBrokenTextureViewFormats() const { return false; }
+    bool HasNativeBgr() const { return false; }
     u64 heap_budget = 0;
     size_t heap_reads = 0;
     u32 FailedImages() const { return failures; }
@@ -44,12 +48,16 @@ struct Runtime {
 };
 struct Image : VideoCommon::ImageBase {
     using ImageBase::ImageBase;
+    std::vector<u32> payload;
     template <typename Copies>
     void DownloadMemory(const Runtime::Download&, const Copies&) {}
 };
-struct ImageView {
-    ImageView(Runtime&, VideoCommon::NullImageViewParams) {}
-    VideoCommon::ImageId image_id{};
+struct ImageView : VideoCommon::ImageViewBase {
+    ImageView(Runtime&, VideoCommon::NullImageViewParams params) : ImageViewBase(params) {}
+    template <typename Images>
+    ImageView(Runtime&, const VideoCommon::ImageViewInfo& info, VideoCommon::ImageId id,
+              const Image& image, Images&)
+        : ImageViewBase(info, image.info, id, image.gpu_addr) {}
 };
 struct Sampler {
     Sampler(Runtime&, const Tegra::Texture::TSCEntry&) {}
@@ -79,6 +87,92 @@ using Cache = VideoCommon::TextureCache<Params>;
 
 namespace VideoCommon {
 struct TextureCacheTestAccess {
+    using Maxwell3D = Tegra::Engines::Maxwell3D;
+    static ImageInfo ConfigureDepth(Cache& cache, Core::System& system, u32 width, u32 height) {
+        using Maxwell = Tegra::Engines::Maxwell3D;
+        VideoCommon::Dirty::SetupDirtyFlags(cache.maxwell3d->dirty.tables);
+        auto& regs = cache.maxwell3d->regs;
+        regs.zeta_enable = 1;
+        regs.zeta.address_low = 0x200000;
+        regs.zeta.address_high = 0;
+        regs.zeta.format = Tegra::DepthFormat::Z32_FLOAT;
+        regs.reg_array[MAXWELL3D_REG_INDEX(zeta.tile_mode)] = 0;
+        regs.zeta.tile_mode.block_height.Assign(4);
+        regs.zeta_size.width = width;
+        regs.zeta_size.height = height;
+        regs.zeta_size.depth.Assign(1);
+        regs.zeta_size.dim_control.Assign(Maxwell::Regs::ZetaSize::DimensionControl::ArraySizeIsOne);
+        regs.anti_alias_samples_mode = Tegra::Texture::MsaaMode::Msaa1x1;
+        Clip(cache, system, height, height);
+        return ImageInfo(regs.zeta, regs.zeta_size, regs.anti_alias_samples_mode);
+    }
+    static void Clip(Cache& cache, Core::System& system, u32 width, u32 height) {
+        cache.maxwell3d->CallMethod(system, MAXWELL3D_REG_INDEX(surface_clip), width << 16, true);
+        cache.maxwell3d->CallMethod(system, MAXWELL3D_REG_INDEX(surface_clip) + 1, height << 16, true);
+    }
+    static auto& Flags(Cache& cache) { return cache.maxwell3d->dirty.flags; }
+    static ImageId RegisterDepth(Cache& cache, const ImageInfo& info, GPUVAddr gpu = 0x200000,
+                                  DAddr cpu = 0x400000) {
+        const auto id = cache.slot_images.insert(info, gpu, cpu);
+        auto& image = cache.slot_images[id];
+        image.flags |= ImageFlagBits::Strong;
+        image.payload.resize(static_cast<size_t>(info.size.width) * info.size.height, 0xdecafbad);
+        cache.RegisterImage(id);
+        return id;
+    }
+    static Image& Get(Cache& cache, ImageId id) { return cache.slot_images[id]; }
+    static ImageId Find(Cache& cache, const ImageInfo& info) {
+        return cache.FindImage(info, 0x200000, RelaxedOptions{});
+    }
+    static ImageViewId DepthLookup(Cache& cache, std::optional<ImageInfo>& requested,
+                                   bool allocate = true) {
+        auto* maxwell3d = cache.maxwell3d;
+#if HAS_PADDED_DEPTH_GATE
+        auto& depth_target_padded = cache.depth_target_padded;
+        const auto NarrowPaddedDepthTarget = [&](const ImageInfo& info, GPUVAddr gpu) {
+            return cache.NarrowPaddedDepthTarget(info, gpu);
+        };
+#endif
+        const auto FindRenderTargetView = [&](const ImageInfo& info, GPUVAddr gpu) {
+            requested = info;
+            if (!allocate) return ImageViewId{};
+            auto image = cache.FindImage(info, gpu, RelaxedOptions{});
+            if (!image) image = RegisterDepth(cache, info, gpu);
+            const ImageViewInfo view{ImageViewType::e2D, info.format,
+                                     SubresourceRange{{0, 0}, {1, 1}}};
+            return cache.FindOrEmplaceImageView(image, view);
+        };
+#include "padded_depth_lookup.inc"
+    }
+    static std::optional<ImageInfo> RefreshDepth(Cache& cache, bool force = false) {
+        using namespace VideoCommon::Dirty;
+#if HAS_PADDED_DEPTH_GATE
+        const auto InvalidatePaddedDepthTargetForResolution = [&] {
+            cache.InvalidatePaddedDepthTargetForResolution();
+        };
+#endif
+#include "padded_depth_invalidation.inc"
+        auto& flags = cache.maxwell3d->dirty.flags;
+        if (!flags[Dirty::RenderTargets] && !force) return std::nullopt;
+        auto& render_targets = cache.render_targets;
+#if HAS_PADDED_DEPTH_GATE
+        const auto depth_target_padded = cache.depth_target_padded;
+#endif
+        std::optional<ImageInfo> requested;
+        const auto FindDepthBuffer = [&] { return DepthLookup(cache, requested); };
+        const auto BindRenderTarget = [&](ImageViewId* old, ImageViewId next) {
+            cache.BindRenderTarget(old, next);
+        };
+#include "padded_depth_refresh.inc"
+        return requested;
+    }
+    static ImageId BoundDepth(Cache& cache) {
+        return cache.slot_image_views[cache.render_targets.depth_buffer_id].image_id;
+    }
+    static auto& DepthRegs(Cache& cache) { return cache.maxwell3d->regs; }
+    static Extent3D BoundDepthSize(Cache& cache) {
+        return cache.slot_image_views[cache.render_targets.depth_buffer_id].size;
+    }
     static ImageViewId View(Cache& cache, ImageId image) {
         const auto id = cache.slot_image_views.insert(cache.runtime, NullImageViewParams{});
         cache.slot_image_views[id].image_id = image;
@@ -440,4 +534,192 @@ TEST_CASE("Sparse texture visitors skip invalid translations and retain stop sem
     visited.clear();
     Access::SparseSegments(cache, image, record);
     CHECK(visited.empty());
+}
+
+namespace {
+struct PaddedDepthFixture {
+    ScopedSystemTestContext context;
+    Core::System system;
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device{physical};
+    VideoCore::Test::NullRasterizer rasterizer;
+    Runtime runtime;
+    std::unique_ptr<Tegra::MemoryManager> memory;
+    Tegra::Control::ChannelState channel{0};
+    std::unique_ptr<Cache> cache;
+    const Settings::ResolutionScalingInfo saved_resolution = Settings::values.resolution_info;
+    PaddedDepthFixture() {
+        system.Initialize();
+        Settings::values.resolution_info.up_scale = 1;
+        Settings::values.resolution_info.down_shift = 0;
+        memory = std::make_unique<Tegra::MemoryManager>(system, device, 32, 1ULL << 31, 16);
+        memory->BindRasterizer(&rasterizer);
+        memory->Map(0x200000, 0x400000, 0x400000, Tegra::PTEKind::INVALID, false);
+        channel.memory_manager = memory.get();
+        channel.payload.emplace(system, *memory, channel);
+        cache = std::make_unique<Cache>(runtime, device);
+        cache->CreateChannel(channel);
+        cache->BindToChannel(channel.bind_id);
+    }
+    ~PaddedDepthFixture() { Settings::values.resolution_info = saved_resolution; }
+};
+}
+
+TEST_CASE("Padded depth lookup reuses the square image and follows clip dirty writes",
+          "[video_core][padded_depth_cache]") {
+    using Access = VideoCommon::TextureCacheTestAccess;
+    PaddedDepthFixture f;
+    auto& cache = *f.cache;
+    const auto wide = Access::ConfigureDepth(cache, f.system, 800, 793);
+    const auto first = Access::RefreshDepth(cache, true);
+    REQUIRE(first);
+    REQUIRE(first->size.width == 793);
+    CHECK(VideoCommon::CalculateGuestSizeInBytes(*first) == VideoCommon::CalculateGuestSizeInBytes(wide));
+    const auto square_id = Access::BoundDepth(cache);
+    CHECK(Access::BoundDepthSize(cache).width == 793);
+    CHECK(Access::Find(cache, *first) == square_id);
+    CHECK_FALSE(Access::RefreshDepth(cache));
+    auto& square = Access::Get(cache, square_id);
+    square.flags |= VideoCommon::ImageFlagBits::GpuModified;
+    square.payload.assign(square.payload.size(), 0x12345678);
+    const auto square_payload = square.payload;
+
+    // A later wider owner can contain live padding. Do not replace or narrow it.
+    // Allocation/driver upload is a boundary here; registration and lookups are real.
+    const auto wide_id = Access::RegisterDepth(cache, wide);
+    auto& wider = Access::Get(cache, wide_id);
+    wider.flags |= VideoCommon::ImageFlagBits::GpuModified;
+    for (size_t i = 0; i < wider.payload.size(); ++i) wider.payload[i] = u32(i ^ 0x8badf00d);
+    const auto wider_payload = wider.payload;
+    Access::Flags(cache).reset();
+    Access::Clip(cache, f.system, 800, 793);
+    CHECK(Access::Flags(cache)[VideoCommon::Dirty::RenderTargets]);
+    CHECK_FALSE(Access::Flags(cache)[VideoCommon::Dirty::ZetaBuffer]);
+    const auto expanded = Access::RefreshDepth(cache);
+    REQUIRE(expanded);
+    CHECK(expanded->size.width == 800);
+    CHECK(Access::BoundDepth(cache) == wide_id);
+    Access::Flags(cache).reset();
+    Access::Clip(cache, f.system, 793, 793);
+    const auto returned = Access::RefreshDepth(cache);
+    REQUIRE(returned);
+    CHECK(returned->size.width == 800);
+    CHECK(Access::BoundDepth(cache) == wide_id);
+    CHECK(Access::Get(cache, wide_id).payload == wider_payload);
+    CHECK(Access::Get(cache, square_id).payload == square_payload);
+    CHECK(True(Access::Get(cache, wide_id).flags & VideoCommon::ImageFlagBits::Registered));
+    CHECK(False(Access::Get(cache, wide_id).flags & VideoCommon::ImageFlagBits::Picked));
+}
+
+TEST_CASE("Padded depth resolution changes invalidate an otherwise clean binding",
+          "[video_core][padded_depth_cache]") {
+    using Access = VideoCommon::TextureCacheTestAccess;
+    PaddedDepthFixture f;
+    auto& cache = *f.cache;
+    Access::ConfigureDepth(cache, f.system, 800, 793);
+    REQUIRE(Access::RefreshDepth(cache, true));
+    Access::Flags(cache).reset();
+    Settings::values.resolution_info.up_scale = 2;
+    const auto scaled = Access::RefreshDepth(cache);
+    REQUIRE(scaled);
+    CHECK(scaled->size.width == 800);
+    CHECK_FALSE(Access::RefreshDepth(cache));
+    Settings::values.resolution_info.up_scale = 1;
+    const auto restored = Access::RefreshDepth(cache);
+    REQUIRE(restored);
+    CHECK(restored->size.width == 800); // The new wider owner remains authoritative.
+    CHECK_FALSE(Access::RefreshDepth(cache));
+}
+
+TEST_CASE("Padded depth size overflow and device-range overflow are rejected before allocation",
+          "[video_core][padded_depth_cache]") {
+    using Access = VideoCommon::TextureCacheTestAccess;
+    PaddedDepthFixture f;
+    auto& cache = *f.cache;
+    const auto huge = Access::ConfigureDepth(cache, f.system, 32768, 32767);
+    REQUIRE(VideoCommon::CalculateGuestSizeInBytes(huge) == 0);
+    std::optional<VideoCommon::ImageInfo> request;
+    Access::DepthLookup(cache, request, false);
+    REQUIRE(request);
+    CHECK(request->size.width == 32768);
+    Access::ConfigureDepth(cache, f.system, 800, 793);
+    f.memory->Unmap(0x200000, 0x400000);
+    constexpr DAddr limit = DAddr{1} << Tegra::MaxwellDeviceMemoryManager::AS_BITS;
+    f.memory->Map(0x200000, limit - 0x10000, 0x400000, Tegra::PTEKind::INVALID, false);
+    Access::DepthLookup(cache, request, false);
+    REQUIRE(request);
+    CHECK(request->size.width == 800);
+}
+
+TEST_CASE("Padded depth ownership gate preserves incompatible existing images",
+          "[video_core][padded_depth_cache]") {
+    using Access = VideoCommon::TextureCacheTestAccess;
+    using VideoCommon::ImageFlagBits;
+    const auto mode = GENERATE(0, 1, 2, 3, 4, 5);
+    PaddedDepthFixture f;
+    auto& cache = *f.cache;
+    const auto wide = Access::ConfigureDepth(cache, f.system, 800, 793);
+    auto existing = wide;
+    if (mode != 0) existing.size.width = 793;
+    const auto image_id = Access::RegisterDepth(cache, existing, mode == 1 ? 0x800000 : 0x200000);
+    auto& image = Access::Get(cache, image_id);
+    image.flags |= ImageFlagBits::GpuModified;
+    if (mode == 2) image.flags |= ImageFlagBits::Remapped;
+    if (mode == 3) image.flags |= ImageFlagBits::Sparse;
+    if (mode == 4) image.flags |= ImageFlagBits::Rescaled;
+    if (mode == 5) image.address_space += 100;
+    const auto flags = image.flags;
+    const auto payload = image.payload;
+    const auto request = Access::RefreshDepth(cache, true);
+    REQUIRE(request);
+    CHECK(request->size.width == 800);
+    CHECK(Access::Get(cache, image_id).flags == flags);
+    CHECK(Access::Get(cache, image_id).payload == payload);
+}
+
+TEST_CASE("Padded depth exclusions retain descriptor extent",
+          "[video_core][padded_depth_cache]") {
+    using Access = VideoCommon::TextureCacheTestAccess;
+    const auto mode = GENERATE(0, 1, 2, 3, 4, 5, 6);
+    PaddedDepthFixture f;
+    auto& cache = *f.cache;
+    Access::ConfigureDepth(cache, f.system, 800, 793);
+    auto& regs = Access::DepthRegs(cache);
+    if (mode == 0) regs.zeta.format = Tegra::DepthFormat::Z24_UNORM_S8_UINT;
+    if (mode == 1) regs.anti_alias_samples_mode = Tegra::Texture::MsaaMode::Msaa2x2;
+    if (mode == 2) {
+        regs.zeta_size.dim_control.Assign(Tegra::Engines::Maxwell3D::Regs::ZetaSize::DimensionControl::DefineArraySize);
+        regs.zeta_size.depth.Assign(2);
+        regs.zeta.array_pitch = 0x100000;
+    }
+    if (mode == 3) regs.zeta.tile_mode.is_pitch_linear.Assign(1);
+    if (mode == 4) Settings::values.resolution_info.up_scale = 2;
+    if (mode == 5) Access::Clip(cache, f.system, 0, 793);
+    if (mode == 6) f.memory->Unmap(0x210000, 0x10000);
+    const auto request = Access::RefreshDepth(cache, true);
+    REQUIRE(request);
+    CHECK(request->size.width == 800);
+}
+
+TEST_CASE("Square D32 swizzle writes preserve padded guest columns",
+          "[video_core][padded_depth_cache]") {
+    const bool native = GENERATE(false, true);
+    constexpr u32 width = 800, height = 793;
+    std::vector<u32> initial(width * height);
+    for (u32 y = 0; y < height; ++y)
+        for (u32 x = 0; x < width; ++x) initial[y * width + x] = (y << 16) | x;
+    std::vector<u8> guest(Tegra::Texture::CalculateSize(true, 4, width, height, 1, 4, 0), 0x5b);
+    const auto bytes = [](const auto& v) { return std::span<const u8>(reinterpret_cast<const u8*>(v.data()), v.size() * sizeof(v[0])); };
+    Tegra::Texture::SwizzleTexture(guest, bytes(initial), 4, width, height, 1, 4, 0, 1, native);
+    std::vector<u32> square(height * height, 0x13579bdf);
+    Tegra::Texture::SwizzleTexture(guest, bytes(square), 4, height, height, 1, 4, 0, 1, native);
+    std::vector<u32> result(width * height);
+    Tegra::Texture::UnswizzleTexture(std::span<u8>(reinterpret_cast<u8*>(result.data()), result.size() * 4),
+                                    guest, 4, width, height, 1, 4, 0, 1, native);
+    for (u32 y = 0; y < height; ++y) {
+        REQUIRE(std::all_of(result.begin() + y * width, result.begin() + y * width + height,
+                            [](u32 v) { return v == 0x13579bdf; }));
+        REQUIRE(std::equal(result.begin() + y * width + height, result.begin() + (y + 1) * width,
+                           initial.begin() + y * width + height));
+    }
 }

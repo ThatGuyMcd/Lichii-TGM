@@ -607,6 +607,9 @@ private:
     /// Find or create an image view for the depth buffer
     [[nodiscard]] ImageViewId FindDepthBuffer();
 
+    [[nodiscard]] ImageInfo NarrowPaddedDepthTarget(const ImageInfo& info, GPUVAddr gpu_addr);
+    void InvalidatePaddedDepthTargetForResolution();
+
     /// Find or create a view for a render target with the given image parameters
     [[nodiscard]] ImageViewId FindRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr);
 
@@ -762,6 +765,9 @@ private:
     /// skip the upload of a new target the clear overwrites whole.
     bool clearing_render_targets = false;
     bool is_rescaling = false;
+    // A padded descriptor must be reconsidered when the surface clip changes.
+    bool depth_target_padded = false;
+    u64 padded_depth_resolution = 0;
     u64 total_used_memory = 0;
     u64 minimum_memory;
     u64 expected_memory;

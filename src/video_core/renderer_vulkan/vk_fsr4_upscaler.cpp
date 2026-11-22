@@ -238,10 +238,18 @@ void Fsr4Upscaler::DestroyContext() {
 
 bool Fsr4Upscaler::CreateContext(VkExtent2D render_size, VkExtent2D upscale_size) {
     DestroyContext();
-    ffxCreateBackendVKDesc backend{};
-    backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
-    backend.header.pNext = nullptr;
-    backend.deviceContext = DeviceContext(device);
+    const auto device_context = DeviceContext(device);
+#if defined(__linux__) && !defined(__ANDROID__)
+    // The bundled fsr4-vk provider looks for the legacy backend descriptor.
+    ffxCreateBackendVKDesc_DEPRECATED backend{
+        {FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED, nullptr},
+        device_context.vkDevice, device_context.vkPhysicalDevice, device_context.vkDeviceProcAddr,
+    };
+#else
+    ffxCreateBackendVKDesc backend{
+        {FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK, nullptr}, device_context,
+    };
+#endif
     ffxOverrideVersion version_override{};
     version_override.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
     version_override.header.pNext = &backend.header;

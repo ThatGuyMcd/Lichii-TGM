@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "core/crypto/key_manager.h"
 #include "common/hex_util.h"
@@ -676,6 +677,99 @@ TEST_CASE("NCA rejects a hash region larger than the file behind an indirect lay
     sha.hash_layer_region[0].size = s64{1} << 36;
     sha.hash_layer_region[1].offset = s64{1} << 37;
     REQUIRE(nca.Open() == ResultNcaBaseStorageOutOfRangeC);
+}
+
+TEST_CASE("NCA metadata leaves partition payloads unread until they are queried",
+          "[core][file_sys][nca_lazy]") {
+    constexpr u64 ProgramId = 0x1000;
+    constexpr u32 LaterExeFsSector = 0x24;
+    constexpr u32 LogoSector = 0x84;
+    auto bytes = MakeDiscoveryNca(
+        ProgramId, NcaHeader::ContentType::Program,
+        MakePfs0WithFiles({{"main", {0x21}}, {"main.npdm", {}}}));
+    NcaHeader header{};
+    NcaFsHeader partition_header{};
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    std::memcpy(&partition_header, bytes.data() + sizeof(header), sizeof(partition_header));
+    const auto add_partition = [&](size_t index, u32 sector, const std::vector<u8>& partition) {
+        header.fs_info[index].start_sector = sector;
+        header.fs_info[index].end_sector = sector + 1;
+        Put(bytes, sizeof(header) + index * sizeof(partition_header), partition_header);
+        bytes.resize(size_t{sector + 1} * 0x200);
+        std::ranges::copy(partition, bytes.begin() + size_t{sector} * 0x200);
+    };
+    add_partition(1, LaterExeFsSector, MakePfs0WithFiles({{"main", {0x42}}, {"main.npdm", {}}}));
+    add_partition(2, LogoSector,
+                  MakePfs0WithFiles({{"NintendoLogo.png", {0x71}}, {"StartupMovie.gif", {}}}));
+    const bool bad_storage = GENERATE(false, true);
+    if (bad_storage) {
+        header.fs_info[2].end_sector = LogoSector + 2;
+    }
+    Put(bytes, 0, header);
+
+    class ReadTracker final : public VectorVfsFile {
+    public:
+        explicit ReadTracker(std::vector<u8> input) : VectorVfsFile(std::move(input)) {}
+        size_t Read(u8* out, size_t length, size_t offset) const override {
+            ++reads;
+            last_byte = std::max(last_byte, offset + length);
+            return VectorVfsFile::Read(out, length, offset);
+        }
+        mutable size_t reads{};
+        mutable size_t last_byte{};
+    };
+    const auto backing = std::make_shared<ReadTracker>(std::move(bytes));
+    const NCA nca{backing};
+    CHECK(nca.GetType() == NCAContentType::Program);
+    CHECK(nca.GetTitleId() == ProgramId);
+    CHECK(backing->last_byte <= 0xC00);
+    if (bad_storage) {
+        CHECK(nca.GetStatus() == Loader::ResultStatus::ErrorBadNCAHeader);
+        CHECK(nca.GetSubdirectories().empty());
+        CHECK(nca.GetLogoPartition() == nullptr);
+        return;
+    }
+    CHECK(nca.GetStatus() == Loader::ResultStatus::Success);
+    REQUIRE(nca.GetExeFS() != nullptr);
+    CHECK(nca.GetExeFS()->GetFile("main")->ReadByte(0) == 0x42);
+    CHECK(backing->last_byte > size_t{LaterExeFsSector} * 0x200);
+    const auto read_count = backing->reads;
+    const auto dirs = nca.GetSubdirectories();
+    REQUIRE(dirs.size() == 3);
+    CHECK(nca.GetExeFS() == dirs[1]);
+    CHECK(nca.GetLogoPartition() == dirs[2]);
+    CHECK(backing->reads == read_count);
+    CHECK(dirs[0]->GetFile("main")->ReadByte(0) == 0x21);
+    CHECK(dirs[2]->GetFile("NintendoLogo.png")->ReadByte(0) == 0x71);
+}
+
+TEST_CASE("NCA lazy partition retains indirect base storage",
+          "[core][file_sys][nca_lazy]") {
+    const auto partition = MakePfs0WithFiles({{"main", {0x83}}, {"main.npdm", {}}});
+    auto base = std::make_unique<NCA>(
+        MakeFile(MakeDiscoveryNca(1, NcaHeader::ContentType::Program, partition)));
+    REQUIRE(base->GetStatus() == Loader::ResultStatus::Success);
+
+    auto overlay = MakeIndirectNca(0x200);
+    overlay.header.magic = NcaHeader::MagicDecrypted;
+    overlay.fs.fs_type = NcaFsHeader::FsType::PartitionFs;
+    overlay.fs.hash_type = NcaFsHeader::HashType::None;
+    // Map the overlay's first sector to the original NCA's first partition.
+    Put(overlay.section, 0xC000 + sizeof(BucketTree::NodeHeader), IndirectStorage::Entry{});
+    std::vector<u8> bytes(0xC00);
+    Put(bytes, 0, overlay.header);
+    Put(bytes, sizeof(overlay.header), overlay.fs);
+    bytes.insert(bytes.end(), overlay.section.begin(), overlay.section.end());
+    auto patched = std::make_unique<NCA>(MakeFile(std::move(bytes)), base.get());
+    REQUIRE(patched->GetStatus() == Loader::ResultStatus::Success);
+    base.reset();
+
+    const auto exefs = patched->GetExeFS();
+    REQUIRE(exefs != nullptr);
+    const auto main = exefs->GetFile("main");
+    REQUIRE(main != nullptr);
+    patched.reset();
+    CHECK(main->ReadByte(0) == 0x83);
 }
 
 // A card image whose root HFS0 holds empty partitions with the given names.

@@ -8,6 +8,7 @@
 
 #include <array>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -91,12 +92,16 @@ public:
     VirtualDir GetLogoPartition() const;
 
 private:
-    std::vector<VirtualDir> dirs;
+    void OpenPartitions() const;
+
     std::vector<VirtualFile> files;
+    std::vector<VirtualFile> partition_storages;
+    mutable std::once_flag partitions_opened;
+    mutable std::vector<VirtualDir> dirs;
 
     VirtualFile romfs = nullptr;
-    VirtualDir exefs = nullptr;
-    VirtualDir logo = nullptr;
+    mutable VirtualDir exefs;
+    mutable VirtualDir logo;
     VirtualFile file;
 
     Loader::ResultStatus status{};

@@ -91,31 +91,19 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
 
     const s32 fs_count = reader->GetFsCount();
     NcaFileSystemDriver fs(base_nca ? base_nca->reader : nullptr, reader);
-    std::vector<VirtualFile> filesystems(fs_count);
     for (s32 i = 0; i < fs_count; i++) {
+        VirtualFile storage;
         NcaFsHeaderReader header_reader;
-        if (Result rc = fs.OpenStorage(&filesystems[i], &header_reader, i); R_FAILED(rc)) {
+        if (Result rc = fs.OpenStorage(&storage, &header_reader, i); R_FAILED(rc)) {
             status = Loader::ResultStatus::ErrorBadNCAHeader;
             return;
         }
 
         if (header_reader.GetFsType() == NcaFsHeader::FsType::RomFs) {
-            files.push_back(filesystems[i]);
+            files.push_back(std::move(storage));
             romfs = files.back();
-        }
-
-        if (header_reader.GetFsType() == NcaFsHeader::FsType::PartitionFs) {
-            auto npfs = std::make_shared<PartitionFilesystem>(filesystems[i]);
-            if (npfs->GetStatus() == Loader::ResultStatus::Success) {
-                dirs.push_back(npfs);
-                if (IsDirectoryExeFS(npfs)) {
-                    exefs = dirs.back();
-                } else if (IsDirectoryLogoPartition(npfs)) {
-                    logo = dirs.back();
-                } else {
-                    continue;
-                }
-            }
+        } else if (header_reader.GetFsType() == NcaFsHeader::FsType::PartitionFs) {
+            partition_storages.push_back(std::move(storage));
         }
 
         // Decrypted updates keep their patch tables with encryption type None.
@@ -139,6 +127,30 @@ Loader::ResultStatus NCA::GetStatus() const {
     return status;
 }
 
+void NCA::OpenPartitions() const {
+    // Storage validation is eager. Metadata-only callers can skip parsing the partition payloads.
+    std::call_once(partitions_opened, [this] {
+        std::vector<VirtualDir> opened;
+        VirtualDir program;
+        VirtualDir startup_logo;
+        for (const auto& storage : partition_storages) {
+            auto partition = std::make_shared<PartitionFilesystem>(storage);
+            if (partition->GetStatus() != Loader::ResultStatus::Success) {
+                continue;
+            }
+            if (IsDirectoryExeFS(partition)) {
+                program = partition;
+            } else if (IsDirectoryLogoPartition(partition)) {
+                startup_logo = partition;
+            }
+            opened.push_back(std::move(partition));
+        }
+        dirs = std::move(opened);
+        exefs = std::move(program);
+        logo = std::move(startup_logo);
+    });
+}
+
 std::vector<VirtualFile> NCA::GetFiles() const {
     if (status != Loader::ResultStatus::Success) {
         return {};
@@ -150,6 +162,7 @@ std::vector<VirtualDir> NCA::GetSubdirectories() const {
     if (status != Loader::ResultStatus::Success) {
         return {};
     }
+    OpenPartitions();
     return dirs;
 }
 
@@ -195,6 +208,7 @@ VirtualFile NCA::GetRomFS() const {
 }
 
 VirtualDir NCA::GetExeFS() const {
+    OpenPartitions();
     return exefs;
 }
 
@@ -203,6 +217,7 @@ VirtualFile NCA::GetBaseFile() const {
 }
 
 VirtualDir NCA::GetLogoPartition() const {
+    OpenPartitions();
     return logo;
 }
 

@@ -11,6 +11,10 @@
 
 namespace AudioCore {
 
+u32 GetConfiguredOutputChannelCount() {
+    return Settings::values.sound_index.GetValue() == Settings::AudioMode::Surround ? 6 : 2;
+}
+
 AudioCore::AudioCore(Core::System& system) {
     audio_manager.emplace();
     CreateSinks();

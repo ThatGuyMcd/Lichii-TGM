@@ -7,6 +7,7 @@
 #include <thread>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include "audio_core/audio_core.h"
 #include "audio_core/sink/null_sink.h"
 #include "common/atomic_ops.h"
 #include "common/scope_exit.h"
@@ -19,6 +20,21 @@
 
 using Service::Audio::SysmixOutput;
 using SysmixTests::Context;
+
+TEST_CASE("The existing sound setting selects the Switch 2 output channel count", "[sysmix]") {
+    auto& setting = Settings::values.sound_index;
+    const bool was_global = setting.UsingGlobal();
+    const auto previous = setting.GetValue(true);
+    setting.SetGlobal(true);
+    SCOPE_EXIT { setting.SetValue(previous); setting.SetGlobal(was_global); };
+
+    setting.SetValue(Settings::AudioMode::Stereo);
+    CHECK(AudioCore::GetConfiguredOutputChannelCount() == 2);
+    setting.SetValue(Settings::AudioMode::Surround);
+    CHECK(AudioCore::GetConfiguredOutputChannelCount() == 6);
+    setting.SetValue(Settings::AudioMode::Mono);
+    CHECK(AudioCore::GetConfiguredOutputChannelCount() == 2);
+}
 
 TEST_CASE("No microphone sysmix capture bypasses the host but output still opens",
           "[sysmix][input][no_microphone]") {
@@ -293,6 +309,30 @@ TEST_CASE("sysmix copies the physical extra slot and wrap then publishes consume
     REQUIRE(std::ranges::all_of(std::span{output}.subspan(4), [](s16 value) { return value == 0; }));
     REQUIRE(context.backing[0x5048] == 0);
     REQUIRE(context.backing[0x5fff] == 0);
+}
+
+TEST_CASE("sysmix output purges queued frames across wrap", "[sysmix][output_purge]") {
+    Context context;
+    Cursor(context, 2048, 2);
+    SysmixOutput stream{context.system, *context.process, context.sink, 1, Context::Base,
+                        Context::Size, 0x24};
+    REQUIRE(stream.Open(5, 2, 48000, 2048, 0, 0).IsSuccess());
+
+    u32 purged{};
+    REQUIRE(stream.Purge(1, purged).IsSuccess());
+    CHECK(purged == 1);
+    CHECK(ReadCursor(context) == 0);
+    REQUIRE(stream.Purge(0, purged).IsSuccess());
+    CHECK(purged == 2);
+    CHECK(ReadCursor(context) == 2);
+
+    Sample(context, 2, 0.5f, -0.5f);
+    Cursor(context, 2, 3);
+    REQUIRE(stream.SetEngaged(true).IsSuccess());
+    stream.Pump();
+    CHECK(ReadCursor(context) == 3);
+    CHECK(stream.GetCounters().accepted_frames == 1);
+    CHECK(stream.GetCounters().faults == 0);
 }
 
 TEST_CASE("sysmix plays the Sports Resort Q15 movie ring including wrap and gain", "[sysmix]") {

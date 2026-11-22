@@ -144,6 +144,13 @@ constexpr std::string_view InvalidFixtures[] = {
 
 } // Anonymous namespace
 
+TEST_CASE("A System begins with an empty content provider", "[core][nx]") {
+    Core::System system;
+    CHECK_FALSE(system.GetContentProvider().HasEntry(ApplicationId,
+                                                     FileSys::ContentRecordType::Program));
+    CHECK(system.GetContentProvider().ListEntriesFilter({}, {}, {}).empty());
+}
+
 TEST_CASE("NX: archives are identified by either header slot", "[core][nx]") {
     CHECK(Loader::IdentifyFile(OpenFixture("lichii_synthetic.nx")) == Loader::FileType::NX);
     CHECK(Loader::AppLoader_NX::IdentifyType(OpenFixture("lost_header_page_0.nx")) ==

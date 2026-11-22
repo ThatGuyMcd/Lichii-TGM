@@ -6,6 +6,7 @@
 
 #include <fstream>
 
+#include "audio_core/audio_core.h"
 #include "common/assert.h"
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
@@ -817,6 +818,11 @@ Result ISystemSettingsServer::GetAudioOutputMode(Out<AudioOutputMode> out_output
         LOG_ERROR(Service_SET, "Invalid audio output mode target {}", target);
     }
 
+    if (::Settings::CurrentProgramIsSwitch2()) {
+        *out_output_mode = AudioCore::GetConfiguredOutputChannelCount() == 6
+                               ? AudioOutputMode::ch_5_1
+                               : AudioOutputMode::ch_2;
+    }
     LOG_INFO(Service_SET, "called, target={}, output_mode={}", target, *out_output_mode);
     R_SUCCEED();
 }

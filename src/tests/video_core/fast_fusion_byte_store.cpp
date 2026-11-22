@@ -21,9 +21,20 @@
 namespace {
 using namespace Shader;
 using Ampere::Instruction;
-constexpr Instruction Store{{0x06007b9d, 0x60009917, 0x0010a900, 0x0001e200}};
+constexpr u32 Coordinate = 18;
+constexpr u32 StoreData = 37;
+constexpr u32 DescriptorBank = 5;
+constexpr u32 DescriptorOffset = 0x15c;
+constexpr u32 DescriptorWord = DescriptorOffset / sizeof(u32);
+constexpr u32 Surface2D = 3;
+constexpr Instruction Store{{0x7b9dU | (Coordinate << 24),
+                              StoreData | (DescriptorWord << 8) | (DescriptorBank << 22) |
+                                  (Surface2D << 29),
+                              0x0010a900, 0}};
 constexpr Instruction Exit{{0x794d, 0, 0x03800000, 0}};
-constexpr u64 MaxwellStore{0xeb38099600c70617ULL};
+constexpr u64 MaxwellStore{0xeb20000000000000ULL | (u64{3} << 51) | (u64{DescriptorWord} << 36) |
+                           (u64{Surface2D} << 33) | (u64{1} << 23) | (u64{4} << 20) |
+                           (u64{7} << 16) | (u64{Coordinate} << 8) | StoreData};
 
 class ByteStoreEnvironment final : public Environment {
 public:
@@ -34,15 +45,15 @@ public:
 
     u64 ReadInstruction(u32) override { throw LogicError("Unexpected instruction read"); }
     u32 ReadCbufValue(u32 index, u32 offset) override {
-        REQUIRE(index == 0);
-        REQUIRE(offset == 0x264);
-        return 0x99;
+        REQUIRE(index == DescriptorBank);
+        REQUIRE(offset == DescriptorOffset);
+        return 7;
     }
     TextureType ReadTextureType(u32) override { return type; }
     TexturePixelFormat ReadTexturePixelFormat(u32) override { return format; }
     bool IsTexturePixelFormatInteger(u32) override { return format == TexturePixelFormat::R32_UINT; }
     u32 ReadViewportTransformState() override { return 1; }
-    u32 TextureBoundBuffer() const override { return 0; }
+    u32 TextureBoundBuffer() const override { return DescriptorBank; }
     u32 LocalMemorySize() const override { return 0; }
     u32 SharedMemorySize() const override { return 0; }
     std::array<u32, 3> WorkgroupSize() const override { return {32, 1, 1}; }
@@ -79,7 +90,7 @@ struct ByteStoreProgram {
         const auto coords{ir.CompositeConstruct(ir.Imm32(byte_x), ir.Imm32(7))};
         const auto color{ir.CompositeConstruct(ir.Imm32(0x7fc01234U), ir.Imm32(0), ir.Imm32(0),
                                                ir.Imm32(0))};
-        ir.ImageWrite(ir.Imm32(0x264), coords, color, flags);
+        ir.ImageWrite(ir.Imm32(DescriptorOffset), coords, color, flags);
         return block.back();
     }
 
@@ -142,7 +153,7 @@ TEST_CASE("R16 BA translation requires an explicit native compute backend capabi
     }
 }
 
-TEST_CASE("Logged SUST.D.BA lowers without becoming a formatted surface store",
+TEST_CASE("Synthetic SUST.D.BA lowers without becoming a formatted surface store",
           "[video_core][fast_fusion_byte_store]") {
     for (u32 predicate = 0; predicate < 16; ++predicate) {
         CAPTURE(predicate);
@@ -154,7 +165,7 @@ TEST_CASE("Logged SUST.D.BA lowers without becoming a formatted surface store",
             REQUIRE(lowered.instructions.size() == 1);
             continue;
         }
-        REQUIRE(lowered.required_texture_buffer == 0);
+        REQUIRE(lowered.required_texture_buffer == DescriptorBank);
         REQUIRE(lowered.instructions.size() == 2);
         CHECK(lowered.instructions.front() ==
               ((MaxwellStore & ~(u64{15} << 16)) | (u64{predicate} << 16)));
@@ -178,13 +189,18 @@ TEST_CASE("Byte-addressed native lowering explicitly rejects unproven modes",
         CHECK_FALSE(Ampere::LowerToMaxwell(std::array{store, Exit}));
     }
     auto binding{Store};
-    binding.words[1] |= 18U << 22;
+    binding.words[1] = (binding.words[1] & ~(31U << 22)) | (18U << 22);
     CHECK_FALSE(Ampere::LowerToMaxwell(std::array{binding, Exit}));
     for (u32 reg : {246U, 254U, 255U}) {
         auto store{Store};
         store.words[1] = (store.words[1] & ~255U) | reg;
         CHECK_FALSE(Ampere::LowerToMaxwell(std::array{store, Exit}));
     }
+    auto last_coordinate_pair{Store};
+    last_coordinate_pair.words[0] = (last_coordinate_pair.words[0] & 0xffffffU) | (244U << 24);
+    CHECK(Ampere::LowerToMaxwell(std::array{last_coordinate_pair, Exit}));
+    last_coordinate_pair.words[0] |= 1U << 24;
+    CHECK_FALSE(Ampere::LowerToMaxwell(std::array{last_coordinate_pair, Exit}));
 }
 
 TEST_CASE("BA translation is native compute B32 only and reads exactly one raw register",
@@ -194,7 +210,7 @@ TEST_CASE("BA translation is native compute B32 only and reads exactly one raw r
     REQUIRE_NOTHROW(visitor.SUST(MaxwellStore));
     const auto& store{fixture.block.back()};
     REQUIRE(store.GetOpcode() == IR::Opcode::BoundImageWrite);
-    CHECK(store.Arg(0).U32() == 0x264);
+    CHECK(store.Arg(0).U32() == DescriptorOffset);
     const auto flags{store.Flags<IR::TextureInstInfo>()};
     CHECK(flags.image_byte_address == 1);
     CHECK(flags.image_coherent == 1);
@@ -202,7 +218,14 @@ TEST_CASE("BA translation is native compute B32 only and reads exactly one raw r
     const auto* color{store.Arg(2).Inst()};
     REQUIRE(color->GetOpcode() == IR::Opcode::CompositeConstructU32x4);
     REQUIRE(color->Arg(0).Inst()->GetOpcode() == IR::Opcode::GetRegister);
-    CHECK(color->Arg(0).Inst()->Arg(0).Reg() == IR::Reg::R23);
+    CHECK(color->Arg(0).Inst()->Arg(0).Reg() == static_cast<IR::Reg>(StoreData));
+    const auto* coords{store.Arg(1).Inst()};
+    REQUIRE(coords->GetOpcode() == IR::Opcode::CompositeConstructU32x2);
+    for (u32 component = 0; component < 2; ++component) {
+        const auto* reg{coords->Arg(component).Inst()};
+        REQUIRE(reg->GetOpcode() == IR::Opcode::GetRegister);
+        CHECK(reg->Arg(0).Reg() == static_cast<IR::Reg>(Coordinate + component));
+    }
     for (size_t i = 1; i < 4; ++i) CHECK(color->Arg(i).U32() == 0);
     size_t reads{};
     for (const auto& inst : fixture.block) {
@@ -338,7 +361,7 @@ TEST_CASE("Image backends preserve raw B32 storage and add one conditional image
                 read_flags.type.Assign(TextureType::Color2D);
                 read_flags.image_format.Assign(ImageFormat::R32_UINT);
                 read_flags.image_coherent.Assign(image_coherent);
-                const auto read{ir.ImageRead(ir.Imm32(0x264),
+                const auto read{ir.ImageRead(ir.Imm32(DescriptorOffset),
                                              ir.CompositeConstruct(ir.Imm32(0), ir.Imm32(0)),
                                              read_flags)};
                 auto& store{fixture.Write(4, false)};

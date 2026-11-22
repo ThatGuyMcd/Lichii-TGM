@@ -98,18 +98,22 @@ void MasterSemaphore::Wait(u64 tick) {
         return;
     }
 
-    // Update the GPU tick and try again
-    Refresh();
-
-    if (IsFree(tick)) {
-        return;
-    }
-
-    // If none of the above is hit, fallback to a regular wait
-    const VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::GpuWait};
     try {
-        while (!semaphore.Wait(tick)) {
+        Refresh();
+        if (IsFree(tick)) {
+            return;
         }
+
+        const VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::GpuWait};
+        constexpr u64 wait_slice_ns = 250'000'000;
+        while (!semaphore.Wait(tick, wait_slice_ns)) {
+            // A counter query can observe progress or device loss after a timed-out wait.
+            Refresh();
+            if (IsFree(tick)) {
+                return;
+            }
+        }
+        Refresh();
     } catch (const vk::Exception& exception) {
         // The throw ends the process; say why first (a device loss reached nothing else here).
         LOG_CRITICAL(Render_Vulkan, "Waiting for GPU tick {} failed: {}", tick, exception.what());
@@ -119,8 +123,6 @@ void MasterSemaphore::Wait(u64 tick) {
         }
         throw;
     }
-
-    Refresh();
 }
 
 VkResult MasterSemaphore::SubmitQueue(vk::CommandBuffer& cmdbuf, vk::CommandBuffer& upload_cmdbuf,

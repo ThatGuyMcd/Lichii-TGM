@@ -374,6 +374,20 @@ target_include_directories(gpfifo_submit_tests PRIVATE "${PROJECT_SOURCE_DIR}/sr
 target_link_libraries(gpfifo_submit_tests PRIVATE common)
 add_dependencies(tests gpfifo_submit_tests)
 add_test(NAME gpfifo_submit COMMAND gpfifo_submit_tests)
+set(TIMELINE_WAIT_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_master_semaphore.cpp")
+set(TIMELINE_WAIT_BODY "${CMAKE_CURRENT_BINARY_DIR}/vulkan_timeline_wait.inc")
+add_custom_command(OUTPUT "${TIMELINE_WAIT_BODY}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/vulkan_timeline_wait_source.py"
+        "${TIMELINE_WAIT_SOURCE}" "${TIMELINE_WAIT_BODY}"
+    DEPENDS video_core/vulkan_timeline_wait_source.py "${TIMELINE_WAIT_SOURCE}"
+    VERBATIM)
+add_executable(vulkan_timeline_wait_tests video_core/vulkan_timeline_wait.cpp "${TIMELINE_WAIT_BODY}")
+target_compile_features(vulkan_timeline_wait_tests PRIVATE cxx_std_20)
+target_include_directories(vulkan_timeline_wait_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(vulkan_timeline_wait_tests PRIVATE Catch2::Catch2WithMain Threads::Threads)
+add_dependencies(tests vulkan_timeline_wait_tests)
+add_test(NAME vulkan_timeline_wait COMMAND vulkan_timeline_wait_tests)
 set(QUERY_TRAVERSAL_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/query_cache/query_cache_base.h")
 set(QUERY_TRAVERSAL_DIR "${CMAKE_CURRENT_BINARY_DIR}/query-traversal")
 set(QUERY_TRAVERSAL_BODY "${QUERY_TRAVERSAL_DIR}/query_traversal.inc")

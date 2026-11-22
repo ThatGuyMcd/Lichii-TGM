@@ -20,6 +20,34 @@ VKAPI_ATTR void VKAPI_CALL GetProperties(VkPhysicalDevice device, VkPhysicalDevi
     *out = properties.at(reinterpret_cast<uintptr_t>(device) - 1);
 }
 VKAPI_ATTR void VKAPI_CALL Destroy(VkInstance, const VkAllocationCallbacks*) {}
+
+struct ChangingAdapters {
+    u32 advertised{1};
+    u32 available{2};
+    u32 count_calls{};
+    u32 fill_calls{};
+    bool keep_growing{};
+};
+
+VKAPI_ATTR VkResult VKAPI_CALL EnumerateChanging(VkInstance instance, u32* count,
+                                                VkPhysicalDevice* devices) {
+    auto& adapters = *reinterpret_cast<ChangingAdapters*>(instance);
+    if (!devices) {
+        ++adapters.count_calls;
+        *count = adapters.advertised;
+        return VK_SUCCESS;
+    }
+    ++adapters.fill_calls;
+    const u32 capacity = *count;
+    *count = std::min(capacity, adapters.available);
+    for (u32 index = 0; index < *count; ++index) {
+        devices[index] = reinterpret_cast<VkPhysicalDevice>(static_cast<uintptr_t>(index + 1));
+    }
+    if (!adapters.keep_growing) {
+        adapters.advertised = adapters.available;
+    }
+    return adapters.available > capacity ? VK_INCOMPLETE : VK_SUCCESS;
+}
 }
 
 TEST_CASE("Vulkan enumeration keeps hardware before software ICDs and vendor order", "[vulkan]") {
@@ -52,4 +80,37 @@ TEST_CASE("Vulkan enumeration keeps hardware before software ICDs and vendor ord
     REQUIRE(properties[index(devices[4])].deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU);
     REQUIRE(properties[index(devices[5])].deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU);
     REQUIRE(instance.EnumeratePhysicalDevices() == devices);
+}
+
+TEST_CASE("Vulkan adapter discovery handles changing device counts", "[vulkan][vulkan_enumeration]") {
+    properties.assign(2, VkPhysicalDeviceProperties{});
+    ChangingAdapters adapters;
+    Vulkan::vk::InstanceDispatch dispatch{};
+    dispatch.vkEnumeratePhysicalDevices = EnumerateChanging;
+    dispatch.vkGetPhysicalDeviceProperties = GetProperties;
+    dispatch.vkDestroyInstance = Destroy;
+    Vulkan::vk::Instance instance{reinterpret_cast<VkInstance>(&adapters), dispatch};
+    SECTION("retry after growth") {
+        CHECK(instance.EnumeratePhysicalDevices().size() == 2);
+        CHECK(adapters.count_calls == 2);
+        CHECK(adapters.fill_calls == 2);
+    }
+    SECTION("discard unused slots after shrinkage") {
+        adapters.advertised = 3;
+        adapters.available = 1;
+        CHECK(instance.EnumeratePhysicalDevices().size() == 1);
+        CHECK(adapters.fill_calls == 1);
+    }
+    SECTION("return no handles for an empty list") {
+        adapters.advertised = 0;
+        adapters.available = 0;
+        CHECK(instance.EnumeratePhysicalDevices().empty());
+        CHECK(adapters.fill_calls == 0);
+    }
+    SECTION("fail after bounded attempts") {
+        adapters.keep_growing = true;
+        CHECK_THROWS_AS(instance.EnumeratePhysicalDevices(), Vulkan::vk::Exception);
+        CHECK(adapters.count_calls == 4);
+        CHECK(adapters.fill_calls == 4);
+    }
 }

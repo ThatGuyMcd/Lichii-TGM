@@ -139,6 +139,19 @@ TEST_CASE("NUP ignores optional metadata with wrapping bounds", "[nup][nup-valid
     CHECK(container.GetPackages()[0].meta_size == 0);
 }
 
+TEST_CASE("NUP raw entries must match their stored length", "[nup][nup-validation]") {
+    NupFixture fixture;
+    REQUIRE(fixture.Parse().GetStatus() == Loader::ResultStatus::Success);
+    SECTION("stored extent is longer") {
+        Put(fixture.bytes, fixture.file_offset + 0x18, 2);
+    }
+    SECTION("logical extent is longer") {
+        Put(fixture.bytes, fixture.file_offset + 0x08, 2);
+    }
+    fixture.UpdateHash();
+    REQUIRE(fixture.Parse().GetStatus() == Loader::ResultStatus::ErrorNUPBadFormat);
+}
+
 TEST_CASE("NUP rejects directory cycles", "[nup][nup-validation]") {
     SECTION("self reference") {
         REQUIRE(NupFixture({{0}}).Parse().GetStatus() == Loader::ResultStatus::ErrorNUPBadFormat);

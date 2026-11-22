@@ -40,6 +40,9 @@ saves and OOT aspect-ratio options are retained.
 
 ## Renderer and shader fixes
 
+I've made Vulkan retry adapter discovery if the list changes while it's being
+read. If the list shrinks, we use just the devices Vulkan returned. [Lichii #2223](https://github.com/zortos293/Lichii/pull/2223)
+
 I've brought across the command-stream fix that lets a split register write
 resume after an interleaved GPU command list. I've also skipped empty texture
 work on cache hits and fixed the SMAA edge pass so a moving edge clears properly.
@@ -58,6 +61,9 @@ is incomplete.
 [#1825](https://github.com/zortos293/Lichii/pull/1825),
 [#2301](https://github.com/zortos293/Lichii/pull/2301),
 [#2401](https://github.com/zortos293/Lichii/pull/2401)
+
+I've fixed NCA verification hanging when a read stops returning data, and made
+NUP reject raw entries whose stored and declared sizes differ. [Lichii #2372](https://github.com/zortos293/Lichii/pull/2372), [#1922](https://github.com/zortos293/Lichii/pull/1922)
 
 I've reduced the work the CPU does when decoding ASTC textures by expanding
 colour endpoints once per partition. The decoder outputs match the previous

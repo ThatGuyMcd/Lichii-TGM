@@ -532,12 +532,26 @@ Instance Instance::Create(u32 version, Span<const char*> layers, Span<const char
 }
 
 std::vector<VkPhysicalDevice> Instance::EnumeratePhysicalDevices() const {
-    u32 num;
-    Check(dld->vkEnumeratePhysicalDevices(handle, &num, nullptr));
-    std::vector<VkPhysicalDevice> physical_devices(num);
-    Check(dld->vkEnumeratePhysicalDevices(handle, &num, physical_devices.data()));
-    SortPhysicalDevices(physical_devices, *dld);
-    return physical_devices;
+    constexpr u32 max_attempts = 4;
+    for (u32 attempt = 0; attempt < max_attempts; ++attempt) {
+        u32 num = 0;
+        Check(dld->vkEnumeratePhysicalDevices(handle, &num, nullptr));
+        if (num == 0) {
+            return {};
+        }
+        std::vector<VkPhysicalDevice> physical_devices(num);
+        const VkResult result =
+            dld->vkEnumeratePhysicalDevices(handle, &num, physical_devices.data());
+        // The adapter list can grow or shrink between the count and fill calls.
+        if (result == VK_INCOMPLETE) {
+            continue;
+        }
+        Check(result);
+        physical_devices.resize(num);
+        SortPhysicalDevices(physical_devices, *dld);
+        return physical_devices;
+    }
+    throw Exception(VK_INCOMPLETE);
 }
 
 DebugUtilsMessenger Instance::CreateDebugUtilsMessenger(

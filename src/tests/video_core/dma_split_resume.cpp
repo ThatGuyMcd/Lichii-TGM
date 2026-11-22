@@ -101,9 +101,9 @@ struct Fixture {
     Tegra::DmaPusher pusher{system, memory, channel};
     RecordingEngine engine;
     const bool old_ampere = Tegra::g_nx2_ampere.load();
-    const auto old_accuracy = Settings::values.current_gpu_accuracy;
-    const auto old_dma = Settings::values.dma_accuracy.GetValue();
-    const auto old_backend = Settings::values.renderer_backend.GetValue();
+    const Settings::GpuAccuracy old_accuracy = Settings::values.current_gpu_accuracy;
+    const Settings::DmaAccuracy old_dma = Settings::values.dma_accuracy.GetValue();
+    const Settings::RendererBackend old_backend = Settings::values.renderer_backend.GetValue();
 
     explicit Fixture(bool split = false, bool native = true) {
         memory.BindRasterizer(&rasterizer);

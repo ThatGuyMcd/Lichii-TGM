@@ -731,6 +731,7 @@ bool NupContainer::Parse() {
         std::memcpy(&record, base + pos, sizeof(record));
         pos += FileRecordSize;
         if (record.codec > CodecZstd || record.codec_flags != 0 ||
+            (record.codec == CodecRaw && record.size != record.extent_size) ||
             (record.size == 0 && (record.extent_offset != 0 || record.extent_size != 0)) ||
             (record.size != 0 &&
              (record.extent_size == 0 || record.extent_offset < blob_offset ||

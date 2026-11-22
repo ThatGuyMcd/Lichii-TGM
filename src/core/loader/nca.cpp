@@ -171,7 +171,7 @@ ResultStatus AppLoader_NCA::VerifyIntegrity(std::function<bool(size_t, size_t)> 
     // Initialize sha256 verification context.
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     if (!ctx)
-        return ResultStatus::ErrorNotInitialized;
+        return ResultStatus::ErrorIntegrityVerificationFailed;
 
     // Ensure we maintain a clean state on exit.
     SCOPE_EXIT {
@@ -190,6 +190,12 @@ ResultStatus AppLoader_NCA::VerifyIntegrity(std::function<bool(size_t, size_t)> 
         // Refill the buffer.
         const size_t intended_read_size = (std::min)(buffer.size(), total_size - processed_size);
         const size_t read_size = file->Read(buffer.data(), intended_read_size, processed_size);
+        // Our readers have no delayed retry contract. Zero before EOF cannot advance this check.
+        if (read_size == 0 || read_size > intended_read_size) {
+            LOG_ERROR(Loader, "Cannot verify {}: invalid read of {} bytes at {} of {}", name,
+                      read_size, processed_size, total_size);
+            return ResultStatus::ErrorIntegrityVerificationFailed;
+        }
 
         // Update the hash function with the buffer contents.
         if (!EVP_DigestUpdate(ctx, buffer.data(), read_size)) {
@@ -200,7 +206,7 @@ ResultStatus AppLoader_NCA::VerifyIntegrity(std::function<bool(size_t, size_t)> 
         processed_size += read_size;
 
         // Call the progress function.
-        if (!progress_callback(processed_size, total_size)) {
+        if (progress_callback && !progress_callback(processed_size, total_size)) {
             return ResultStatus::ErrorIntegrityVerificationFailed;
         }
     }

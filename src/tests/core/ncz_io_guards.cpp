@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2026 Lichii contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include "core/file_sys/fssystem/fssystem_aes_ctr_storage.h"
 #include "core/file_sys/fssystem/fssystem_alignment_matching_storage_impl.h"
 #include "core/file_sys/vfs/vfs_vector.h"
+#include "core/loader/nca.h"
 #include "frontend_common/content_copy.h"
 
 namespace {
@@ -25,6 +27,22 @@ public:
         return actual == 0 ? 0 : actual - 1;
     }
 };
+
+class VerificationFile final : public FileSys::VectorVfsFile {
+public:
+    VerificationFile() : VectorVfsFile({'a', 'b', 'c'}, "ba7816bf8f01cfea414140de5dae2223.nca") {}
+
+    std::size_t Read(u8* out, std::size_t length, std::size_t offset) const override {
+        REQUIRE(++reads <= 8);
+        if (stops_after_first_byte && offset >= 1) {
+            return 0;
+        }
+        return VectorVfsFile::Read(out, std::min(length, std::size_t{1}), offset);
+    }
+
+    bool stops_after_first_byte{};
+    mutable std::size_t reads{};
+};
 } // namespace
 
 TEST_CASE("NCA CTR storage does not decrypt a short source read as success", "[ncz-io]") {
@@ -34,6 +52,31 @@ TEST_CASE("NCA CTR storage does not decrypt a short source read as success", "[n
     FileSys::AesCtrStorage storage(source, key.data(), key.size(), iv.data(), iv.size());
     std::array<u8, 32> out{};
     CHECK(storage.Read(out.data(), out.size(), 0) == 0);
+}
+
+TEST_CASE("NCA integrity verification requires read progress", "[nca_verification]") {
+    auto file = std::make_shared<VerificationFile>();
+    Loader::AppLoader_NCA loader{file};
+    file->reads = 0;
+
+    SECTION("a stalled read fails before invoking progress again") {
+        file->stops_after_first_byte = true;
+        CHECK(loader.VerifyIntegrity([](std::size_t done, std::size_t total) {
+                  CHECK(done == 1);
+                  CHECK(total == 3);
+                  return true;
+              }) == Loader::ResultStatus::ErrorIntegrityVerificationFailed);
+        CHECK(file->reads == 2);
+    }
+    SECTION("short successful reads work with an empty progress callback") {
+        CHECK(loader.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+        CHECK(file->reads == 3);
+    }
+    SECTION("the caller can cancel after partial progress") {
+        CHECK(loader.VerifyIntegrity([](std::size_t, std::size_t) { return false; }) ==
+              Loader::ResultStatus::ErrorIntegrityVerificationFailed);
+        CHECK(file->reads == 1);
+    }
 }
 
 TEST_CASE("NCA CTR storage preserves NIST AES CTR plaintext", "[ncz-io]") {

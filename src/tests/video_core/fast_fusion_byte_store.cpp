@@ -292,9 +292,10 @@ TEST_CASE("NDV 3D sample leaves an incomplete shuffle pattern intact",
     info.type.Assign(TextureType::Color3D);
     info.ndv_is_active.Assign(1);
     const auto sample = ir.ImageSampleImplicitLod(ir.Imm32(0x128), coords, {}, {}, {}, info);
+    REQUIRE(sample.Inst()->GetOpcode() == IR::Opcode::BoundImageSampleImplicitLod);
 
     REQUIRE_NOTHROW(Optimization::ConstantPropagationPass(fixture.env, fixture.program));
-    CHECK(sample.Inst()->GetOpcode() == IR::Opcode::ImageSampleImplicitLod);
+    CHECK(sample.Inst()->GetOpcode() == IR::Opcode::BoundImageSampleImplicitLod);
 }
 
 TEST_CASE("Image descriptor merging preserves BA validation and coherent memory independently",

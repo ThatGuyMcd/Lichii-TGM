@@ -275,6 +275,60 @@ TEST_CASE("HostMemory: Partial sparse middle unmap and check bindings", "[common
 }
 
 #ifdef _WIN32
+TEST_CASE("HostMemory preserves kept Win32 protections when splitting a view",
+          "[common][host_memory][win32_fastmem_remap]") {
+    constexpr size_t Page = 0x1000;
+    constexpr size_t View = 0x20000;
+    constexpr size_t Backing = 0x30000;
+    HostMemory mem(2_MiB, 8_MiB);
+    REQUIRE(mem.BackingBasePointer() != nullptr);
+    REQUIRE(mem.VirtualBasePointer() != nullptr);
+    mem.Map(View, Backing, 8 * Page, PERMS, HEAP);
+    u8* const view = mem.VirtualBasePointer() + View;
+    const auto query = [view](size_t page) {
+        MEMORY_BASIC_INFORMATION info{};
+        REQUIRE(VirtualQuery(view + page * Page, &info, sizeof(info)) == sizeof(info));
+        return info;
+    };
+
+    view[Page] = 0x36;
+    view[6 * Page] = 0x96;
+    mem.Protect(View + Page, 3 * Page, Common::MemoryPermission::Read);
+    mem.Protect(View + 4 * Page, 2 * Page, Common::MemoryPermission{});
+    mem.Protect(View + 6 * Page, Page, Common::MemoryPermission::Read);
+    REQUIRE(query(1).Protect == PAGE_READONLY);
+    REQUIRE(query(4).Protect == PAGE_NOACCESS);
+    REQUIRE(query(7).Protect == PAGE_READWRITE);
+
+    mem.Unmap(View + 2 * Page, 2 * Page, HEAP);
+    CHECK(query(0).Protect == PAGE_READWRITE);
+    CHECK(query(1).Protect == PAGE_READONLY);
+    CHECK(query(2).State == MEM_RESERVE);
+    CHECK(query(3).State == MEM_RESERVE);
+    CHECK(query(4).Protect == PAGE_NOACCESS);
+    CHECK(query(5).Protect == PAGE_NOACCESS);
+    CHECK(query(6).Protect == PAGE_READONLY);
+    CHECK(query(7).Protect == PAGE_READWRITE);
+    CHECK(view[Page] == 0x36);
+    CHECK(view[6 * Page] == 0x96);
+
+    // Reprotect across the hole, then force a one-sided remap of each kept view.
+    mem.Protect(View + Page, 6 * Page, Common::MemoryPermission::Read);
+    mem.Unmap(View, Page, HEAP);
+    mem.Unmap(View + 7 * Page, Page, HEAP);
+    CHECK(query(1).Protect == PAGE_READONLY);
+    CHECK(query(2).State == MEM_RESERVE);
+    CHECK(query(4).Protect == PAGE_READONLY);
+    CHECK(query(6).Protect == PAGE_READONLY);
+    CHECK(query(7).State == MEM_RESERVE);
+
+    mem.Protect(View + 4 * Page, 3 * Page, PERMS);
+    REQUIRE(query(4).Protect == PAGE_READWRITE);
+    view[4 * Page] = 0x29;
+    CHECK(mem.BackingBasePointer()[Backing + 4 * Page] == 0x29);
+    CHECK(view[6 * Page] == 0x96);
+}
+
 TEST_CASE("HostMemory: Trim zero pages keeps contents", "[common]") {
     constexpr size_t Page = 0x1000;
     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);

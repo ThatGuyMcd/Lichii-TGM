@@ -11,6 +11,7 @@
 #include <boost/icl/separate_interval_set.hpp>
 #include <windows.h>
 #include <psapi.h>
+#include <span>
 #include <vector>
 #include "common/dynamic_library.h"
 
@@ -242,7 +243,9 @@ public:
         ASSERT(placeholders.find({virtual_offset, virtual_offset + length}) == placeholders.end());
         TrackPlaceholder(virtual_offset, host_offset, length);
 
-        MapView(virtual_offset, host_offset, length);
+        if (!MapView(virtual_offset, host_offset, length)) {
+            LOG_CRITICAL(HW_Memory, "Failed to map placeholder, error {}", GetLastError());
+        }
     }
 
     void Unmap(size_t virtual_offset, size_t length) {
@@ -378,26 +381,35 @@ private:
         const bool split_left = unmap_begin > placeholder_begin;
         const bool split_right = unmap_end < placeholder_end;
 
+        size_t left_runs = 0;
+        if (split_left || split_right) {
+            // The exclusive placeholder lock serialises this snapshot with Protect.
+            kept_protections.clear();
+            if (split_left) {
+                FindProtectionRuns(placeholder_begin, unmap_begin);
+                left_runs = kept_protections.size();
+            }
+            if (split_right) {
+                FindProtectionRuns(unmap_end, placeholder_end);
+            }
+        }
         if (!pfn_UnmapViewOfFile2(process, virtual_base + placeholder_begin,
                                   MEM_PRESERVE_PLACEHOLDER)) {
             LOG_CRITICAL(HW_Memory, "Failed to unmap placeholder");
         }
-        // If we have to remap memory regions due to partial unmaps, we are in a data race as
-        // Windows doesn't support remapping memory without unmapping first. Avoid adding any extra
-        // logic within the panic region described below.
-
-        // Panic region, we are in a data race right now
+        // A partial unmap briefly removes the kept views before mapping them again.
         if (split_left || split_right) {
             Split(unmap_begin, unmap_end - unmap_begin);
+            const std::span<const ProtectionRun> runs{kept_protections};
+            if (split_left) {
+                MapKeptView(placeholder_begin, host_offset, unmap_begin - placeholder_begin,
+                            runs.first(left_runs));
+            }
+            if (split_right) {
+                MapKeptView(unmap_end, host_offset + unmap_end - placeholder_begin,
+                            placeholder_end - unmap_end, runs.subspan(left_runs));
+            }
         }
-        if (split_left) {
-            MapView(placeholder_begin, host_offset, unmap_begin - placeholder_begin);
-        }
-        if (split_right) {
-            MapView(unmap_end, host_offset + unmap_end - placeholder_begin,
-                    placeholder_end - unmap_end);
-        }
-        // End panic region
 
         size_t coalesce_begin = unmap_begin;
         if (!split_left) {
@@ -428,11 +440,53 @@ private:
         return true;
     }
 
-    void MapView(size_t virtual_offset, size_t host_offset, size_t length) {
-        if (!pfn_MapViewOfFile3(backing_handle, process, virtual_base + virtual_offset, host_offset,
-                                length, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, nullptr, 0)) {
-            LOG_CRITICAL(HW_Memory, "Failed to map placeholder");
+    struct ProtectionRun {
+        size_t offset;
+        size_t size;
+        DWORD flags;
+    };
+
+    void FindProtectionRuns(size_t offset, size_t end) {
+        while (offset < end) {
+            u8* const page = virtual_base + offset;
+            MEMORY_BASIC_INFORMATION info{};
+            if (VirtualQuery(page, &info, sizeof(info)) != sizeof(info)) {
+                UNREACHABLE_MSG("Failed to query kept fastmem page {:#x}: error {}", offset,
+                                GetLastError());
+            }
+            const auto address = reinterpret_cast<uintptr_t>(page);
+            const auto region = reinterpret_cast<uintptr_t>(info.BaseAddress);
+            if (info.State != MEM_COMMIT || !info.Protect || region > address ||
+                address - region >= info.RegionSize) {
+                UNREACHABLE_MSG("Invalid protection region for kept fastmem page {:#x}", offset);
+            }
+            const size_t length = (std::min)(end - offset, info.RegionSize - (address - region));
+            if (info.Protect != PAGE_READWRITE) {
+                kept_protections.push_back({offset, length, info.Protect});
+            }
+            offset += length;
         }
+    }
+
+    void MapKeptView(size_t virtual_offset, size_t host_offset, size_t length,
+                     std::span<const ProtectionRun> runs) {
+        if (!MapView(virtual_offset, host_offset, length)) {
+            UNREACHABLE_MSG("Failed to remap kept fastmem view {:#x}: error {}", virtual_offset,
+                            GetLastError());
+        }
+        for (const auto& run : runs) {
+            DWORD old_flags{};
+            if (!VirtualProtect(virtual_base + run.offset, run.size, run.flags, &old_flags)) {
+                UNREACHABLE_MSG("Failed to restore fastmem protection {:#x} at {:#x}: error {}",
+                                run.flags, run.offset, GetLastError());
+            }
+        }
+    }
+
+    bool MapView(size_t virtual_offset, size_t host_offset, size_t length) {
+        return pfn_MapViewOfFile3(backing_handle, process, virtual_base + virtual_offset, host_offset,
+                                 length, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, nullptr,
+                                 0) != nullptr;
     }
 
     void Split(size_t virtual_offset, size_t length) {
@@ -480,6 +534,7 @@ private:
     PFN_UnmapViewOfFile2 pfn_UnmapViewOfFile2{};
 
     std::shared_mutex placeholder_mutex;                          ///< Mutex for placeholders
+    std::vector<ProtectionRun> kept_protections;
     boost::icl::separate_interval_set<size_t> placeholders;       ///< Mapped placeholders
     ::Common::unordered_map<size_t, size_t> placeholder_host_pointers; ///< Placeholder backing offset
 };

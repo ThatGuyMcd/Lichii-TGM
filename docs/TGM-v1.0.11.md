@@ -43,6 +43,9 @@ saves and OOT aspect-ratio options are retained.
 I've made Vulkan retry adapter discovery if the list changes while it's being
 read. If the list shrinks, we use just the devices Vulkan returned. [Lichii #2223](https://github.com/zortos293/Lichii/pull/2223)
 
+I've fixed shader lookups for OOT's unassigned texture descriptors, including
+the same lookup from a shader worker's saved copy of the descriptor pool. [Lichii #2220](https://github.com/zortos293/Lichii/pull/2220)
+
 I've brought across the command-stream fix that lets a split register write
 resume after an interleaved GPU command list. I've also skipped empty texture
 work on cache hits and fixed the SMAA edge pass so a moving edge clears properly.

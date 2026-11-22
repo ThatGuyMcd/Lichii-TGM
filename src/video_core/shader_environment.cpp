@@ -474,17 +474,7 @@ std::optional<u64> GenericEnvironment::TryFindSize() {
     return std::nullopt;
 }
 
-// Past the pool, the bytes are not a descriptor: reading them gave the shader a random texture
-// type and format (garbage-format asserts, then crashes and device losses on AMD in Ocarina of
-// Time). At draw time the texture cache binds the null view for such an index (VisitImageView), so
-// compile for what that view is: a plain 2D RGBA8 texture.
-static Tegra::Texture::TICEntry PastPoolTextureDescriptor(u32 raw, u32 index, u32 tic_limit) {
-    static std::atomic<u32> warnings{};
-    if (warnings.fetch_add(1, std::memory_order_relaxed) < 16) {
-        LOG_WARNING(HW_GPU, "Texture handle {:#x} indexes past the descriptor pool "
-                            "(index {} > limit {}); using a null 2D texture",
-                    raw, index, tic_limit);
-    }
+static Tegra::Texture::TICEntry NullTextureDescriptor() {
     Tegra::Texture::TICEntry entry;
     entry.raw.fill(0);
     entry.format.Assign(Tegra::Texture::TextureFormat::A8B8G8R8);
@@ -495,6 +485,25 @@ static Tegra::Texture::TICEntry PastPoolTextureDescriptor(u32 raw, u32 index, u3
     entry.texture_type.Assign(Tegra::Texture::TextureType::Texture2D);
     entry.normalized_coords.Assign(1);
     return entry;
+}
+
+static Tegra::Texture::TICEntry NormalizeNullTextureDescriptor(Tegra::Texture::TICEntry entry) {
+    // A null descriptor can retain unrelated metadata after its image and format are cleared.
+    if (entry.format.Value() == Tegra::Texture::TextureFormat{} && entry.Address() == 0) {
+        return NullTextureDescriptor();
+    }
+    return entry;
+}
+
+// The texture cache binds a plain 2D RGBA8 null view when an index is outside the pool.
+static Tegra::Texture::TICEntry PastPoolTextureDescriptor(u32 raw, u32 index, u32 tic_limit) {
+    static std::atomic<u32> warnings{};
+    if (warnings.fetch_add(1, std::memory_order_relaxed) < 16) {
+        LOG_WARNING(HW_GPU, "Texture handle {:#x} indexes past the descriptor pool "
+                            "(index {} > limit {}); using a null 2D texture",
+                    raw, index, tic_limit);
+    }
+    return NullTextureDescriptor();
 }
 
 Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
@@ -526,7 +535,7 @@ Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, 
                         entry.raw[0], entry.raw[1], entry.raw[2], entry.raw[3]);
         }
     }
-    return entry;
+    return NormalizeNullTextureDescriptor(entry);
 }
 
 namespace {
@@ -1102,7 +1111,7 @@ Tegra::Texture::TICEntry GraphicsEnvironment::ReadTextureDescriptor(u32 handle) 
         if (index > snapshot->texture_pool_limit) {
             return PastPoolTextureDescriptor(handle, index, snapshot->texture_pool_limit);
         }
-        return (*snapshot->texture_pool)[index];
+        return NormalizeNullTextureDescriptor((*snapshot->texture_pool)[index]);
     }
     const auto& regs{maxwell3d->regs};
     const bool via_header_index{regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding};

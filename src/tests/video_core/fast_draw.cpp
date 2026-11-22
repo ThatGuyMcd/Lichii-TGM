@@ -1116,6 +1116,8 @@ TEST_CASE("Detached texture decoding retains its title policy after the title ch
     f.maxwell3d.regs.sampler_binding = Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
     Tegra::Texture::TICEntry entry{};
     entry.texture_type.Assign(Tegra::Texture::TextureType::Texture3D);
+    entry.format.Assign(Tegra::Texture::TextureFormat::A8B8G8R8);
+    entry.address_low = static_cast<u32>(f.Gpu + 0x1000);
     std::memcpy(f.backing + 0x400 + 2 * sizeof(entry), &entry, sizeof(entry));
     auto lowered = std::make_shared<VideoCommon::LoweredNativeCode>();
     lowered->source_size = 144;
@@ -1131,6 +1133,48 @@ TEST_CASE("Detached texture decoding retains its title policy after the title ch
         CHECK(type == Shader::TextureType::Color3D);
     } else {
         CHECK(type != Shader::TextureType::Color3D);
+    }
+}
+
+TEST_CASE("Shader texture reads normalise unassigned descriptors with or without a snapshot",
+          "[shader_reuse][null_texture_descriptor]") {
+    ConstantDiagnosticFixture f;
+    f.maxwell3d.GetNativeMacroEngine().native_turing = true;
+    f.maxwell3d.regs.tex_header.address_low = static_cast<u32>(f.Gpu + 0x400);
+    f.maxwell3d.regs.tex_header.address_high = 0;
+    f.maxwell3d.regs.tex_header.limit = 0;
+    const bool detached = GENERATE(false, true);
+    Tegra::Texture::TICEntry entry{};
+    bool expect_null = true;
+    SECTION("null descriptor") {}
+    SECTION("unassigned image with stale metadata") {
+        entry.texture_type.Assign(Tegra::Texture::TextureType::Texture3D);
+    }
+    SECTION("invalid format on an assigned image remains visible as a real descriptor") {
+        entry.texture_type.Assign(Tegra::Texture::TextureType::Texture3D);
+        entry.address_low = static_cast<u32>(f.Gpu + 0x1000);
+        expect_null = false;
+    }
+    SECTION("valid format with no image address retains its type") {
+        entry.texture_type.Assign(Tegra::Texture::TextureType::Texture3D);
+        entry.format.Assign(Tegra::Texture::TextureFormat::A8B8G8R8);
+        expect_null = false;
+    }
+    std::memcpy(f.backing + 0x400, &entry, sizeof(entry));
+    auto lowered = std::make_shared<VideoCommon::LoweredNativeCode>();
+    lowered->source_size = 144;
+    lowered->code.resize(32);
+    VideoCommon::GraphicsEnvironment env{
+        f.maxwell3d, f.memory, Maxwell3D::Regs::ShaderType::VertexB, f.Gpu, 0, lowered};
+    std::shared_ptr<const std::vector<Tegra::Texture::TICEntry>> texture_pool;
+    if (detached) {
+        REQUIRE(env.Detach(texture_pool));
+    }
+    if (expect_null) {
+        CHECK(env.ReadTextureType(0) == Shader::TextureType::Color2D);
+        CHECK(env.ReadTexturePixelFormat(0) == Shader::TexturePixelFormat::A8B8G8R8_UNORM);
+    } else {
+        CHECK(env.ReadTextureType(0) == Shader::TextureType::Color3D);
     }
 }
 

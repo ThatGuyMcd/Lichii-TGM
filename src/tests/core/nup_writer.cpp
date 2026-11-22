@@ -19,6 +19,7 @@
 
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
+#include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/nup_container.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/registered_cache.h"
@@ -225,10 +226,10 @@ TEST_CASE("Cancelled discovery retains installed update versions", "[core][nup]"
     const auto old = std::make_shared<FileSys::VectorVfsFile>(std::vector<u8>{1}, "installed");
     const auto discovered =
         std::make_shared<FileSys::VectorVfsFile>(std::vector<u8>{2}, "discovered");
-    provider.AddEntryWithVersion(TitleType::Patch, ContentRecordType::Program, id, 1, "1", old);
+    provider.AddEntryWithVersion(TitleType::Update, ContentRecordType::Program, id, 1, "1", old);
     provider.SwapEntries(previous);
     CHECK_FALSE(provider.HasEntry(id, ContentRecordType::Program));
-    provider.AddEntryWithVersion(TitleType::Patch, ContentRecordType::Program, id, 2, "2",
+    provider.AddEntryWithVersion(TitleType::Update, ContentRecordType::Program, id, 2, "2",
                                  discovered);
     REQUIRE(provider.GetEntryForVersion(id, ContentRecordType::Program, 2) == discovered);
 

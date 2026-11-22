@@ -349,6 +349,31 @@ add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(GPFIFO_SUBMIT_DIR "${CMAKE_CURRENT_BINARY_DIR}/gpfifo-submit")
+set(GPFIFO_SUBMIT_BODIES
+    "${GPFIFO_SUBMIT_DIR}/gpfifo_serialization.inc"
+    "${GPFIFO_SUBMIT_DIR}/gpfifo_command_types.inc"
+    "${GPFIFO_SUBMIT_DIR}/gpfifo_fixed.inc"
+    "${GPFIFO_SUBMIT_DIR}/gpfifo_constants.inc"
+    "${GPFIFO_SUBMIT_DIR}/gpfifo_base1.inc"
+    "${GPFIFO_SUBMIT_DIR}/gpfifo_base2.inc"
+    "${GPFIFO_SUBMIT_DIR}/gpfifo_route1.inc"
+    "${GPFIFO_SUBMIT_DIR}/gpfifo_route2.inc")
+add_custom_command(OUTPUT ${GPFIFO_SUBMIT_BODIES}
+    COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/core/gpfifo_submit_source.py"
+        "${PROJECT_SOURCE_DIR}" "${GPFIFO_SUBMIT_DIR}"
+    DEPENDS core/gpfifo_submit_source.py
+        "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvdrv/devices/ioctl_serialization.h"
+        "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp"
+        "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvdrv/devices/nvhost_gpu.h"
+        "${PROJECT_SOURCE_DIR}/src/video_core/dma_pusher.h"
+    VERBATIM)
+add_executable(gpfifo_submit_tests core/gpfifo_submit.cpp ${GPFIFO_SUBMIT_BODIES})
+target_compile_features(gpfifo_submit_tests PRIVATE cxx_std_20)
+target_include_directories(gpfifo_submit_tests PRIVATE "${PROJECT_SOURCE_DIR}/src" "${GPFIFO_SUBMIT_DIR}")
+target_link_libraries(gpfifo_submit_tests PRIVATE common)
+add_dependencies(tests gpfifo_submit_tests)
+add_test(NAME gpfifo_submit COMMAND gpfifo_submit_tests)
 set(QUERY_TRAVERSAL_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/query_cache/query_cache_base.h")
 set(QUERY_TRAVERSAL_DIR "${CMAKE_CURRENT_BINARY_DIR}/query-traversal")
 set(QUERY_TRAVERSAL_BODY "${QUERY_TRAVERSAL_DIR}/query_traversal.inc")

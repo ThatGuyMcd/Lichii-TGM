@@ -188,5 +188,19 @@ callbacks and publishes the initial battery level before the first report.
 [#2225](https://github.com/zortos293/Lichii/pull/2225),
 [Fritchii GPU submission work](https://github.com/Frizti/Fritchii/commit/8799a851451c244ff5f62802416b27583ec1e705)
 
+I've brought across the padded shadow map fix for OOT Remake. The renderer
+can reuse a square D32 image when drawing stays inside it, and keeps the
+wider target when the clip reaches the padding or the cache finds an
+incompatible image at the same address.
+[Lichii #1868](https://github.com/zortos293/Lichii/pull/1868)
+
+I've kept Windows fastmem page permissions intact when a mapping is split.
+Vulkan now checks for completion and device loss between timed waits. NSO
+loading uses the same program arguments for sizing and mapping, and can
+continue when a saved argument string is too long for the loader.
+[Lichii #2361](https://github.com/zortos293/Lichii/pull/2361),
+[#2402](https://github.com/zortos293/Lichii/pull/2402),
+[#2380](https://github.com/zortos293/Lichii/pull/2380)
+
 Shader precompile system by Frizti (Fritchii). Shader precompile recipe by Frizti
 (Fritchii), included with redistribution permission and its original notice.

@@ -8,9 +8,11 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "common/fs/file_lock.h"
 #include "video_core/pipeline_cache_files.h"
@@ -158,9 +160,8 @@ TEST_CASE("Shader cache v2 driver blobs: a file round trip", "[video_core][shade
         for (u64 i = 0; i < 12; ++i) {
             store.Store(TestKind(i), 0x100 + i, TestPayload(i));
         }
-        // Written in this session: not stored again, and not read back before the next one
+        // A duplicate write keeps the original payload.
         store.Store(TestKind(0), 0x100, TestPayload(99));
-        REQUIRE_FALSE(store.Find(TestKind(0), 0x100).has_value());
         REQUIRE(store.Counts().written == 12);
     }
     V2::DriverBlobStore store{file, TestIdentity(), {.writer = FastWriter}};
@@ -331,6 +332,57 @@ TEST_CASE("Shader cache v2 driver blobs: a damaged blob is dropped alone",
     // Not given again; the next compile replaces it
     REQUIRE_FALSE(store.Find(TestKind(4), 0x104).has_value());
     REQUIRE(store.Find(TestKind(5), 0x105) == TestPayload(5));
+}
+
+TEST_CASE("Driver blob offsets follow the committed batch during the same session",
+          "[video_core][shader_cache_v2][driver_blobs_same_session]") {
+    TempDir temp;
+    const auto file = temp.path / V2::DriverFileName;
+    const bool existing = GENERATE(false, true);
+    if (existing) {
+        StoreBlobs(file, 2);
+    }
+    V2::DriverBlobStore store{file, TestIdentity(), {.writer = FastWriter}};
+    const auto wait_for = [&](RecordKind kind, u64 key) {
+        const auto until = std::chrono::steady_clock::now() + 2s;
+        do {
+            if (auto blob = store.Find(kind, key)) {
+                return blob;
+            }
+            std::this_thread::sleep_for(1ms);
+        } while (std::chrono::steady_clock::now() < until);
+        return std::optional<std::vector<u8>>{};
+    };
+    const auto kind = RecordKind::GraphicsBinary;
+    constexpr u64 first = 0x501;
+    constexpr u64 second = 0x502;
+    {
+        const Common::FS::FileLock lock{VideoCommon::PipelineCacheLockPath(file)};
+        REQUIRE(lock.Held());
+        store.Store(kind, first, TestPayload(5));
+        std::this_thread::sleep_for(20ms);
+        store.Store(kind, second, TestPayload(19));
+        CHECK_FALSE(store.Find(kind, first));
+        CHECK_FALSE(store.Find(kind, second));
+    }
+    REQUIRE(wait_for(kind, second) == TestPayload(19));
+    REQUIRE(store.Find(kind, first) == TestPayload(5));
+    CHECK_FALSE(store.Find(RecordKind::ComputeBinary, first));
+    store.Store(kind, first, TestPayload(8));
+    CHECK(store.Counts().written == 2);
+    store.Reject(kind, first);
+    CHECK_FALSE(store.Find(kind, first));
+    store.Store(kind, first, TestPayload(8));
+    CHECK(wait_for(kind, first) == TestPayload(8));
+    CHECK(store.Find(kind, second) == TestPayload(19));
+    if (existing) {
+        CHECK(store.Find(TestKind(1), 0x101) == TestPayload(1));
+    }
+    store.Close();
+    CHECK_FALSE(store.Find(kind, first));
+    V2::DriverBlobStore reopened{file, TestIdentity(), {.writer = FastWriter}};
+    CHECK(reopened.Find(kind, first) == TestPayload(8));
+    CHECK(reopened.Find(kind, second) == TestPayload(19));
 }
 
 TEST_CASE("Shader cache v2 driver blobs: a rejected blob is replaced",

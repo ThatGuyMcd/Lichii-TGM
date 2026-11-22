@@ -690,7 +690,10 @@ void TextureCache<P>::TickFrame() {
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
                     u64 other_memory = 0;
-                    if constexpr (requires { runtime.GetDeviceHeapMemoryBudget(); }) {
+                    if constexpr (requires {
+                                      runtime.GetDeviceHeapMemoryBudget();
+                                      runtime.CapsDeviceMemoryBudget();
+                                  }) {
                         // An integrated GPU's budget is the share of system memory it is capped
                         // to (4 or 6 GiB) so that textures don't fill RAM, but the usage compared
                         // with the thresholds is everything in device memory. Ocarina's ~4 GB of
@@ -703,7 +706,11 @@ void TextureCache<P>::TickFrame() {
                         static const bool overridden =
                             std::getenv("EDEN_NX2_TC_EXPECTED_MIB") != nullptr ||
                             std::getenv("EDEN_NX2_TC_CRITICAL_MIB") != nullptr;
-                        const u64 heap_budget = runtime.GetDeviceHeapMemoryBudget();
+                        // An uncapped driver's budget can change between two reads. Treating
+                        // that difference as a capped share raises and then drops the threshold.
+                        const u64 heap_budget = runtime.CapsDeviceMemoryBudget()
+                                                    ? runtime.GetDeviceHeapMemoryBudget()
+                                                    : budget;
                         if (heap_budget > budget) {
                             u64 image_bytes = 0;
                             for (const auto [image_id, image] : slot_images) {

@@ -613,6 +613,7 @@ bool WritePrecachedPipelines(const fs::path& file, const DriverStamp& stamp,
 }
 
 bool DeleteWarmFiles(u64 title_id, std::string* error) {
+    LOG_INFO(Render_Vulkan, "Shader precache: deleting the precache files of {:016x}", title_id);
     std::error_code status_error;
     const bool exists = fs::exists(TitleDir(title_id), status_error);
     if (status_error) {

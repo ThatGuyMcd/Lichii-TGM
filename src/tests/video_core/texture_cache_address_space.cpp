@@ -22,7 +22,15 @@ struct Runtime {
     size_t downloads = 0;
     size_t waits = 0;
     size_t freed = 0;
+    bool capped_share = false;
+    u64 heap_budget = 0;
+    size_t heap_reads = 0;
     u32 FailedImages() const { return failures; }
+    bool CapsDeviceMemoryBudget() const { return capped_share; }
+    u64 GetDeviceHeapMemoryBudget() {
+        ++heap_reads;
+        return heap_budget;
+    }
     Download DownloadStagingBuffer(size_t size, bool = false) {
         ++downloads;
         auto bytes = std::make_shared<std::vector<u8>>(size);
@@ -126,6 +134,21 @@ struct TextureCacheTestAccess {
             cache.RunGarbageCollector(args...);
         };
 #include "texture_gc_frame.inc"
+    }
+    static std::array<u64, 3> BudgetAdjustment(Cache& cache, u64 budget, u64 reserved) {
+        auto& runtime = cache.runtime;
+        auto& slot_images = cache.slot_images;
+        const auto total_used_memory = cache.total_used_memory;
+        u64 critical_memory = cache.critical_memory;
+        u64 expected_memory = cache.expected_memory;
+        const auto ImageAllocationBytes = [&](const Image& image) {
+            return cache.ImageAllocationBytes(image);
+        };
+        const auto GetScaledImageSizeBytes = [&](const ImageBase& image) {
+            return cache.GetScaledImageSizeBytes(image);
+        };
+#include "texture_gc_budget.inc"
+        return {critical_memory, expected_memory, other_memory};
     }
     static u64 CostlyDeletes(const Cache& cache) { return cache.gc_costly_deletes; }
     static u64 Deletes(const Cache& cache) { return cache.gc_deletes; }
@@ -239,6 +262,33 @@ TEST_CASE("Texture removal uses its owner's GPU tables after another address spa
     Access::Check(cache, second.GetID(), other, 0x300000, sparse, true);
     Access::Unregister(cache, other);
     Access::Check(cache, second.GetID(), other, 0x300000, sparse, false);
+}
+
+TEST_CASE("Only a capped share adjusts the texture budget for other allocations",
+          "[video_core][texture_budget_share]") {
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device{physical};
+    Runtime runtime;
+    Cache cache{runtime, device};
+    using Access = VideoCommon::TextureCacheTestAccess;
+    Access::ConfigureGc(cache);
+    using Thresholds = std::array<u64, 3>;
+    const Thresholds unadjusted{81920, 40960, 0};
+    for (const u64 observed : {100000ULL, 180000ULL, 90000ULL, 160000ULL}) {
+        runtime.heap_budget = observed;
+        CHECK(Access::BudgetAdjustment(cache, 100000, 20000) == unadjusted);
+    }
+    CHECK(runtime.heap_reads == 0);
+
+    runtime.capped_share = true;
+    runtime.heap_budget = 90000;
+    CHECK(Access::BudgetAdjustment(cache, 100000, 20000) == unadjusted);
+    runtime.heap_budget = 120000;
+    const bool overridden = std::getenv("EDEN_NX2_TC_EXPECTED_MIB") != nullptr ||
+                            std::getenv("EDEN_NX2_TC_CRITICAL_MIB") != nullptr;
+    CHECK(Access::BudgetAdjustment(cache, 100000, 20000) ==
+          (overridden ? Thresholds{81920, 40960, 60000} : Thresholds{100000, 59040, 60000}));
+    CHECK(runtime.heap_reads == 2);
 }
 
 TEST_CASE("Sparse texture visitors skip invalid translations and retain stop semantics",

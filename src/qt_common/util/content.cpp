@@ -360,6 +360,9 @@ void ClearDataDir(FrontendCommon::DataManager::DataDir dir, const std::string& u
     auto dialog = newProgressDialog(tr("Clearing..."), QString(), 0, 0);
     dialog->show();
 
+    if (dir == FrontendCommon::DataManager::DataDir::Shaders) {
+        LOG_INFO(Frontend, "Clearing the shader cache directory");
+    }
     FrontendCommon::DataManager::ClearDir(dir, user_id);
 
     dialog->close();

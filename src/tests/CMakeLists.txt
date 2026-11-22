@@ -5,6 +5,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    core/kernel_core_fibers.cpp
+    video_core/astc_bcn_batches.cpp
     core/orphaned_profiles.cpp
     video_core/boot_driver_cache.cpp
     core/isolated_keys.cpp
@@ -341,17 +343,37 @@ add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(ASTC_ALLOCATION_DIR "${CMAKE_CURRENT_BINARY_DIR}/astc-allocation")
+set(ASTC_ALLOCATION_OUTPUTS "${ASTC_ALLOCATION_DIR}/astc_decode_allocation.inc"
+    "${ASTC_ALLOCATION_DIR}/astc_decode_budget.inc")
+set(ASTC_ALLOCATION_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_texture_cache.cpp")
+set(ASTC_ALLOCATION_EXTRACTOR "${CMAKE_CURRENT_SOURCE_DIR}/video_core/astc_decode_allocation_source.py")
+add_custom_command(OUTPUT ${ASTC_ALLOCATION_OUTPUTS}
+    COMMAND "${Python3_EXECUTABLE}" -I "${ASTC_ALLOCATION_EXTRACTOR}"
+        --source "${ASTC_ALLOCATION_SOURCE}" --output "${ASTC_ALLOCATION_DIR}"
+    DEPENDS "${ASTC_ALLOCATION_EXTRACTOR}" "${ASTC_ALLOCATION_SOURCE}"
+    VERBATIM)
+add_executable(astc_decode_allocation_tests video_core/astc_decode_allocation.cpp ${ASTC_ALLOCATION_OUTPUTS})
+target_compile_features(astc_decode_allocation_tests PRIVATE cxx_std_20)
+target_include_directories(astc_decode_allocation_tests PRIVATE "${ASTC_ALLOCATION_DIR}")
+add_dependencies(tests astc_decode_allocation_tests)
+add_test(NAME astc_decode_allocation COMMAND astc_decode_allocation_tests)
 set(TEXTURE_GC_FRAME "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_frame.inc")
-add_custom_command(OUTPUT "${TEXTURE_GC_FRAME}"
+set(TEXTURE_GC_BUDGET "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_budget.inc")
+add_custom_command(OUTPUT "${TEXTURE_GC_FRAME}" "${TEXTURE_GC_BUDGET}"
     COMMAND "${Python3_EXECUTABLE}" -I
         "${CMAKE_CURRENT_SOURCE_DIR}/video_core/texture_gc_source.py"
         "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/texture_cache.h" "${TEXTURE_GC_FRAME}"
     DEPENDS video_core/texture_gc_source.py
         "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/texture_cache.h"
     VERBATIM)
-target_sources(tests PRIVATE "${TEXTURE_GC_FRAME}")
+target_sources(tests PRIVATE "${TEXTURE_GC_FRAME}" "${TEXTURE_GC_BUDGET}")
 target_include_directories(tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME texture_spill_collection COMMAND tests "[texture_spill_collection]")
+add_test(NAME texture_budget_share COMMAND tests "[texture_budget_share]")
+add_test(NAME texture_budget_override COMMAND tests "[texture_budget_share]")
+set_tests_properties(texture_budget_override PROPERTIES
+    ENVIRONMENT "EDEN_NX2_TC_CRITICAL_MIB=4096")
 add_test(NAME sparse_segment_translation COMMAND tests "[sparse_segment_translation]")
 add_test(NAME dma_clear_mapping COMMAND tests "[dma_clear_mapping]")
 add_executable(log_session_probe common/log_session_probe.cpp)
@@ -381,6 +403,8 @@ add_test(NAME gpu_site_diagnostics
 set_tests_properties(gpu_site_diagnostics PROPERTIES TIMEOUT 120)
 add_test(NAME variable_pointer_capability COMMAND tests "[variable_pointer_capability]")
 add_test(NAME unique_function_ownership COMMAND tests "[unique_function_ownership]")
+add_test(NAME kernel_core_fibers COMMAND tests "[kernel_core_fibers]")
+add_test(NAME driver_blobs_same_session COMMAND tests "[driver_blobs_same_session]")
 add_test(NAME expired_timing_event COMMAND tests "[expired_timing_event]")
 set_tests_properties(expired_timing_event PROPERTIES TIMEOUT 15)
 

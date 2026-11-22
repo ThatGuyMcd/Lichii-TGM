@@ -80,6 +80,9 @@ using VideoCore::Surface::IsPixelFormatSRGB;
 using VideoCore::Surface::SurfaceType;
 
 namespace {
+// Completed ASTC decode images and each initial decode batch share the same budget.
+constexpr u64 MaxFreeTranscodeBytes = u64{256} << 20;
+
 [[nodiscard]] u32 HostMipCount(const VideoCommon::ImageInfo& info) {
     if (info.num_samples > 1)
         return 1;
@@ -3161,6 +3164,10 @@ u64 TextureCacheRuntime::GetDeviceHeapMemoryBudget() const {
     return device.GetDeviceHeapMemoryBudget();
 }
 
+bool TextureCacheRuntime::CapsDeviceMemoryBudget() const {
+    return device.CapsDeviceMemoryBudget();
+}
+
 u64 TextureCacheRuntime::GetDeviceMemorySlack() const {
     return device.GetDeviceMemorySlack();
 }
@@ -3255,8 +3262,6 @@ void TextureCacheRuntime::TickFrame() {
         pending_byte_addressed_shadows.pop_front();
     }
     static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
-    // Finished decode images wait for the next texture of their shape, up to this much memory.
-    static constexpr u64 MaxFreeTranscodeBytes = u64{256} << 20;
     const auto decode_bytes = [](const PendingTranscode& t) {
         u64 bytes{};
         for (u32 level = 0; level < t.levels; ++level) {
@@ -5598,6 +5603,16 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     // of the texture, forever (#1035). When the whole array does not fit, decode and encode it a
     // few layers at a time through a smaller image; the encoded output is the same.
     u32 batch = layers;
+    // A successful allocation may spill into host memory. Bound the initial request too,
+    // using the host mip count so the scratch image can be retained by the free pool.
+    u64 layer_decode_bytes{};
+    for (u32 level = 0; level < levels; ++level) {
+        layer_decode_bytes +=
+            u64{(std::max)(width >> level, 1U)} * (std::max)(height >> level, 1U) * 4;
+    }
+    while (batch > 1 && layer_decode_bytes > MaxFreeTranscodeBytes / batch) {
+        batch = Common::DivCeil(batch, 2U);
+    }
     PendingTranscode pending;
     bool reused = take_free(batch, pending);
     if (!reused) {
@@ -5637,7 +5652,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             if (batch_logged++ < 32) {
                 LOG_WARNING(Render_Vulkan,
                             "ASTC image {:#x} ({}x{}, {} levels, {} layers) decoded {} layers at a "
-                            "time: not enough device memory for all of them",
+                            "time to bound decode scratch memory",
                             image.gpu_addr, width, height, levels, layers, batch);
             }
         }
@@ -5665,6 +5680,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     const u64 block_bytes = bc3 ? 16 : 8;
     boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
     boost::container::small_vector<u64, 16> layer_bytes; // one encoded layer of each level
+    boost::container::small_vector<u64, 16> level_offsets;
     u64 total = 0;
     for (u32 level = 0; level < levels; ++level) {
         const u32 level_width = (std::max)(width >> level, 1U);
@@ -5672,6 +5688,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         const u32 blocks_x = Common::DivCeil(level_width, 4U);
         const u32 blocks_y = Common::DivCeil(level_height, 4U);
         layer_bytes.push_back(u64{blocks_x} * blocks_y * block_bytes);
+        level_offsets.push_back(total);
         const u64 size = layer_bytes.back() * layers;
         copies.push_back({
             .buffer_offset = total,
@@ -5695,44 +5712,9 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         staging_buffer_pool.FreeDeferred(output);
     };
 
-    const u64 layer_stride = info.layer_stride;
-    const size_t guest_size = image.guest_size_bytes;
-    for (u32 base = 0; base < layers; base += batch) {
-        const u32 count = (std::min)(batch, layers - base);
-        // The swizzles describe one layer's levels and the decoder steps layer_stride per layer
-        // from the start of its input, so a batch is the same info with fewer layers, read from
-        // its first layer on. The swizzle math does not depend on the layer count.
-        ImageInfo batch_info = info;
-        batch_info.resources.layers = static_cast<s32>(count);
-        StagingBufferRef batch_map = map;
-        batch_map.offset += u64{base} * layer_stride;
-        const size_t guest_offset = static_cast<size_t>(u64{base} * layer_stride);
-        const size_t batch_size =
-            batch == layers
-                ? guest_size
-                : (std::min)(static_cast<size_t>(u64{count} * layer_stride),
-                             guest_size - (std::min)(guest_size, guest_offset));
-        astc_decoder_pass->AssembleInto(
-            batch_info, 0, batch_size,
-            ASTCDecoderPass::Target{
-                .image = *pending.image,
-                .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
-                // The compute barrier orders the previous encode's reads before this overwrite.
-                .initialized = base != 0,
-                .level_view = [&pending](s32 level) { return *pending.views[level]; },
-                // The upload is stamped with the current tick: submit only once all batches
-                // have recorded their reads from it.
-                .wait = base + count >= layers,
-                .levels = levels,
-            },
-            batch_map, swizzles);
-        for (u32 level = 0; level < levels; ++level) {
-            bc_encoder_pass->Encode(*pending.views[level], copies[level].image_extent.width,
-                                    copies[level].image_extent.height, count, bc3, output.buffer,
-                                    output.offset, total,
-                                    copies[level].buffer_offset + layer_bytes[level] * base);
-        }
-    }
+    TranscodeAstcBatches(*astc_decoder_pass, *bc_encoder_pass, info, image.guest_size_bytes,
+                        map, swizzles, *pending.image, pending.views, batch, bc3, output.buffer,
+                        output.offset, total, level_offsets, layer_bytes);
     scheduler.Record([](vk::CommandBuffer cmdbuf) {
         const VkMemoryBarrier barrier{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,

@@ -14,3 +14,9 @@ output = Path(sys.argv[2])
 output.parent.mkdir(parents=True, exist_ok=True)
 output.write_text(start + body, encoding="utf-8")
 output.with_suffix(".sha256").write_text(hashlib.sha256(source).hexdigest() + "\n")
+
+budget_start = "                    u64 other_memory = 0;"
+budget_end = "                    // Bound the final thresholds"
+assert text.count(budget_start) == text.count(budget_end) == 1
+budget = text.split(budget_start, 1)[1].split(budget_end, 1)[0]
+output.with_name("texture_gc_budget.inc").write_text(budget_start + budget, encoding="utf-8")

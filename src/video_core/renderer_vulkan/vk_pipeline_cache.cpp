@@ -74,6 +74,7 @@
 #include "video_core/renderer_vulkan/graphics_warm_policy.h"
 #include "video_core/renderer_vulkan/mesh_fallback_limits.h"
 #include "video_core/renderer_vulkan/pipeline_cache_boot.h"
+#include "video_core/renderer_vulkan/pipeline_build_trace.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/noperspective_policy.h"
 #include "video_core/renderer_vulkan/native_key_compatibility.h"
@@ -753,7 +754,9 @@ vk::ShaderModule EmitShaderModule(const Device& device, const Shader::Profile& p
         *code_out = module_code;
     }
     device.SaveShader(code);
-    vk::ShaderModule module{BuildShader(device, module_code)};
+    vk::ShaderModule module{TraceShaderModuleBuild(
+        "graphics-module", shader_hash, module_code,
+        [&](std::span<const u32> words) { return BuildShader(device, words); })};
 
     // Text log + .spv dump. Text log is gated by gpu_log_level != Off; .spv dump
     // is independent and gated only by gpu_log_shader_dumps.
@@ -852,7 +855,9 @@ vk::ShaderModule EmitComputeModule(const Device& device, const Shader::Profile& 
     }
     device.SaveShader(code);
     // Saved as emitted, built from ComputeModuleCode's words (NoInline pass, SPIR-V dump)
-    vk::ShaderModule spv_module{BuildShader(device, module_code)};
+    vk::ShaderModule spv_module{TraceShaderModuleBuild(
+        "compute-module", shader_hash, module_code,
+        [&](std::span<const u32> words) { return BuildShader(device, words); })};
 
     // Text log + .spv dump. Same split as the graphics path.
     const bool should_log = GPU::Logging::IsActive();

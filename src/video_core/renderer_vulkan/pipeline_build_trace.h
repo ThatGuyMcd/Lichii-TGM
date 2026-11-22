@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -9,6 +10,7 @@
 #include <exception>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <thread>
 #include <utility>
@@ -40,7 +42,8 @@ public:
 
     void Write(const char* phase, const char* kind, u64 key_hash, std::span<const u64> stage_hashes,
                bool unoptimized, const char* role, u64 call, u64 timestamp_ns,
-               u64 call_begin_ns = 0, const char* outcome = nullptr) {
+               u64 call_begin_ns = 0, const char* outcome = nullptr,
+               std::optional<size_t> spirv_words = std::nullopt) {
         std::scoped_lock lock{mutex};
         std::fprintf(file, "%s %s pipeline=%016llx thread=%zu%s", phase, kind,
                      static_cast<unsigned long long>(key_hash),
@@ -62,6 +65,9 @@ public:
         if (role) {
             std::fprintf(file, " role=%s", role);
         }
+        if (spirv_words) {
+            std::fprintf(file, " spirv_words=%zu", *spirv_words);
+        }
         if (outcome) {
             std::fprintf(file, " call_begin_ns=%llu outcome=%s",
                          static_cast<unsigned long long>(call_begin_ns), outcome);
@@ -81,18 +87,19 @@ class PipelineBuildTraceScope {
 public:
     PipelineBuildTraceScope(PipelineBuildTraceWriter& writer_, const char* kind_, u64 key_hash_,
                             std::span<const u64> stage_hashes_, bool unoptimized_,
-                            const char* role_)
+                            const char* role_, std::optional<size_t> spirv_words_ = std::nullopt)
         : writer{writer_}, kind{kind_}, key_hash{key_hash_}, stage_hashes{stage_hashes_},
-          unoptimized{unoptimized_}, role{role_}, call{writer.NextCall()},
+          unoptimized{unoptimized_}, role{role_}, spirv_words{spirv_words_}, call{writer.NextCall()},
           exceptions{std::uncaught_exceptions()} {
-        writer.Write("BEGIN", kind, key_hash, stage_hashes, unoptimized, role, call, writer.Now());
+        writer.Write("BEGIN", kind, key_hash, stage_hashes, unoptimized, role, call, writer.Now(),
+                     0, nullptr, spirv_words);
         begin_ns = writer.Now();
     }
 
     ~PipelineBuildTraceScope() {
         const u64 end_ns = writer.Now();
         writer.Write("END", kind, key_hash, stage_hashes, unoptimized, role, call, end_ns, begin_ns,
-                     std::uncaught_exceptions() > exceptions ? "exception" : "success");
+                     std::uncaught_exceptions() > exceptions ? "exception" : "success", spirv_words);
     }
 
     PipelineBuildTraceScope(const PipelineBuildTraceScope&) = delete;
@@ -105,6 +112,7 @@ private:
     const std::span<const u64> stage_hashes;
     const bool unoptimized;
     const char* const role;
+    const std::optional<size_t> spirv_words;
     const u64 call;
     const int exceptions;
     u64 begin_ns{};
@@ -113,11 +121,13 @@ private:
 template <typename Function>
 decltype(auto) TracePipelineBuild(PipelineBuildTraceWriter& writer, const char* kind, u64 key_hash,
                                   std::span<const u64> stage_hashes, bool unoptimized,
-                                  Function&& build, const char* role = nullptr) {
+                                  Function&& build, const char* role = nullptr,
+                                  std::optional<size_t> spirv_words = std::nullopt) {
     if (!writer.Enabled()) {
         return std::forward<Function>(build)();
     }
-    const PipelineBuildTraceScope trace{writer, kind, key_hash, stage_hashes, unoptimized, role};
+    const PipelineBuildTraceScope trace{writer, kind, key_hash, stage_hashes, unoptimized, role,
+                                       spirv_words};
     return std::forward<Function>(build)();
 }
 
@@ -136,9 +146,30 @@ inline PipelineBuildTraceWriter& GetPipelineBuildTraceWriter() {
 /// A call through PipelineBinaries also includes its lookup, retries and binary capture/store.
 template <typename Function>
 decltype(auto) TracePipelineBuild(const char* kind, u64 key_hash, std::span<const u64> stage_hashes,
-                                  bool unoptimized, Function&& build, const char* role = nullptr) {
+                                  bool unoptimized, Function&& build, const char* role = nullptr,
+                                  std::optional<size_t> spirv_words = std::nullopt) {
     return TracePipelineBuild(GetPipelineBuildTraceWriter(), kind, key_hash, stage_hashes,
-                              unoptimized, std::forward<Function>(build), role);
+                              unoptimized, std::forward<Function>(build), role, spirv_words);
+}
+
+/// Count the final words passed to module creation, after emission and any module transforms.
+/// Deferred builders must call this when the words exist, not when their job is queued.
+template <typename Function>
+decltype(auto) TraceShaderModuleBuild(PipelineBuildTraceWriter& writer, const char* kind,
+                                     u64 shader_hash, std::span<const u32> code, Function&& build) {
+    const std::array<u64, 1> stages{shader_hash};
+    return TracePipelineBuild(writer, kind, shader_hash, stages, false,
+                              [&]() -> decltype(auto) {
+                                  return std::forward<Function>(build)(code);
+                              },
+                              nullptr, code.size());
+}
+
+template <typename Function>
+decltype(auto) TraceShaderModuleBuild(const char* kind, u64 shader_hash, std::span<const u32> code,
+                                     Function&& build) {
+    return TraceShaderModuleBuild(GetPipelineBuildTraceWriter(), kind, shader_hash, code,
+                                  std::forward<Function>(build));
 }
 
 } // namespace Vulkan

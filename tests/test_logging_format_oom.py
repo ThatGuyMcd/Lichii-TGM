@@ -47,8 +47,9 @@ struct Backend {
     virtual void Write(const Entry&) noexcept = 0;
     virtual void Flush() noexcept = 0;
 };
+using u64 = std::uint64_t;
 struct RingLine {
-    std::uint64_t sequence;
+    u64 sequence;
     std::string text;
 };
 ''' + actual + "\n" + ring + r'''

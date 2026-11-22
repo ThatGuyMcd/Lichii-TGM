@@ -223,6 +223,10 @@ bool RealVfsFilesystem::RenameFileLocked(RealVfsSharedState& state, const std::s
         DetachReferenceLocked(state, destination);
     }
     if (source != state.cache.end()) {
+#ifndef _WIN32
+        // The stream's size lookup uses the path it was opened with.
+        CloseReferenceLocked(state, *source->second.reference);
+#endif
         auto entry = state.cache.extract(source);
         entry.key() = std::move(new_key);
         entry.mapped().reference->path = std::move(new_path);

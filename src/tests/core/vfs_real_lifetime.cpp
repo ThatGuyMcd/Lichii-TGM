@@ -299,6 +299,13 @@ TEST_CASE("A live VFS rename retains its cache entry and rolls back on failure",
     CHECK(original->GetName() == "destination.bin");
     CHECK(Common::FS::SanitizePath(original->GetHostPath()) ==
           Common::FS::SanitizePath(new_host_path));
+    CHECK(original->GetSize() == 1);
+    CHECK(original->ReadAllBytes() == std::vector<u8>{'a'});
+    const auto replacement = owner.CreateFile(old_host_path);
+    REQUIRE(replacement);
+    REQUIRE(replacement->Resize(2));
+    CHECK(original->GetSize() == 1);
+    CHECK(original->ReadAllBytes() == std::vector<u8>{'a'});
     CHECK(original->ReadByte(0) == 'a');
 }
 

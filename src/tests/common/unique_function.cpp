@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <string>
+#include <functional>
+#include <memory>
+#include <type_traits>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -106,4 +109,88 @@ TEST_CASE("UniqueFunction", "[common]") {
         }
         REQUIRE(num_destroyed == 1);
     }
+}
+
+TEST_CASE("UniqueFunction owns a snapshot of a const lvalue callable",
+          "[common][unique_function_ownership]") {
+    struct Counter {
+        mutable int value;
+        int operator()() const {
+            return ++value;
+        }
+    };
+    const Counter source{11};
+    Common::UniqueFunction<int> queued{source};
+    source.value = 90;
+    CHECK(queued() == 12);
+    CHECK(queued() == 13);
+    CHECK(source.value == 90);
+}
+
+TEST_CASE("UniqueFunction retains its callable after the submitting scope ends",
+          "[common][unique_function_ownership]") {
+    struct Job {
+        int& live;
+        int& copies;
+        int value;
+        Job(int& live_, int& copies_, int value_) : live{live_}, copies{copies_}, value{value_} {
+            ++live;
+        }
+        Job(const Job& other) : live{other.live}, copies{other.copies}, value{other.value} {
+            ++live;
+            ++copies;
+        }
+        ~Job() {
+            --live;
+        }
+        int operator()() const {
+            return value;
+        }
+    };
+    int live = 0;
+    int copies = 0;
+    {
+        Common::UniqueFunction<int> queued;
+        {
+            const Job source{live, copies, 37};
+            queued = source;
+            // Stop before leaving the scope if the wrapper borrowed the callable.
+            REQUIRE(live == 2);
+            REQUIRE(copies == 1);
+        }
+        CHECK(live == 1);
+        CHECK(queued() == 37);
+    }
+    CHECK(live == 0);
+}
+
+TEST_CASE("UniqueFunction preserves explicit sharing and supports ordinary invocable forms",
+          "[common][unique_function_ownership]") {
+    struct Counter {
+        int value;
+        int Next() { return ++value; }
+        int operator()() { return Next(); }
+    };
+    Counter source{5};
+    Common::UniqueFunction<int> owned{source};
+    Common::UniqueFunction<int> shared{std::ref(source)};
+    CHECK(owned() == 6);
+    CHECK(source.value == 5);
+    CHECK(shared() == 6);
+    CHECK(source.value == 6);
+    Common::UniqueFunction<int, Counter&> member{&Counter::Next};
+    CHECK(member(source) == 7);
+    Common::UniqueFunction<int, Counter&> data{&Counter::value};
+    CHECK(data(source) == 7);
+    Common::UniqueFunction<void> discard{[&source] { return source.Next(); }};
+    discard();
+    CHECK(source.value == 8);
+    Common::UniqueFunction<int> move_only{[value = std::make_unique<int>(71)] { return *value; }};
+    auto moved = std::move(move_only);
+    CHECK_FALSE(move_only);
+    CHECK(moved() == 71);
+    STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<Common::UniqueFunction<int>>);
+    STATIC_REQUIRE_FALSE(std::is_constructible_v<Common::UniqueFunction<int>, int>);
+    STATIC_REQUIRE_FALSE(std::is_constructible_v<Common::UniqueFunction<int>,
+                          decltype([] {})>);
 }

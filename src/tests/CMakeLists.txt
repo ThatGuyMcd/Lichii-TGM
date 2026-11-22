@@ -341,6 +341,19 @@ add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(TEXTURE_GC_FRAME "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_frame.inc")
+add_custom_command(OUTPUT "${TEXTURE_GC_FRAME}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/texture_gc_source.py"
+        "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/texture_cache.h" "${TEXTURE_GC_FRAME}"
+    DEPENDS video_core/texture_gc_source.py
+        "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/texture_cache.h"
+    VERBATIM)
+target_sources(tests PRIVATE "${TEXTURE_GC_FRAME}")
+target_include_directories(tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME texture_spill_collection COMMAND tests "[texture_spill_collection]")
+add_test(NAME sparse_segment_translation COMMAND tests "[sparse_segment_translation]")
+add_test(NAME dma_clear_mapping COMMAND tests "[dma_clear_mapping]")
 add_executable(log_session_probe common/log_session_probe.cpp)
 target_link_libraries(log_session_probe PRIVATE common Threads::Threads)
 add_dependencies(tests log_session_probe)
@@ -367,6 +380,7 @@ add_test(NAME gpu_site_diagnostics
         "$<TARGET_FILE:gpu_site_contract_tests>")
 set_tests_properties(gpu_site_diagnostics PROPERTIES TIMEOUT 120)
 add_test(NAME variable_pointer_capability COMMAND tests "[variable_pointer_capability]")
+add_test(NAME unique_function_ownership COMMAND tests "[unique_function_ownership]")
 add_test(NAME expired_timing_event COMMAND tests "[expired_timing_event]")
 set_tests_properties(expired_timing_event PROPERTIES TIMEOUT 15)
 

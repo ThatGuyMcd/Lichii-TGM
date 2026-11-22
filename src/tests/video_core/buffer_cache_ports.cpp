@@ -3694,3 +3694,102 @@ TEST_CASE("Completed command snapshots do not replace ordinary buffer reads",
     REQUIRE(Access::SnapshotCounts(*f.cache).served == served);
     REQUIRE(f.bytes[SnapshotFixture::B - 0x10000] == 0x44);
 }
+
+TEST_CASE("DMA clear follows device mappings without touching physical gaps",
+          "[buffer_ports][dma_clear_mapping]") {
+    // Contiguous, discontiguous, an interior hole, and an unmapped first page.
+    const int layout = GENERATE(0, 1, 2, 3);
+    const bool partial = GENERATE(false, true);
+    INFO("layout=" << layout << " partial=" << partial);
+    KeepFixture f{nullptr};
+    f.Draw(nullptr);
+    constexpr GPUVAddr base = 0x200000;
+    constexpr u64 page = 0x10000;
+    const GPUVAddr second_gpu = base + (layout == 2 ? 2 : 1) * page;
+    const DAddr second_device = layout == 0 ? 0x30000 : 0x40000;
+    if (layout != 3) {
+        f.memory->Map(base, 0x20000, page, Tegra::PTEKind::PITCH, true);
+    }
+    f.memory->Map(second_gpu, second_device, page, Tegra::PTEKind::PITCH, true);
+    const auto id = Access::Add(*f.cache, 0x20000, 3 * page);
+    auto& buffer = Access::Get(*f.cache, id);
+    std::ranges::fill(buffer.bytes, u8{0x5a});
+    auto expected = buffer.bytes;
+    const GPUVAddr begin = partial ? base + page - 16 : base;
+    const GPUVAddr end = second_gpu + (partial ? 32 : page);
+    // Independent byte oracle from the chosen mappings, not GetSubmappedDeviceRange.
+    for (GPUVAddr address = begin; address < end; ++address) {
+        if (layout != 3 && address < base + page) {
+            expected[address - base] = 0x39;
+        } else if (address >= second_gpu) {
+            expected[second_device - 0x20000 + address - second_gpu] = 0x39;
+        }
+    }
+    REQUIRE(f.cache->DMAClear(begin, (end - begin) / sizeof(u32), 0x39393939));
+    REQUIRE(Access::Get(*f.cache, id).bytes == expected);
+    // The engine, not DMAClear, subsequently writes guest bytes.
+    REQUIRE(std::all_of(f.bytes + 0x10000, f.bytes + 0x40000,
+                        [](u8 byte) { return byte == 0; }));
+}
+
+TEST_CASE("DMA clear reaches a registered later run and invalidates uniform reuse",
+          "[buffer_ports][dma_clear_mapping]") {
+    KeepFixture f{nullptr};
+    const VideoCommon::Nx2FastDraw::Delta unchanged{};
+    f.Draw(nullptr);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    constexpr GPUVAddr base = 0x200000;
+    constexpr u64 page = 0x10000;
+    // First physical run is unregistered; the second contains the live uniform bank.
+    f.memory->Map(base, 0x30000, page, Tegra::PTEKind::PITCH, true);
+    f.memory->Map(base + page, 0x10000, page, Tegra::PTEKind::PITCH, true);
+    REQUIRE(f.cache->DMAClear(base, 2 * page / sizeof(u32), 0x09090909));
+    REQUIRE(std::ranges::all_of(Access::Get(*f.cache, f.id).bytes,
+                               [](u8 byte) { return byte == 9; }));
+    // Model MaxwellDMA's subsequent guest store over the mapped destination.
+    std::memset(f.bytes, 9, page);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 1);
+    f.Draw(&unchanged);
+    REQUIRE(f.Counts().kept == 2);
+}
+
+TEST_CASE("DMA clear rejects empty unmapped and unrepresentable ranges",
+          "[buffer_ports][dma_clear_mapping]") {
+    KeepFixture f{nullptr};
+    f.Draw(nullptr);
+    auto original = Access::Get(*f.cache, f.id).bytes;
+    REQUIRE_FALSE(f.cache->DMAClear(KeepFixture::UboGpu, 0, 0x39393939));
+    REQUIRE_FALSE(f.cache->DMAClear(0x200000, 64, 0x39393939));
+    REQUIRE_FALSE(f.cache->DMAClear(KeepFixture::UboGpu, u64{1} << 30, 0x39393939));
+    REQUIRE_FALSE(f.cache->DMAClear(KeepFixture::UboGpu, u64{1} << 62, 0x39393939));
+    REQUIRE(Access::Get(*f.cache, f.id).bytes == original);
+}
+
+TEST_CASE("DMA clear rejects invalid device runs before cache lookup",
+          "[buffer_ports][dma_clear_mapping]") {
+    const bool crosses_limit = GENERATE(false, true);
+    KeepFixture f{nullptr};
+    f.Draw(nullptr);
+    constexpr GPUVAddr base = 0x200000;
+    constexpr u64 page = 0x1000;
+    constexpr DAddr outside = DAddr{1} << Tegra::MaxwellDeviceMemoryManager::AS_BITS;
+    const u64 invalid_size = crosses_limit ? 2 * page : page;
+    f.memory->Map(base, crosses_limit ? outside - page : outside, invalid_size,
+                  Tegra::PTEKind::PITCH, false);
+    f.memory->Map(base + invalid_size, 0x20000, page, Tegra::PTEKind::PITCH, false);
+    REQUIRE_FALSE(f.memory->GpuToCpuAddress(base + invalid_size - 1));
+    const auto runs = f.memory->GetSubmappedDeviceRange(base, invalid_size + page);
+    REQUIRE(runs.size() == 2);
+    REQUIRE(runs[0].first == (crosses_limit ? outside - page : outside));
+    REQUIRE(runs[0].second == invalid_size);
+    const auto id = Access::Add(*f.cache, 0x20000, page);
+    std::ranges::fill(Access::Get(*f.cache, id).bytes, u8{0x5a});
+    REQUIRE_FALSE(f.cache->DMAClear(base, invalid_size / sizeof(u32), 0x39393939));
+    REQUIRE(std::ranges::all_of(Access::Get(*f.cache, id).bytes,
+                               [](u8 byte) { return byte == 0x5a; }));
+    REQUIRE(f.cache->DMAClear(base, (invalid_size + page) / sizeof(u32), 0x39393939));
+    REQUIRE(std::ranges::all_of(Access::Get(*f.cache, id).bytes,
+                               [](u8 byte) { return byte == 0x39; }));
+}

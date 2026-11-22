@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <numeric>
 #include <cstdlib>
 #include <limits>
@@ -185,7 +186,7 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
 }
 
 template <class P>
-void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
+void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) {
     const StutterTrace::SiteScope site{StutterTrace::Site::TextureCollect};
     bool high_priority_mode = false;
     bool aggressive_mode = false;
@@ -212,6 +213,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
     const auto used_memory = [&] {
         return total_used_memory - (std::min)(total_used_memory, pending_freed);
     };
+    const u64 usage_at_start = used_memory();
     const auto Evict = [&](ImageId image_id) {
         auto& image = slot_images[image_id];
         if (True(image.flags & ImageFlagBits::Tracked)) {
@@ -257,8 +259,9 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         pending_freed = 0;
     };
     const auto Configure = [&](bool allow_aggressive) {
-        high_priority_mode = out_of_memory || used_memory() >= expected_memory;
-        aggressive_mode = allow_aggressive && (out_of_memory || used_memory() >= critical_memory);
+        high_priority_mode = out_of_memory || at_critical || used_memory() >= expected_memory;
+        aggressive_mode = allow_aggressive &&
+                          (out_of_memory || at_critical || used_memory() >= critical_memory);
         const auto work = TextureGcWorkFor(used_memory(), critical_memory, min_age,
                                           high_priority_mode, aggressive_mode);
         ticks_to_destroy = work.min_age;
@@ -416,7 +419,10 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         evict_old_costly = false;
     }
     Collect();
-    if (out_of_memory || used_memory() >= critical_memory) {
+    // A spill is pressure, not an allocation failure. Escalate only if the first passes made
+    // no progress; include queued downloads in that progress before their single GPU wait.
+    if (out_of_memory || used_memory() >= critical_memory ||
+        (at_critical && used_memory() >= usage_at_start)) {
         Configure(true);
         Collect();
     }
@@ -951,7 +957,7 @@ void TextureCache<P>::TickFrame() {
     // A forced collect for memory spilled to host memory collects as at the critical threshold
     // for this frame, without the re-upload of images left out that a failed image gets.
     if (out_of_memory || spill_collect || total_used_memory > minimum_memory) {
-        RunGarbageCollector(out_of_memory || spill_collect);
+        RunGarbageCollector(out_of_memory, spill_collect);
     }
     if (out_of_memory) {
         // Textures left out for lack of memory are made again on their next read, once a frame
@@ -4589,8 +4595,15 @@ void TextureCache<P>::ForEachSparseSegment(ImageBase& image, Func&& func) {
     constexpr bool RETURNS_BOOL = std::is_same_v<FuncReturn, bool>;
     const auto segments = gpu_memory->GetSubmappedRange(image.gpu_addr, image.guest_size_bytes);
     for (const auto& [gpu_addr, size] : segments) {
-        std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
-        ASSERT(cpu_addr);
+        const std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+        if (!cpu_addr) {
+            static std::atomic<u32> logged{};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(HW_GPU, "Skipping sparse segment without a device address: {:#x}, {} bytes",
+                            gpu_addr, size);
+            }
+            continue;
+        }
         if constexpr (RETURNS_BOOL) {
             if (func(gpu_addr, *cpu_addr, size)) {
                 break;

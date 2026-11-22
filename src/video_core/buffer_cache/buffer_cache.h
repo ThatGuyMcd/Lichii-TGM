@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -1984,33 +1985,41 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
 
 template <class P>
 bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
-    const std::optional<DAddr> cpu_dst_address = gpu_memory->GpuToCpuAddress(dst_address);
-    if (!cpu_dst_address) {
+    // amount counts words, but FindBuffer accepts a 32-bit byte count.
+    if (amount > std::numeric_limits<u32>::max() / sizeof(u32)) {
         return false;
     }
-    // `amount` counts words.
-    const size_t size = amount * sizeof(u32);
-    const bool dest_dirty = IsRegionRegistered(*cpu_dst_address, size);
-    if (!dest_dirty) {
-        return false;
+    const size_t size = static_cast<size_t>(amount) * sizeof(u32);
+    // Adjacent GPU pages can map to nonadjacent device memory, with unmapped holes between runs.
+    const auto device_runs = gpu_memory->GetSubmappedDeviceRange(dst_address, size);
+    bool cleared = false;
+    for (const auto& [device_address, run_size] : device_runs) {
+        // Raw mapped runs can contain invalid device addresses; cache page tables cannot.
+        constexpr DAddr device_limit = DAddr{1} << Tegra::MaxwellDeviceMemoryManager::AS_BITS;
+        if (device_address >= device_limit || run_size > device_limit - device_address) {
+            continue;
+        }
+        if (!IsRegionRegistered(device_address, run_size)) {
+            continue;
+        }
+
+        // The caller writes guest memory after this; earlier read downloads must land first.
+        FinishReadDownloads(device_address, run_size);
+        ClearDownload(device_address, run_size);
+        gpu_modified_ranges.Subtract(device_address, run_size);
+        NoteUniformWrite(device_address, run_size);
+        NoteReadCheckEvent(device_address, run_size, ReadCheckEvent::DmaClear); // TEST
+        // Command list pages read the cleared words from guest memory.
+        Nx2NoteListHostWrite(device_address, run_size);
+
+        const BufferId buffer = FindBuffer(device_address, static_cast<u32>(run_size), false);
+        Buffer& dest_buffer = slot_buffers[buffer];
+        const u32 offset = dest_buffer.Offset(device_address);
+        runtime.ClearBuffer(dest_buffer, offset, run_size, value);
+        dest_buffer.MarkUsage(offset, run_size);
+        cleared = true;
     }
-
-    // The caller writes the cleared words to guest memory after this: earlier reads' downloads
-    // land first, so a reader of these bytes never finds neither there.
-    FinishReadDownloads(*cpu_dst_address, size);
-    ClearDownload(*cpu_dst_address, size);
-    gpu_modified_ranges.Subtract(*cpu_dst_address, size);
-    NoteUniformWrite(*cpu_dst_address, size);
-    NoteReadCheckEvent(*cpu_dst_address, size, ReadCheckEvent::DmaClear); // TEST
-    // As an inline write: command list pages read the cleared words from guest memory.
-    Nx2NoteListHostWrite(*cpu_dst_address, size);
-
-    const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
-    Buffer& dest_buffer = slot_buffers[buffer];
-    const u32 offset = dest_buffer.Offset(*cpu_dst_address);
-    runtime.ClearBuffer(dest_buffer, offset, size, value);
-    dest_buffer.MarkUsage(offset, size);
-    return true;
+    return cleared;
 }
 
 template <class P>

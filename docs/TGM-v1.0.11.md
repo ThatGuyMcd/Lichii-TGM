@@ -63,6 +63,10 @@ corrected a type mismatch in the vertical-blank diagnostics.
 [Lichii #1595](https://github.com/zortos293/Lichii/pull/1595),
 [#958](https://github.com/zortos293/Lichii/pull/958)
 
+I've accepted page-aligned native window buffers for the second supported
+block format while keeping their existing pitch and size.
+[Lichii #2304](https://github.com/zortos293/Lichii/pull/2304)
+
 I've brought across tighter checks for NRO and KIP layouts so the loaders
 can reject invalid images before reading or mapping their segments.
 NUP verification now streams archive members and verifies the backing data,

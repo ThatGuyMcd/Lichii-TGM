@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "core/hle/service/nx2_image_layout.h"
@@ -14,7 +15,9 @@ constexpr std::array<u32, 16> ColorPreference{
 }
 
 TEST_CASE("Native color image requirements accept page-aligned storage", "[nx2_image_layout]") {
-    const auto layout = Service::Nx2CalculateNativeImageRequirements(ColorPreference, 1);
+    auto preference = ColorPreference;
+    preference[7] = GENERATE(1U, 2U);
+    const auto layout = Service::Nx2CalculateNativeImageRequirements(preference, 1);
     REQUIRE(layout.width == 3840);
     REQUIRE(layout.height == 2160);
     REQUIRE(layout.pitch == 0x3C00);
@@ -24,6 +27,7 @@ TEST_CASE("Native color image requirements accept page-aligned storage", "[nx2_i
     REQUIRE((0x1000 & (layout.alignment - 1)) == 0);
     REQUIRE((0x800 & (layout.alignment - 1)) != 0);
     REQUIRE(0x1000 + layout.size <= 0x3000000);
+    REQUIRE(Service::Nx2CalculateImageLayout(preference.data()).alignment == 0x2000);
 }
 
 TEST_CASE("Native RGB10A2 storage preserves four-byte geometry", "[nx2_image_layout]") {
@@ -82,7 +86,7 @@ TEST_CASE("Native image base alignment does not shrink tile geometry", "[nx2_ima
 
 TEST_CASE("Unrecognized native image requirements preserve existing layout", "[nx2_image_layout]") {
     for (u32 field = 0; field < ColorPreference.size(); ++field) {
-        if (field == 2 || field == 4 || field == 5) {
+        if (field == 2 || field == 4 || field == 5 || field == 7) {
             continue;
         }
         auto preference = ColorPreference;
@@ -92,6 +96,11 @@ TEST_CASE("Unrecognized native image requirements preserve existing layout", "[n
         CAPTURE(field);
         REQUIRE(native.size == generic.size);
         REQUIRE(native.alignment == generic.alignment);
+    }
+    for (const u32 variant : {0U, 3U, 0x102U}) {
+        auto preference = ColorPreference;
+        preference[7] = variant;
+        CHECK(Service::Nx2CalculateNativeImageRequirements(preference, 1).alignment == 0x2000);
     }
     for (const u32 count : {0U, 2U, 3U}) {
         const auto layout = Service::Nx2CalculateNativeImageRequirements(ColorPreference, count);

@@ -6,6 +6,7 @@
 
 add_executable(tests
     core/kernel_core_fibers.cpp
+    core/filesystem_buffer_bounds.cpp
     video_core/maxwell_fmz.cpp
     video_core/astc_bcn_batches.cpp
     core/orphaned_profiles.cpp
@@ -407,6 +408,7 @@ add_test(NAME unique_function_ownership COMMAND tests "[unique_function_ownershi
 add_test(NAME kernel_core_fibers COMMAND tests "[kernel_core_fibers]")
 add_test(NAME driver_blobs_same_session COMMAND tests "[driver_blobs_same_session]")
 add_test(NAME maxwell_fmz COMMAND tests "[fmz]")
+add_test(NAME filesystem_buffer_bounds COMMAND tests "[filesystem_buffer_bounds]")
 add_test(NAME expired_timing_event COMMAND tests "[expired_timing_event]")
 set_tests_properties(expired_timing_event PROPERTIES TIMEOUT 15)
 

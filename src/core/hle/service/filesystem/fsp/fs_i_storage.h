@@ -20,6 +20,7 @@ public:
     explicit IStorage(Core::System& system_, FileSys::VirtualFile backend_);
 
 private:
+    friend struct FileIoBoundsTestAccess;
     FileSys::VirtualFile backend;
 
     static constexpr s64 ReadBytesPerSecond = 40'000'000;

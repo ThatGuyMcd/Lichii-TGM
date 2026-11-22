@@ -894,6 +894,44 @@ TEST_CASE("A size query of a table shares the texture array of its sample",
     }
 }
 
+TEST_CASE("Bit-indexed textures narrow only when the search cannot return a sentinel",
+          "[video_core][texture_handles][bit_indexed_descriptors]") {
+    for (const bool force_nonzero : {false, true}) {
+        for (const bool signed_search : {false, true}) {
+            for (const bool leading_zeros : {false, true}) {
+                CAPTURE(force_nonzero, signed_search, leading_zeros);
+                HandleProgram shader;
+                const Value bits{shader.Storage(0)};
+                const Value input{force_nonzero
+                                      ? shader.Emit(Opcode::BitwiseOr32, {bits, Value{1U}})
+                                      : bits};
+                const Value found{shader.Emit(signed_search ? Opcode::FindSMsb32
+                                                            : Opcode::FindUMsb32,
+                                              {input})};
+                const Value index{leading_zeros
+                                      ? shader.Emit(Opcode::BitwiseXor32, {found, Value{31U}})
+                                      : found};
+                const Value offset{
+                    shader.Emit(Opcode::ShiftLeftLogical32, {index, Value{4U}})};
+                const Value texture{shader.Emit(Opcode::GetCbufU32, {Value{0U}, offset})};
+                auto& sample{shader.Sample(texture)};
+                Shader::HostTranslateInfo host;
+                host.ApplyDescriptorLimitPolicy();
+                host.max_per_stage_descriptor_sampled_images = 128;
+                host.max_descriptor_set_sampled_images = 128;
+                host.max_per_stage_descriptor_samplers = 128;
+                host.max_descriptor_set_samplers = 128;
+                host.max_per_stage_resources = 256;
+                Shader::Optimization::TexturePass(shader.env, shader.program, host);
+
+                const auto& descriptor = shader.Descriptor(sample);
+                CHECK(descriptor.count == (force_nonzero && !signed_search ? 32U : 128U));
+                CHECK(descriptor.size_shift == 4);
+            }
+        }
+    }
+}
+
 TEST_CASE("Storage handle words are read from the host-aligned buffer base",
           "[video_core][texture_handles]") {
     // The program's storage offsets are relative to the buffer address aligned down to the host

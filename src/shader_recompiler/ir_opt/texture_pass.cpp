@@ -124,6 +124,42 @@ u32 DynamicDescriptorCount(u32 base_offset, u32 size_shift, u32 max_descriptors)
     return std::min(descriptor_limit, available_count);
 }
 
+bool IsBoundedBitIndex(const IR::Value& index) {
+    const IR::Inst* inst = index.InstRecursive();
+    if (inst && inst->GetOpcode() == IR::Opcode::BitwiseXor32 && inst->Arg(1).IsImmediate() &&
+        inst->Arg(1).U32() == 31) {
+        inst = inst->Arg(0).InstRecursive();
+    }
+    if (!inst || inst->GetOpcode() != IR::Opcode::FindUMsb32) {
+        return false;
+    }
+    // A zero input produces the no-bit sentinel, which might select beyond element 31.
+    const IR::Value input = inst->Arg(0);
+    if (input.IsImmediate()) {
+        return input.U32() != 0;
+    }
+    const IR::Inst* const bits = input.InstRecursive();
+    if (!bits || bits->GetOpcode() != IR::Opcode::BitwiseOr32) {
+        return false;
+    }
+    return (bits->Arg(0).IsImmediate() && bits->Arg(0).U32() != 0) ||
+           (bits->Arg(1).IsImmediate() && bits->Arg(1).U32() != 0);
+}
+
+u32 LimitBitIndexedDescriptors(const IR::U32& dynamic_offset, u32 size_shift, u32 count) {
+    const IR::Inst* const offset = dynamic_offset.InstRecursive();
+    if (count <= 32 || !offset || offset->GetOpcode() != IR::Opcode::ShiftLeftLogical32 ||
+        !offset->Arg(1).IsImmediate() || offset->Arg(1).U32() != size_shift) {
+        return count;
+    }
+    const IR::Value index = offset->Arg(0);
+    const IR::Inst* const select = index.InstRecursive();
+    const bool bounded = select && select->GetOpcode() == IR::Opcode::SelectU32
+                             ? IsBoundedBitIndex(select->Arg(1)) && IsBoundedBitIndex(select->Arg(2))
+                             : IsBoundedBitIndex(index);
+    return bounded ? 32U : count;
+}
+
 u32 SaturatingSub(u32 lhs, u32 rhs) {
     return lhs > rhs ? lhs - rhs : 0;
 }
@@ -1293,6 +1329,8 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
     auto const sampled_limit = (std::max)(1U, (std::min)(host_info.max_per_stage_descriptor_sampled_images,
                                                          host_info.max_descriptor_set_sampled_images));
     auto const resource_limit = (std::max)(1U, host_info.max_per_stage_resources);
+    const u32 descriptor_limit = (std::min)({DESCRIPTOR_MAX_COUNT, sampled_limit, resource_limit});
+    const u32 count = DynamicDescriptorCount(base_offset, size_shift, descriptor_limit);
     return ConstBufferAddr{
         .index = index.U32(),
         .offset = base_offset,
@@ -1301,7 +1339,7 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
         .secondary_offset = 0,
         .secondary_shift_left = 0,
         .dynamic_offset = dynamic_offset,
-        .count = DynamicDescriptorCount(base_offset, size_shift, (std::min)({DESCRIPTOR_MAX_COUNT, sampled_limit, resource_limit})),
+        .count = LimitBitIndexedDescriptors(dynamic_offset, size_shift, count),
         .has_secondary = false,
     };
 }

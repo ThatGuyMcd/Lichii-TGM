@@ -187,47 +187,6 @@ protected:
         const u64 addr_begin = addr;
         const u64 addr_end = addr_begin + size;
 
-        // A read of a few words (the macro DMA reads of reports, ~1,700 a frame at Ocarina of
-        // Time's water) looks up the offsets a query overlapping it can start at, instead of
-        // walking every query of the page (hundreds there). Same queries, from the same pages.
-        static constexpr u64 MaxProbes = 32;
-        const u64 page_first = (addr_begin >> Core::DEVICE_PAGEBITS) << Core::DEVICE_PAGEBITS;
-        const u64 probe_first =
-            (std::max)(addr_begin >= sizeof(u32) - 1 ? addr_begin - (sizeof(u32) - 1) : 0,
-                       page_first);
-        if (addr_end > probe_first && addr_end - probe_first <= MaxProbes) {
-            std::scoped_lock lock(cache_mutex);
-            u64 cached_page = ~u64{0};
-            ::Common::unordered_map<u32, QueryLocation>* contents = nullptr;
-            for (u64 query_addr = probe_first; query_addr < addr_end; ++query_addr) {
-                const u64 page = query_addr >> Core::DEVICE_PAGEBITS;
-                if (page != cached_page) {
-                    cached_page = page;
-                    const auto it = cached_queries.find(page);
-                    contents = it != cached_queries.end() ? &it->second : nullptr;
-                }
-                if (contents == nullptr) {
-                    continue;
-                }
-                const auto query =
-                    contents->find(static_cast<u32>(query_addr & Core::DEVICE_PAGEMASK));
-                if (query == contents->end()) {
-                    continue;
-                }
-                if constexpr (RETURNS_BOOL) {
-                    if (func(query->second)) {
-                        return;
-                    }
-                } else {
-                    func(query->second);
-                }
-                if constexpr (remove_from_cache) {
-                    contents->erase(query);
-                }
-            }
-            return;
-        }
-
         const u64 page_end = addr_end >> Core::DEVICE_PAGEBITS;
         std::scoped_lock lock(cache_mutex);
         for (u64 page = addr_begin >> Core::DEVICE_PAGEBITS; page <= page_end; ++page) {
@@ -242,6 +201,44 @@ protected:
                 continue;
             }
             auto& contents = it->second;
+            if constexpr (!remove_from_cache) {
+                // Macro DMA often reads a few words on a page with hundreds of occlusion
+                // reports. Probe the possible starts of overlapping reports on that page.
+                constexpr u64 MaxProbes = 32;
+                constexpr u64 ReportOverlap = sizeof(u32) - 1;
+                const u64 first = (std::max)(page_start + ReportOverlap, addr_begin) -
+                                  page_start - ReportOverlap;
+                const u64 limit = (std::min<u64>)(addr_end - page_start, Core::DEVICE_PAGESIZE);
+                if (limit > first && limit - first <= MaxProbes && limit - first < contents.size()) {
+                    auto match = contents.end();
+                    u64 offset = first;
+                    for (; offset < limit; ++offset) {
+                        const auto query = contents.find(static_cast<u32>(offset));
+                        if (query == contents.end()) {
+                            continue;
+                        }
+                        if constexpr (RETURNS_BOOL) {
+                            if (func(query->second)) {
+                                return;
+                            }
+                        } else {
+                            // Keep the original write order when several reports are flushed.
+                            if (match != contents.end()) {
+                                break;
+                            }
+                            match = query;
+                        }
+                    }
+                    if (offset == limit) {
+                        if constexpr (!RETURNS_BOOL) {
+                            if (match != contents.end()) {
+                                func(match->second);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
             bool matched = false;
             for (auto& query : contents) {
                 if (!in_range(query.first)) {

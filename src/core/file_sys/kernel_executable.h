@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -52,6 +53,11 @@ struct INIHeader {
 };
 static_assert(sizeof(INIHeader) == 0x10, "INIHeader has incorrect size.");
 
+struct KIPSegment {
+    u64 offset{};
+    u64 size{};
+};
+
 // Kernel Internal Process
 class KIP {
 public:
@@ -85,11 +91,19 @@ public:
     u32 GetBSSSize() const;
     u32 GetBSSOffset() const;
 
+    const std::array<KIPSegment, 3>& GetSegments() const;
+    u64 GetImageSize() const;
+    // Present for a complete KIP record, including one with an invalid guest layout.
+    std::optional<u64> GetStoredSize() const;
+
 private:
     Loader::ResultStatus status;
 
     KIPHeader header{};
-    std::array<std::vector<u8>, 6> decompressed_sections;
+    std::array<std::vector<u8>, 3> decompressed_sections;
+    std::array<KIPSegment, 3> segments{};
+    u64 image_size{};
+    std::optional<u64> stored_size;
 };
 
 class INI {

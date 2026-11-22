@@ -5,7 +5,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstring>
+#include <limits>
 
+#include "common/alignment.h"
+#include "common/logging.h"
 #include "common/string_util.h"
 #include "core/file_sys/kernel_executable.h"
 #include "core/file_sys/vfs/vfs_offset.h"
@@ -16,7 +19,7 @@ namespace FileSys {
 constexpr u32 INI_MAX_KIPS = 0x50;
 
 namespace {
-bool DecompressBLZ(std::vector<u8>& data) {
+bool DecompressBLZ(std::vector<u8>& data, u64 section_size) {
     if (data.size() < 0xC)
         return {};
 
@@ -39,6 +42,9 @@ bool DecompressBLZ(std::vector<u8>& data) {
     }
 
     const auto start_offset = data.size() - compressed_size;
+    if (out_size + start_offset > section_size) {
+        return false;
+    }
     data.resize(out_size + start_offset);
 
     std::size_t index = compressed_size - init_index;
@@ -94,6 +100,34 @@ bool DecompressBLZ(std::vector<u8>& data) {
 
     return true;
 }
+
+bool ValidateKipLayout(const KIPHeader& header, std::array<KIPSegment, 3>& segments,
+                       u64& image_size) {
+    constexpr u64 PageSize = 0x1000;
+    const u64 text_offset = header.sections[0].offset;
+    const u64 text_size = Common::AlignUp(u64{header.sections[0].decompressed_size}, PageSize);
+    const u64 ro_offset = header.sections[1].offset;
+    const u64 ro_size = Common::AlignUp(u64{header.sections[1].decompressed_size}, PageSize);
+    const u64 data_offset = header.sections[2].offset;
+    const u64 data_size = header.sections[2].decompressed_size;
+    const u64 bss_offset = header.sections[3].offset;
+    const u64 bss_size = header.sections[3].decompressed_size;
+
+    if (text_offset != 0 || ro_offset % PageSize != 0 || data_offset % PageSize != 0 ||
+        text_size > ro_offset || ro_offset + ro_size > data_offset ||
+        (bss_size != 0 && data_offset + data_size > bss_offset)) {
+        return false;
+    }
+    const u64 end = Common::AlignUp(bss_size != 0 ? bss_offset + bss_size
+                                                : data_offset + data_size,
+                                    PageSize);
+    if (end == 0 || end > std::numeric_limits<u32>::max()) {
+        return false;
+    }
+    segments = {{{0, text_size}, {ro_offset, ro_size}, {data_offset, end - data_offset}}};
+    image_size = end;
+    return true;
+}
 } // Anonymous namespace
 
 KIP::KIP(const VirtualFile& file) : status(Loader::ResultStatus::Success) {
@@ -112,28 +146,46 @@ KIP::KIP(const VirtualFile& file) : status(Loader::ResultStatus::Success) {
         return;
     }
 
+    u64 record_size = sizeof(KIPHeader);
+    for (const auto& section : header.sections) {
+        record_size += section.compressed_size;
+    }
+    if (record_size > file->GetSize()) {
+        status = Loader::ResultStatus::ErrorBadKIPHeader;
+        return;
+    }
+    stored_size = record_size;
+
+    if (!ValidateKipLayout(header, segments, image_size)) {
+        status = Loader::ResultStatus::ErrorBadKIPHeader;
+        return;
+    }
+    const auto reject = [this](Loader::ResultStatus result) {
+        status = result;
+        decompressed_sections = {};
+        segments = {};
+        image_size = 0;
+    };
     u64 offset = sizeof(KIPHeader);
-    for (std::size_t i = 0; i < header.sections.size(); ++i) {
-        auto compressed = file->ReadBytes(header.sections[i].compressed_size, offset);
-        offset += header.sections[i].compressed_size;
-        if (compressed.size() != header.sections[i].compressed_size) {
-            status = Loader::ResultStatus::ErrorBadKIPHeader;
+    for (size_t i = 0; i < decompressed_sections.size(); ++i) {
+        const auto& header_section = header.sections[i];
+        const u32 size = header_section.compressed_size;
+        const bool compressed = (header.flags & (1U << i)) != 0;
+        if (!compressed && size > header_section.decompressed_size) {
+            reject(Loader::ResultStatus::ErrorBadKIPHeader);
             return;
         }
-
-        if (header.sections[i].compressed_size == 0 && header.sections[i].decompressed_size != 0) {
-            if (i >= 3) {
-                continue;
-            }
-            decompressed_sections[i] = std::vector<u8>(header.sections[i].decompressed_size);
-        } else if (header.sections[i].compressed_size == header.sections[i].decompressed_size) {
-            decompressed_sections[i] = std::move(compressed);
-        } else {
-            decompressed_sections[i] = compressed;
-            if (!DecompressBLZ(decompressed_sections[i])) {
-                status = Loader::ResultStatus::ErrorBLZDecompressionFailed;
-                return;
-            }
+        auto& section = decompressed_sections[i];
+        section = file->ReadBytes(size, static_cast<size_t>(offset));
+        offset += size;
+        if (section.size() != size) {
+            reject(Loader::ResultStatus::ErrorBadKIPHeader);
+            return;
+        }
+        if (compressed && !section.empty() &&
+            !DecompressBLZ(section, header_section.decompressed_size)) {
+            reject(Loader::ResultStatus::ErrorBLZDecompressionFailed);
+            return;
         }
     }
 }
@@ -151,7 +203,19 @@ u64 KIP::GetTitleID() const {
 }
 
 std::vector<u8> KIP::GetSectionDecompressed(u8 index) const {
-    return decompressed_sections[index];
+    return index < decompressed_sections.size() ? decompressed_sections[index] : std::vector<u8>{};
+}
+
+const std::array<KIPSegment, 3>& KIP::GetSegments() const {
+    return segments;
+}
+
+u64 KIP::GetImageSize() const {
+    return image_size;
+}
+
+std::optional<u64> KIP::GetStoredSize() const {
+    return stored_size;
 }
 
 bool KIP::Is64Bit() const {
@@ -215,7 +279,8 @@ u32 KIP::GetBSSOffset() const {
 }
 
 INI::INI(const VirtualFile& file) : status(Loader::ResultStatus::Success) {
-    if (file->GetSize() < sizeof(INIHeader) || file->ReadObject(&header) != sizeof(INIHeader)) {
+    if (file == nullptr || file->GetSize() < sizeof(INIHeader) ||
+        file->ReadObject(&header) != sizeof(INIHeader)) {
         status = Loader::ResultStatus::ErrorBadINIHeader;
         return;
     }
@@ -230,14 +295,23 @@ INI::INI(const VirtualFile& file) : status(Loader::ResultStatus::Success) {
         return;
     }
 
+    const auto file_size = file->GetSize();
     u64 offset = sizeof(INIHeader);
-    for (std::size_t i = 0; i < header.kip_count; ++i) {
+    for (size_t i = 0; i < header.kip_count && offset < file_size; ++i) {
         const auto kip_file =
-            std::make_shared<OffsetVfsFile>(file, file->GetSize() - offset, offset);
+            std::make_shared<OffsetVfsFile>(file, file_size - offset, offset);
         KIP kip(kip_file);
-        if (kip.GetStatus() == Loader::ResultStatus::Success) {
-            kips.push_back(std::move(kip));
+        const auto size = kip.GetStoredSize();
+        if (!size) {
+            break;
         }
+        offset += *size;
+        if (kip.GetStatus() != Loader::ResultStatus::Success) {
+            LOG_WARNING(Loader, "INI1: skipped KIP {} ({}): {}", i, kip.GetName(),
+                        Loader::GetResultStatusString(kip.GetStatus()));
+            continue;
+        }
+        kips.push_back(std::move(kip));
     }
 }
 

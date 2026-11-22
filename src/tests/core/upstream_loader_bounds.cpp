@@ -20,6 +20,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/loader/kip.h"
 #include "core/loader/nro.h"
 #include "core/loader/nso.h"
 #include "tests/core/system_test_context.h"
@@ -186,17 +187,22 @@ std::vector<u8> Blz() {
     return bytes;
 }
 
-FileSys::VirtualFile Kip(std::vector<u8> payload, u32 decompressed = 32,
-                        u32 declared = 28, u32 bss = 0) {
+std::vector<u8> KipBytes(const std::vector<u8>& payload, u32 decompressed = 32, u32 stored = 28,
+                         u32 bss = 0, bool compressed = true, u64 title_id = 1) {
     FileSys::KIPHeader header{};
     header.magic = Common::MakeMagic('K', 'I', 'P', '1');
+    header.flags = compressed ? 1 : 0;
+    header.title_id = title_id;
     header.sections[0].decompressed_size = decompressed;
-    header.sections[0].compressed_size = declared;
+    header.sections[0].compressed_size = stored;
+    header.sections[1].offset = 0x1000;
+    header.sections[2].offset = 0x1000;
+    header.sections[3].offset = 0x2000;
     header.sections[3].decompressed_size = bss;
     std::vector<u8> bytes(sizeof(header));
     Put(bytes, 0, header);
     bytes.insert(bytes.end(), payload.begin(), payload.end());
-    return File(std::move(bytes));
+    return bytes;
 }
 } // namespace
 
@@ -365,29 +371,73 @@ TEST_CASE("NPDM validates ACI0 without losing either ACID layout", "[core][loade
 }
 
 TEST_CASE("KIP parser bounds compressed input and leaves BSS virtual", "[core][loader_bounds]") {
-    const FileSys::KIP valid{Kip(Blz())};
+    const FileSys::KIP valid{File(KipBytes(Blz()))};
     REQUIRE(valid.GetStatus() == Loader::ResultStatus::Success);
     const auto text = valid.GetSectionDecompressed(0);
     CHECK(std::string_view{reinterpret_cast<const char*>(text.data()), text.size()} ==
           "ABCDEFGHABCDEFGHABCDEFGHABCDEFGH");
     for (const u32 size : {29U, 0xFFFFFFFFU}) {
-        const FileSys::KIP truncated{Kip(Blz(), 32, size)};
+        const FileSys::KIP truncated{File(KipBytes(Blz(), 32, size))};
         CHECK(truncated.GetStatus() == Loader::ResultStatus::ErrorBadKIPHeader);
     }
-    const FileSys::KIP stored{Kip(std::vector<u8>(16, 0x66), 16, 16, 0xFFFFFFF0)};
+    const FileSys::KIP stored{File(KipBytes(std::vector<u8>(16, 0x66), 32, 16, 0x2300, false))};
     REQUIRE(stored.GetStatus() == Loader::ResultStatus::Success);
     CHECK(stored.GetTextSection().size() == 16);
-    CHECK(stored.GetBSSSize() == 0xFFFFFFF0);
+    CHECK(stored.GetBSSSize() == 0x2300);
+    CHECK(stored.GetImageSize() == 0x5000);
     CHECK(stored.GetSectionDecompressed(3).empty());
+    const FileSys::KIP oversized_bss{File(KipBytes({}, 32, 0, 0xFFFFFFF0, false))};
+    CHECK(oversized_bss.GetStatus() == Loader::ResultStatus::ErrorBadKIPHeader);
+    const FileSys::KIP oversized_raw{File(KipBytes(std::vector<u8>(17), 16, 17, 0, false))};
+    CHECK(oversized_raw.GetStatus() == Loader::ResultStatus::ErrorBadKIPHeader);
     for (const auto [offset, value] : {std::pair{16U, 0x1000U}, std::pair{20U, 29U},
                                      std::pair{24U, 0xFFFFFFF0U}, std::pair{24U, 0xFFFFFFE4U}}) {
         auto corrupt = Blz();
         Put(corrupt, offset, value);
-        const FileSys::KIP bad{Kip(std::move(corrupt))};
+        const FileSys::KIP bad{File(KipBytes(corrupt))};
         CHECK(bad.GetStatus() == Loader::ResultStatus::ErrorBLZDecompressionFailed);
     }
     auto exhausted = Blz();
     exhausted[6] = 0;
-    const FileSys::KIP underflow{Kip(std::move(exhausted))};
+    const FileSys::KIP underflow{File(KipBytes(exhausted))};
     CHECK(underflow.GetStatus() == Loader::ResultStatus::ErrorBLZDecompressionFailed);
+    const FileSys::KIP over_expansion{File(KipBytes(Blz(), 31))};
+    CHECK(over_expansion.GetStatus() == Loader::ResultStatus::ErrorBLZDecompressionFailed);
+}
+
+TEST_CASE("INI1 advances by each KIP's stored size and skips invalid layouts",
+          "[core][loader_bounds]") {
+    auto first = KipBytes({1}, 2, 1, 0, false, 11);
+    auto invalid = KipBytes({2, 3}, 2, 2, 0, false, 22);
+    Put(invalid, offsetof(FileSys::KIPHeader, sections), u32{0x1000});
+    auto last = KipBytes({4, 5, 6}, 3, 3, 0, false, 33);
+    FileSys::INIHeader header{};
+    header.magic = Common::MakeMagic('I', 'N', 'I', '1');
+    header.size = static_cast<u32>(sizeof(header) + first.size() + invalid.size() + last.size());
+    header.kip_count = 3;
+    std::vector<u8> bytes(sizeof(header));
+    Put(bytes, 0, header);
+    for (const auto& kip : {first, invalid, last}) {
+        bytes.insert(bytes.end(), kip.begin(), kip.end());
+    }
+    const FileSys::INI ini{File(std::move(bytes))};
+    REQUIRE(ini.GetStatus() == Loader::ResultStatus::Success);
+    const auto& kips = ini.GetKIPs();
+    REQUIRE(kips.size() == 2);
+    CHECK(kips[0].GetTitleID() == 11);
+    CHECK(kips[1].GetTitleID() == 33);
+}
+
+TEST_CASE("KIP loader maps only validated sections and zeroes unstored bytes",
+          "[core][loader_bounds]") {
+    WithProcess([](Kernel::KProcess& process, Core::System& system) {
+        Loader::AppLoader_KIP oversized{File(KipBytes({0x72}, 4, 1, 0xF0000000, false))};
+        CHECK(oversized.Load(process, system).first == Loader::ResultStatus::ErrorBadKIPHeader);
+        Loader::AppLoader_KIP loader{File(KipBytes({0x72}, 4, 1, 0x1010, false))};
+        REQUIRE(loader.Load(process, system).first == Loader::ResultStatus::Success);
+        std::vector<u8> image(0x4000, 0x11);
+        process.GetMemory().ReadBlock(process.GetEntryPoint(), image.data(), image.size());
+        CHECK(image.front() == 0x72);
+        CHECK(std::all_of(image.begin() + 1, image.end(), [](u8 byte) { return byte == 0; }));
+    });
 }

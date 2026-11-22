@@ -4,24 +4,22 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
 #include <cstring>
+#include "common/logging.h"
 #include "common/settings.h"
 #include "common/random.h"
+#include "core/core.h"
 #include "core/file_sys/kernel_executable.h"
 #include "core/file_sys/program_metadata.h"
 #include "core/hle/kernel/code_set.h"
+#include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/kernel.h"
 #include "core/loader/kip.h"
-#include "core/memory.h"
 
 namespace Loader {
-
-namespace {
-constexpr u32 PageAlignSize(u32 size) {
-    return static_cast<u32>((size + Core::Memory::YUZU_PAGEMASK) & ~Core::Memory::YUZU_PAGEMASK);
-}
-} // Anonymous namespace
 
 AppLoader_KIP::AppLoader_KIP(FileSys::VirtualFile file_)
     : AppLoader(std::move(file_)), kip(std::make_unique<FileSys::KIP>(file)) {}
@@ -46,8 +44,7 @@ FileType AppLoader_KIP::GetFileType() const {
                                                                          : FileType::Error;
 }
 
-AppLoader::LoadResult AppLoader_KIP::Load(Kernel::KProcess& process,
-                                          [[maybe_unused]] Core::System& system) {
+AppLoader::LoadResult AppLoader_KIP::Load(Kernel::KProcess& process, Core::System& system) {
     if (is_loaded) {
         return {ResultStatus::ErrorAlreadyLoaded, {}};
     }
@@ -75,25 +72,33 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::KProcess& process,
                         kip->GetTitleID(), 0xFFFFFFFFFFFFFFFF, 0x1FE00000,
                         kip->GetKernelCapabilities());
 
+    const auto default_metadata = FileSys::ProgramMetadata::GetDefault();
+    const auto pool = static_cast<Kernel::KMemoryManager::Pool>(default_metadata.GetPoolPartition());
+    const auto image_size = static_cast<size_t>(kip->GetImageSize());
+    if (image_size > system.Kernel().MemoryManager().GetSize(pool)) {
+        LOG_ERROR(Loader, "KIP not loaded: process cannot hold the {:#x}-byte image", image_size);
+        return {ResultStatus::ErrorBadKIPHeader, {}};
+    }
+
     Kernel::CodeSet codeset;
-    codeset.memory.resize(PageAlignSize(kip->GetBSSOffset()) + kip->GetBSSSize());
-    const auto load_segment = [&codeset](Kernel::CodeSet::Segment& segment, std::span<const u8> data, u32 offset) {
-        segment.addr = offset;
-        segment.offset = offset;
-        segment.size = PageAlignSize(u32(data.size()));
-        std::memcpy(codeset.memory.data() + offset, data.data(), data.size());
-    };
-    load_segment(codeset.CodeSegment(), kip->GetTextSection(), kip->GetTextOffset());
-    load_segment(codeset.RODataSegment(), kip->GetRODataSection(), kip->GetRODataOffset());
-    load_segment(codeset.DataSegment(), kip->GetDataSection(), kip->GetDataOffset());
-    codeset.DataSegment().size += kip->GetBSSSize();
+    codeset.memory.resize(image_size);
+    const auto& extents = kip->GetSegments();
+    const std::array sections{kip->GetTextSection(), kip->GetRODataSection(), kip->GetDataSection()};
+    for (size_t i = 0; i < sections.size(); ++i) {
+        const auto [offset, size] = extents[i];
+        codeset.segments[i] = {offset, offset, static_cast<u32>(size)};
+        if (!sections[i].empty()) {
+            std::memcpy(codeset.memory.data() + offset, sections[i].data(), sections[i].size());
+        }
+    }
 
     // TODO: this is bad form of ASLR, it sucks
     std::uintptr_t aslr_offset = ((::Settings::values.rng_seed_enabled.GetValue()
         ? ::Settings::values.rng_seed.GetValue() : Common::Random::Random64(0)) << 12) & 0xfff000;
 
     // Setup the process code layout
-    if (process.LoadFromMetadata(system.Kernel(), FileSys::ProgramMetadata::GetDefault(), codeset.memory.size(), 0, aslr_offset).IsError()) {
+    if (process.LoadFromMetadata(system.Kernel(), default_metadata, image_size, 0, aslr_offset)
+            .IsError()) {
         return {ResultStatus::ErrorNotInitialized, {}};
     }
     const VAddr base_address = GetInteger(process.GetEntryPoint());

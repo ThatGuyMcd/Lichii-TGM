@@ -58,6 +58,26 @@ TEST_CASE("Ampere BRA.CONV always branches and BRA.DIV never does", "[video_core
     REQUIRE(CountMaxwell(dropped, 0xe24, 52) == 0);
 }
 
+TEST_CASE("Ampere HSETP2 loads a constant operand and retains its modifiers",
+          "[video_core][ampere]") {
+    constexpr u32 bank = 2;
+    constexpr u32 offset = 0x54;
+    constexpr u32 modifiers = 1U | (1U << 2) | (1U << 3);
+    constexpr u32 operand = (offset << 6) | (bank << 22) | (modifiers << 28);
+    constexpr u32 compare_and_predicates = (6U << 12) | (2U << 17) | (7U << 20) | (7U << 23);
+    const std::array code{NativeInstruction(0x634, 0, 8, operand, compare_and_predicates), EXIT};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    const u64 load = FindMaxwell(lowered, 0x4c98, 48);
+    const u64 compare = FindMaxwell(lowered, 0x5d20, 48);
+    REQUIRE(load != 0);
+    REQUIRE(compare != 0);
+    CHECK(((load >> 20) & 0x3fff) == offset / 4);
+    CHECK(((load >> 34) & 0x1f) == bank);
+    CHECK(((compare >> 20) & 0xff) == (load & 0xff));
+    CHECK(((compare >> 28) & 0xf) == modifiers);
+}
+
 TEST_CASE("Ampere TLD.SCR.LZ takes its handle from a uniform register", "[video_core][ampere]") {
     // TLD.SCR.LZ R5, R8, R4, R5, UR4, 0x0, 2D, 0x7 -> Maxwell TLD.B.
     const std::array<Instruction, 2> code{{

@@ -774,7 +774,10 @@ bool FindGradient3DDerivatives(std::array<IR::Value, 3>& results, IR::Value coor
     }
     const auto check_through_shuffle = [](IR::Value input, IR::Value& result) {
         const IR::Value value_1{GetThroughCast(input.Resolve(), IR::Opcode::BitCastF32U32)};
-        IR::Inst* const inst2{value_1.InstRecursive()};
+        IR::Inst* const inst2{value_1.TryInstRecursive()};
+        if (!inst2) {
+            return false;
+        }
         if (inst2->GetOpcode() == IR::Opcode::QuadBroadcast) {
             if (!inst2->Arg(1).Resolve().IsImmediate()) {
                 return false;

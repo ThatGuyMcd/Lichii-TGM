@@ -15,6 +15,11 @@ using Shader::Ampere::ProgramCaptureState;
 
 constexpr Instruction EXIT{{0x0000794d, 0, 0x03800000, 0}};
 
+constexpr Instruction NativeInstruction(u32 opcode, u32 dest, u32 source, u32 word1, u32 word2,
+                                        u32 predicate = 7) {
+    return {{opcode | (predicate << 12) | (dest << 16) | (source << 24), word1, word2, 0}};
+}
+
 // Lowered Maxwell words whose top bits (above `shift`) are `opcode`.
 template <typename Program>
 size_t CountMaxwell(const Program& lowered, u64 opcode, u32 shift) {
@@ -123,6 +128,173 @@ TEST_CASE("Ampere integer-to-float conversions take immediates", "[video_core][a
     REQUIRE_FALSE(rejected);
     CHECK(rejected.error == "unsupported native opcode");
     CHECK(rejected.error_offset == 0x20);
+}
+
+TEST_CASE("Ampere convergence token moves leave the gather offset proof intact",
+          "[video_core][ampere][convergence_decal]") {
+    constexpr auto save = NativeInstruction(0xf55, 2, 19, 0, 0);
+    constexpr auto restore = NativeInstruction(0xf56, 2, 19, 0, 1U << 20);
+    constexpr auto clear = NativeInstruction(0xf56, 2, 19, 0, 0);
+    constexpr auto x = NativeInstruction(0x802, 34, 0, 0x00010100, 15U << 8);
+    constexpr auto y = NativeInstruction(0x802, 35, 0, 0xff010000, 15U << 8);
+    constexpr auto gather = NativeInstruction(0xb63, 44, 10,
+                                              (1U << 29) | (1U << 28) | (2U << 22) | 34,
+                                              (7U << 17) | (2U << 12) | (15U << 8) | 255);
+    const auto reference = LowerToMaxwell(std::array{x, y, gather, EXIT});
+    REQUIRE(reference);
+    const auto with_markers = LowerToMaxwell(std::array{x, save, y, restore, gather, clear, EXIT});
+    INFO(with_markers.error);
+    REQUIRE(with_markers);
+    CHECK(with_markers.instructions == reference.instructions);
+    CHECK(with_markers.source_instruction_offsets[1] == with_markers.source_instruction_offsets[2]);
+    CHECK(with_markers.source_instruction_offsets[3] == with_markers.source_instruction_offsets[4]);
+
+    const auto general_register_form = NativeInstruction(0xf55, 42, 19, 0, 0);
+    const auto invalid = LowerToMaxwell(std::array{general_register_form, EXIT});
+    CHECK_FALSE(invalid);
+    CHECK(invalid.error == "native convergence move mode");
+
+    // Entering the offset sequence through a branch still prevents the constant-offset proof.
+    const auto branch_to_y = NativeInstruction(0x947, 0, 0, 0, 0x03800000);
+    const auto branch = LowerToMaxwell(std::array{x, save, branch_to_y, y, gather, EXIT});
+    CHECK_FALSE(branch);
+    CHECK(branch.error == "native per-tap gather control-flow proof");
+}
+
+TEST_CASE("Ampere FSWZADD NDV preserves the Maxwell swizzle and registers",
+          "[video_core][ampere][convergence_decal]") {
+    constexpr u32 rd = 37, ra = 14, rb = 53, swizzle = 0xe4;
+    constexpr auto plain = NativeInstruction(0x822, rd, ra, swizzle, rb, 10);
+    constexpr auto ndv = NativeInstruction(0x822, rd, ra, swizzle, rb | (1U << 13), 10);
+    const auto expected = LowerToMaxwell(std::array{plain, EXIT});
+    const auto lowered = LowerToMaxwell(std::array{ndv, EXIT});
+    REQUIRE(expected);
+    REQUIRE(lowered);
+    CHECK(lowered.instructions == expected.instructions);
+    const u64 word = lowered.instructions.front();
+    CHECK((word >> 48) == 0x50f8);
+    CHECK((word & 0xff) == rd);
+    CHECK(((word >> 8) & 0xff) == ra);
+    CHECK(((word >> 20) & 0xff) == rb);
+    CHECK(((word >> 28) & 0xff) == 0xd8); // Maxwell swaps the two bits of each swizzle.
+    CHECK(((word >> 16) & 15) == 10);
+
+    const auto invalid = NativeInstruction(0x822, rd, ra, swizzle, rb | (1U << 14), 10);
+    CHECK_FALSE(LowerToMaxwell(std::array{invalid, EXIT}));
+}
+
+TEST_CASE("Ampere TEX NDV reaches bound and bindless Maxwell samples",
+          "[video_core][ampere][convergence_decal]") {
+    constexpr u32 xyz = 2U << 29;
+    constexpr u32 bound_buffer = 2U << 22;
+    constexpr u32 descriptor = 17U << 8;
+    constexpr u32 result_mask = 5U << 8;
+    constexpr u32 no_second_result = 255;
+    constexpr u32 no_sparse_pred = 7U << 17;
+    constexpr u32 fields = result_mask | no_second_result | no_sparse_pred;
+    constexpr u32 ndv = 1U << 13;
+    for (const bool bindless : {false, true}) {
+        CAPTURE(bindless);
+        const u32 opcode = bindless ? 0x361 : 0xb60;
+        const u32 word1 = xyz | (bindless ? 1U << 27 : bound_buffer | descriptor) | 19;
+        const auto texture = NativeInstruction(opcode, 60, 11, word1, fields);
+        const auto texture_ndv = NativeInstruction(opcode, 60, 11, word1, fields | ndv);
+        const auto reference = LowerToMaxwell(std::array{texture, EXIT});
+        const auto lowered = LowerToMaxwell(std::array{texture_ndv, EXIT});
+        INFO(lowered.error);
+        REQUIRE(reference);
+        REQUIRE(lowered);
+        REQUIRE(lowered.instructions.size() == reference.instructions.size());
+        const u64 code = bindless ? 0x37a : 0x30;
+        const u32 shift = bindless ? 54 : 58;
+        const u64 sample = FindMaxwell(lowered, code, shift);
+        REQUIRE(sample != 0);
+        CHECK(sample == (FindMaxwell(reference, code, shift) | (u64{1} << 35)));
+        CHECK(((sample >> 28) & 7) == 4); // Maxwell 3D texture.
+        CHECK(((sample >> 31) & 15) == 5);
+        CHECK(lowered.required_texture_buffer == (bindless ? ~0U : 2U));
+    }
+
+    const auto first = NativeInstruction(0xb60, 60, 11, xyz | bound_buffer | descriptor | 19,
+                                         fields);
+    const auto second = NativeInstruction(0xb60, 62, 11, xyz | (4U << 22) | descriptor | 19,
+                                          fields | ndv);
+    const auto fallback = LowerToMaxwell(std::array{first, second, EXIT});
+    REQUIRE(fallback);
+    CHECK(fallback.required_texture_buffer == 2);
+    const u64 sample = FindMaxwell(fallback, 0x37a, 54);
+    REQUIRE(sample != 0);
+    CHECK(((sample >> 35) & 1) == 1);
+    CHECK(((sample >> 20) & 255) == 246);
+}
+
+TEST_CASE("Ampere lane-masked MOV preserves the guest predicate and other lanes",
+          "[video_core][ampere][convergence_decal]") {
+    constexpr u32 rd = 42, rb = 19;
+    constexpr u32 saved_predicate_mask = 1U << 6;
+    for (const u32 lane : {0U, 1U, 2U, 3U}) {
+        for (const u32 guest : {0U, 6U, 7U, 8U, 14U}) {
+            CAPTURE(lane, guest);
+            const auto native = NativeInstruction(0x202, rd, 0, rb, 1U << (8 + lane), guest);
+            const auto lowered = LowerToMaxwell(std::array{native, EXIT});
+            REQUIRE(lowered);
+            REQUIRE(lowered.instructions.size() == 8);
+            const auto& words = lowered.instructions;
+            CHECK((words[0] >> 48) == 0x38e8); // P2R
+            CHECK((words[0] & 0xff) == 253);
+            CHECK(((words[0] >> 20) & 0x7f) == saved_predicate_mask);
+            CHECK((words[1] >> 48) == 0xf0c8); // S2R
+            CHECK(((words[1] >> 20) & 0xff) == 0); // SR_LANEID
+            CHECK((words[1] & 0xff) == 250);
+            CHECK(((words[2] >> 20) & 0xffffffff) == 3);
+            CHECK(((words[3] >> 20) & 0xffffffff) == lane);
+            CHECK((words[4] >> 52) == 0x5b6); // ISETP.EQ.U32.AND
+            CHECK(((words[4] >> 3) & 7) == 6);
+            CHECK(((words[4] >> 39) & 15) == guest);
+            CHECK(((words[4] >> 49) & 7) == 2);
+            CHECK((words[5] >> 48) == 0x5c98); // @P6 MOV
+            CHECK(((words[5] >> 16) & 15) == 6);
+            CHECK((words[5] & 0xff) == rd);
+            CHECK(((words[5] >> 20) & 0xff) == rb);
+            CHECK((words[6] >> 48) == 0x38f0); // R2P
+            CHECK(((words[6] >> 8) & 0xff) == 253);
+            CHECK(((words[6] >> 20) & 0x7f) == saved_predicate_mask);
+        }
+    }
+    const auto two_lanes = NativeInstruction(0x202, rd, 0, rb, 3U << 8);
+    const auto rejected = LowerToMaxwell(std::array{two_lanes, EXIT});
+    CHECK_FALSE(rejected);
+    CHECK(rejected.error == "native MOV modifiers");
+}
+
+TEST_CASE("Ampere IMAD return-link tracking distinguishes narrow and pair writes",
+          "[video_core][ampere][imad_return_link]") {
+    constexpr u32 link = 33;
+    constexpr u32 alias = 21;
+    constexpr u32 width = sizeof(Instruction);
+    constexpr auto set_link = NativeInstruction(0x802, link, 0, 3 * width, 15U << 8);
+    constexpr auto narrow = NativeInstruction(0x224, link - 1, 4, 5, 0x078e000b);
+    constexpr auto call = NativeInstruction(0x944, 0, 0, width, 0x03c00000);
+    constexpr auto copy_link = NativeInstruction(0x224, alias, 255, 255, 0x078e0000 | link);
+    constexpr auto ret = NativeInstruction(0x950, 0, alias, 0U - 7 * width, 0x03c3ffff);
+    const std::array code{set_link, narrow, call, EXIT, copy_link, narrow, ret};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(lowered);
+    CHECK(lowered.instructions.back() == 0xe32000000007000fULL);
+
+    constexpr auto wide = NativeInstruction(0x225, link - 1, 4, 5, 0x078e00ff);
+    REQUIRE(LowerToMaxwell(std::array{wide, EXIT}));
+    for (const u32 site : {1U, 5U}) {
+        CAPTURE(site);
+        auto bad = code;
+        bad[site] = wide;
+        const auto rejected = LowerToMaxwell(bad);
+        CHECK_FALSE(rejected);
+        CHECK(rejected.error == "native call linkage mode");
+    }
+    auto known_rz = code;
+    known_rz[1] = NativeInstruction(0x224, 255, 4, 5, 0x078e000b);
+    CHECK(LowerToMaxwell(known_rz));
 }
 
 TEST_CASE("Ampere SUST.P keeps its channel mask", "[video_core][ampere]") {

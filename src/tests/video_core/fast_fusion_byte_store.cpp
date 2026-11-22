@@ -277,6 +277,26 @@ TEST_CASE("BA descriptors require a compatible 32-bit color image before signed 
     }
 }
 
+TEST_CASE("NDV 3D sample leaves an incomplete shuffle pattern intact",
+          "[video_core][ampere][convergence_decal]") {
+    ByteStoreProgram fixture{Stage::Fragment};
+    fixture.program.stage = Stage::Fragment;
+    IR::IREmitter ir{fixture.block};
+    const auto lane = ir.QuadBroadcast(ir.LaneId(), ir.Imm32(2));
+    const auto input = ir.BitCast<IR::F32>(lane);
+    // The inner operation has a literal where the derivative matcher needs a shuffle.
+    const auto partial = ir.FSwizzleAdd(ir.Imm32(0.125f), input, ir.Imm32(0xe4));
+    const auto coord = ir.FSwizzleAdd(partial, input, ir.Imm32(0xe4));
+    const auto coords = ir.CompositeConstruct(coord, coord, coord);
+    IR::TextureInstInfo info{};
+    info.type.Assign(TextureType::Color3D);
+    info.ndv_is_active.Assign(1);
+    const auto sample = ir.ImageSampleImplicitLod(ir.Imm32(0x128), coords, {}, {}, {}, info);
+
+    REQUIRE_NOTHROW(Optimization::ConstantPropagationPass(fixture.env, fixture.program));
+    CHECK(sample.Inst()->GetOpcode() == IR::Opcode::ImageSampleImplicitLod);
+}
+
 TEST_CASE("Image descriptor merging preserves BA validation and coherent memory independently",
           "[video_core][fast_fusion_byte_store]") {
     for (const bool first : {false, true}) {

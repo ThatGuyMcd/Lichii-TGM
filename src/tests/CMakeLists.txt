@@ -349,6 +349,22 @@ add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(QUERY_TRAVERSAL_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/query_cache/query_cache_base.h")
+set(QUERY_TRAVERSAL_DIR "${CMAKE_CURRENT_BINARY_DIR}/query-traversal")
+set(QUERY_TRAVERSAL_BODY "${QUERY_TRAVERSAL_DIR}/query_traversal.inc")
+add_custom_command(OUTPUT "${QUERY_TRAVERSAL_BODY}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/query_traversal_source.py"
+        "${QUERY_TRAVERSAL_SOURCE}" "${QUERY_TRAVERSAL_BODY}"
+    DEPENDS video_core/query_traversal_source.py "${QUERY_TRAVERSAL_SOURCE}"
+    VERBATIM)
+add_executable(query_traversal_tests video_core/query_traversal.cpp "${QUERY_TRAVERSAL_BODY}")
+target_compile_features(query_traversal_tests PRIVATE cxx_std_20)
+target_include_directories(query_traversal_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src" "${QUERY_TRAVERSAL_DIR}")
+target_link_libraries(query_traversal_tests PRIVATE common)
+add_dependencies(tests query_traversal_tests)
+add_test(NAME query_traversal COMMAND query_traversal_tests)
 set(TEXTURE_CHUNK_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/texture_cache.h")
 set(TEXTURE_CHUNK_DIR "${CMAKE_CURRENT_BINARY_DIR}/texture-chunk")
 set(TEXTURE_CHUNK_BODY "${TEXTURE_CHUNK_DIR}/texture_chunk_upload.inc")

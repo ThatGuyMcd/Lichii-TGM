@@ -365,6 +365,25 @@ target_include_directories(query_traversal_tests PRIVATE
 target_link_libraries(query_traversal_tests PRIVATE common)
 add_dependencies(tests query_traversal_tests)
 add_test(NAME query_traversal COMMAND query_traversal_tests)
+set(INDIRECT_DISPATCH_DIR "${CMAKE_CURRENT_BINARY_DIR}/indirect-dispatch")
+set(INDIRECT_DISPATCH_BODIES
+    "${INDIRECT_DISPATCH_DIR}/indirect_obtain_buffer.inc"
+    "${INDIRECT_DISPATCH_DIR}/indirect_obtain_arguments.inc"
+    "${INDIRECT_DISPATCH_DIR}/indirect_dispatch.inc")
+add_custom_command(OUTPUT ${INDIRECT_DISPATCH_BODIES}
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/indirect_dispatch_source.py"
+        "${PROJECT_SOURCE_DIR}" "${INDIRECT_DISPATCH_DIR}"
+    DEPENDS video_core/indirect_dispatch_source.py
+        "${PROJECT_SOURCE_DIR}/src/video_core/buffer_cache/buffer_cache.h"
+        "${PROJECT_SOURCE_DIR}/src/video_core/buffer_cache/indirect_buffer.h"
+        "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_rasterizer.cpp"
+    VERBATIM)
+add_executable(indirect_dispatch_tests video_core/indirect_dispatch.cpp ${INDIRECT_DISPATCH_BODIES})
+target_compile_features(indirect_dispatch_tests PRIVATE cxx_std_20)
+target_include_directories(indirect_dispatch_tests PRIVATE "${INDIRECT_DISPATCH_DIR}")
+add_dependencies(tests indirect_dispatch_tests)
+add_test(NAME indirect_dispatch COMMAND indirect_dispatch_tests)
 set(TEXTURE_CHUNK_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/texture_cache.h")
 set(TEXTURE_CHUNK_DIR "${CMAKE_CURRENT_BINARY_DIR}/texture-chunk")
 set(TEXTURE_CHUNK_BODY "${TEXTURE_CHUNK_DIR}/texture_chunk_upload.inc")

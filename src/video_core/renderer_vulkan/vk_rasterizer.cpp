@@ -2870,6 +2870,10 @@ void RasterizerVulkan::DispatchCompute() {
         // DispatchIndirect
         const auto [buffer, offset] =
             VideoCommon::ObtainIndirectBuffer(buffer_cache, *indirect_address);
+        // An unmapped argument address has no VkBuffer on nullDescriptor devices.
+        if (buffer->Handle() == VK_NULL_HANDLE) [[unlikely]] {
+            return;
+        }
         scheduler.RequestOutsideRenderPassOperationContext();
         scheduler.NoteComputeWrites();
         scheduler.TraceComputePipeline(pipeline->ShaderHash());

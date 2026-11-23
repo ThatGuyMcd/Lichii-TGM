@@ -236,7 +236,8 @@ public:
     void RendererFrameEndNotify();
 
     void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
-                          std::vector<Service::Nvidia::NvFence>&& fences);
+                          std::vector<Service::Nvidia::NvFence>&& fences,
+                          std::function<void()> on_composited = {});
 
     void WaitForComposite();
 

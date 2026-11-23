@@ -471,6 +471,24 @@ add_custom_command(OUTPUT ${PADDED_DEPTH_BODIES}
     VERBATIM)
 target_sources(tests PRIVATE ${PADDED_DEPTH_BODIES})
 add_test(NAME padded_depth_cache COMMAND tests "[padded_depth_cache]")
+
+set(PRESENT_COMPLETION_BODIES
+    "${CMAKE_CURRENT_BINARY_DIR}/present_gpu_body.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/present_service_prefix.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/present_service_dispatch.inc"
+    "${CMAKE_CURRENT_BINARY_DIR}/present_service_enqueue.inc")
+add_custom_command(OUTPUT ${PRESENT_COMPLETION_BODIES}
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/core/present_completion_source.py"
+        --source-root "${PROJECT_SOURCE_DIR}"
+        --output-dir "${CMAKE_CURRENT_BINARY_DIR}"
+    DEPENDS core/present_completion_source.py
+        "${PROJECT_SOURCE_DIR}/src/video_core/gpu.cpp"
+        "${PROJECT_SOURCE_DIR}/src/core/hle/service/nx2_gsv.h"
+    VERBATIM)
+target_sources(tests PRIVATE core/nx2_present_completion.cpp ${PRESENT_COMPLETION_BODIES})
+add_test(NAME nx2_present_completion COMMAND tests "[nx2_present],[nx2_present_completion]")
+set_tests_properties(nx2_present_completion PROPERTIES TIMEOUT 30)
 set(TEXTURE_GC_BUDGET "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_budget.inc")
 add_custom_command(OUTPUT "${TEXTURE_GC_FRAME}" "${TEXTURE_GC_BUDGET}"
     COMMAND "${Python3_EXECUTABLE}" -I

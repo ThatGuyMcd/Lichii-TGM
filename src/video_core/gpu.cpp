@@ -441,7 +441,9 @@ struct GPU::Impl {
         gpu_thread.FlushAndInvalidateRegion(addr, size, is_async);
     }
 
-    void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers, std::vector<Service::Nvidia::NvFence>&& fences) {
+    void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
+                          std::vector<Service::Nvidia::NvFence>&& fences,
+                          std::function<void()> on_composited) {
         const size_t num_fences{fences.size()};
         size_t current_request_counter{};
         if (num_fences != 0) {
@@ -457,13 +459,16 @@ struct GPU::Impl {
         }
         pending_composite_fence = RequestSyncOperation(
             [this, current_request_counter, num_fences, composite_layers = std::move(layers),
-             composite_fences = std::move(fences)] {
+             composite_fences = std::move(fences), done = std::move(on_composited)] {
                 if (num_fences == 0) {
                     renderer->Composite(composite_layers);
+                    if (done) {
+                        done();
+                    }
                     return;
                 }
                 auto& syncpoint_manager = system.Host1x().GetSyncpointManager();
-                const auto executer = [this, current_request_counter, composite_layers]() {
+                const auto executer = [this, current_request_counter, composite_layers, done]() {
                     {
                         std::unique_lock<std::mutex> lk(request_swap_mutex);
                         if (--request_swap_counters[current_request_counter] != 0) {
@@ -472,6 +477,9 @@ struct GPU::Impl {
                         free_swap_counters.push_back(current_request_counter);
                     }
                     renderer->Composite(composite_layers);
+                    if (done) {
+                        done();
+                    }
                 };
                 for (size_t i = 0; i < num_fences; i++) {
                     syncpoint_manager.RegisterGuestAction(composite_fences[i].id,
@@ -686,8 +694,9 @@ const VideoCore::ShaderNotify& GPU::ShaderNotify() const {
 }
 
 void GPU::RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
-                           std::vector<Service::Nvidia::NvFence>&& fences) {
-    impl->RequestComposite(std::move(layers), std::move(fences));
+                           std::vector<Service::Nvidia::NvFence>&& fences,
+                           std::function<void()> on_composited) {
+    impl->RequestComposite(std::move(layers), std::move(fences), std::move(on_composited));
 }
 
 void GPU::WaitForComposite() {

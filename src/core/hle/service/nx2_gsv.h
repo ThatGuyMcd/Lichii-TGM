@@ -21,6 +21,7 @@
 #include <limits>
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <memory>
@@ -2165,8 +2166,11 @@ private:
                             (~w[22] >= 192 || system.Host1x().GetSyncpointManager().IsReadyGuest(
                                                  ~w[22], w[24]));
         std::array<u32, 4> release{};
+        std::shared_ptr<std::atomic<bool>> completion;
         if (queued) {
-            const auto fence = QueueRelease(w[12], ~w[22], w[24], ctx.GetThread().GetOwnerProcess());
+            completion = std::make_shared<std::atomic<bool>>(false);
+            const auto fence = QueueRelease(w[12], ~w[22], w[24], ctx.GetThread().GetOwnerProcess(),
+                                            completion);
             if (!fence) {
                 IPC::ResponseBuilder rb{ctx, 2};
                 rb.PushRaw<u32>(Kernel::ResultOutOfResource.raw);
@@ -2174,7 +2178,7 @@ private:
             }
             release = *fence;
         }
-        Composite(w[5], ~w[22], w[24], w[7], queued);
+        Composite(w[5], ~w[22], w[24], w[7], queued, completion);
         const auto composited = std::chrono::steady_clock::now();
         if (!queued) {
             PaceToVblank(w[12], ctx.GetThread().GetOwnerProcess());
@@ -2273,7 +2277,8 @@ private:
 
     /// Moves the display deadline to a bounded release fence, also gated on the GPU fence.
     std::optional<std::array<u32, 4>> QueueRelease(u32 timing, u32 fence_id, u32 fence_value,
-                                                const Kernel::KProcess* process) {
+                                                const Kernel::KProcess* process,
+                                                const std::shared_ptr<std::atomic<bool>>& completion) {
         if (!m_release_queue) {
             const auto service = system.ServiceManager().GetService<Nvidia::NVDRV>("nvdrv", false);
             if (!service) {
@@ -2305,7 +2310,7 @@ private:
             }
         }
         const auto deadline = system.CoreTiming().GetGlobalTimeNs() + wait;
-        const auto value = m_release_queue->Queue(deadline, fence_id, fence_value);
+        const auto value = m_release_queue->Queue(deadline, fence_id, fence_value, completion);
         if (!value) {
             LOG_ERROR(Service, "nx2:vi2 release queue exhausted at present {}", m_presents);
             return std::nullopt;
@@ -2679,7 +2684,14 @@ private:
     // shown_size: the present's word 7, ((height - 1) << 16) | (width - 1) of the area the game drew
     // into from the image's top-left corner (0 when it gives none).
     void Composite(u32 image_id, u32 fence_id, u32 fence_value, u32 shown_size,
-                   bool release_paced) {
+                   bool release_paced, const std::shared_ptr<std::atomic<bool>>& completion) {
+        bool completion_submitted{};
+        SCOPE_EXIT {
+            // No renderer reads a rejected image. Do not orphan its already queued release.
+            if (completion && !completion_submitted) {
+                completion->store(true, std::memory_order_release);
+            }
+        };
         NotifyHdrChange();
         u64 address{};
         u32 parent{};
@@ -2807,7 +2819,15 @@ private:
         if (fence_id < 192) {
             fences.push_back({static_cast<s32>(fence_id), fence_value});
         }
-        system.GPU().RequestComposite(std::move(layers), std::move(fences));
+        // Lichii #1640: the guest fence can pass before this asynchronous composite reads the
+        // image. The callback owns only a token, so late GPU work cannot access this service.
+        std::function<void()> on_composited;
+        if (completion) {
+            on_composited = [completion] { completion->store(true, std::memory_order_release); };
+        }
+        system.GPU().RequestComposite(std::move(layers), std::move(fences),
+                                      std::move(on_composited));
+        completion_submitted = true;
         CaptureFrame();
         Core::OcarinaPhotoMode::Update(system);
         DumpRanges();

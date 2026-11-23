@@ -1,12 +1,15 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 
 #include "common/common_types.h"
 #include "core/core_timing.h"
@@ -14,7 +17,7 @@
 
 namespace Service {
 
-/// Releases native display buffers in submission order after their deadline and GPU fence pass.
+/// Releases native display buffers after their deadline, GPU fence and compositor consumption.
 class Nx2PresentReleaseQueue {
 public:
     // The service advertises fifteen buffer slots. Clients must wait for releases before reuse.
@@ -47,12 +50,13 @@ public:
     }
 
     /// Enqueues without blocking the present thread; returns no value when all slots are pending.
-    std::optional<u32> Queue(std::chrono::nanoseconds deadline, u32 fence_id, u32 fence_value) {
+    std::optional<u32> Queue(std::chrono::nanoseconds deadline, u32 fence_id, u32 fence_value,
+                             std::shared_ptr<std::atomic<bool>> completion = {}) {
         std::scoped_lock lock{mutex};
         if (stopped || pending.size() == Capacity) {
             return std::nullopt;
         }
-        pending.push_back({deadline, fence_id, fence_value, ++next_value});
+        pending.push_back({deadline, fence_id, fence_value, ++next_value, std::move(completion)});
         if (pending.size() == 1) {
             timing.ScheduleEvent(deadline, timer, true);
         }
@@ -65,6 +69,8 @@ private:
         u32 fence_id;
         u32 fence_value;
         u32 value;
+        // The GPU callback owns only this token, never the queue or display service.
+        std::shared_ptr<std::atomic<bool>> completion;
     };
 
     /// Advances once per queued release, without chasing a counter that has already passed it.
@@ -87,8 +93,9 @@ private:
                 timing.ScheduleEvent(entry.deadline, timer, true);
                 return;
             }
-            if (entry.fence_id < Tegra::Host1x::SyncpointManager::NUM_MAX_SYNCPOINTS &&
-                !syncpoints.IsReadyGuest(entry.fence_id, entry.fence_value)) {
+            if ((entry.completion && !entry.completion->load(std::memory_order_acquire)) ||
+                (entry.fence_id < Tegra::Host1x::SyncpointManager::NUM_MAX_SYNCPOINTS &&
+                 !syncpoints.IsReadyGuest(entry.fence_id, entry.fence_value))) {
                 timing.ScheduleEvent(std::chrono::microseconds{100}, timer);
                 return;
             }

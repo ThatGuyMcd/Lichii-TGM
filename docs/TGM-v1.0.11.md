@@ -206,5 +206,9 @@ I've fixed a race in OpenGL compute dispatch by holding the buffer and texture
 cache locks through setup and submission. The work queue drains after those
 locks are released. [Lichii #2436](https://github.com/zortos293/Lichii/pull/2436)
 
+I've fixed when queued Switch 2 frames release their buffers. A buffer becomes
+available for reuse once the renderer has taken the frame and the existing
+GPU fence and pacing conditions have passed. [Lichii #1640](https://github.com/zortos293/Lichii/pull/1640)
+
 Shader precompile system by Frizti (Fritchii). Shader precompile recipe by Frizti
 (Fritchii), included with redistribution permission and its original notice.

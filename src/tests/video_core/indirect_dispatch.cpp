@@ -141,11 +141,11 @@ struct GlDispatch {
     Memory* gpu_memory = &buffer_cache.memory;
     ComputeEngine engine;
     ComputeEngine* kepler_compute = &engine;
-    ComputePipeline pipeline{buffer_cache.mutex, texture_cache.mutex};
+    ComputePipeline configured_pipeline{buffer_cache.mutex, texture_cache.mutex};
     struct {
         ComputePipeline* pipeline;
         ComputePipeline* CurrentComputePipeline() const { return pipeline; }
-    } shader_cache{&pipeline};
+    } shader_cache{&configured_pipeline};
     struct { void LocalMemoryWarmup() {} } program_manager;
     struct {
         const ObservedLock& buffer_lock;
@@ -246,7 +246,7 @@ int main() {
     }
     run("OpenGL releases caches after failed setup", [] {
         GlDispatch gl;
-        gl.pipeline.fail = true;
+        gl.configured_pipeline.fail = true;
         bool failed_setup = false;
         try {
             gl.Run();

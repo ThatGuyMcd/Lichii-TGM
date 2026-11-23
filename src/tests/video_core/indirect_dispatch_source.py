@@ -26,4 +26,7 @@ assert text.count(marker) == 1
 body = marker + text.split(marker, 1)[1].split("    const std::array<u32, 3> dim", 1)[0]
 assert body.rstrip().endswith("}") and "SubmitNx2ListCopies" in body
 (output / "indirect_dispatch.inc").write_text(body)
+text = read("src/video_core/renderer_opengl/gl_rasterizer.cpp")
+body = text.split("void RasterizerOpenGL::DispatchCompute() {", 1)[1].split("\n}\n", 1)[0]
+(output / "gl_compute_dispatch.inc").write_text(body)
 (output / "source-hashes.json").write_text(json.dumps(hashes, indent=2) + "\n")

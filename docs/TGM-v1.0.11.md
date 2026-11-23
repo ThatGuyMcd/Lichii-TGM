@@ -202,5 +202,9 @@ continue when a saved argument string is too long for the loader.
 [#2402](https://github.com/zortos293/Lichii/pull/2402),
 [#2380](https://github.com/zortos293/Lichii/pull/2380)
 
+I've fixed a race in OpenGL compute dispatch by holding the buffer and texture
+cache locks through setup and submission. The work queue drains after those
+locks are released. [Lichii #2436](https://github.com/zortos293/Lichii/pull/2436)
+
 Shader precompile system by Frizti (Fritchii). Shader precompile recipe by Frizti
 (Fritchii), included with redistribution permission and its original notice.

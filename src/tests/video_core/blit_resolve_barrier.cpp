@@ -5,9 +5,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/renderer_vulkan/image_layout_guards.h"
 #include "video_core/texture_cache/types.h"
-#include "video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace {
 using namespace Vulkan;

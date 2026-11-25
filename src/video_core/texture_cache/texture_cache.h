@@ -520,6 +520,27 @@ void TextureCache<P>::LogThresholds() const {
 }
 
 template <class P>
+void TextureCache<P>::ReapRetiredImages() {
+    if constexpr (requires { runtime.CurrentTick(); }) {
+        while (!gpu_sentenced_images.empty() &&
+               runtime.IsFree(gpu_sentenced_images.front().tick)) {
+            gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+            gpu_sentenced_images.pop_front();
+        }
+        // The delete tick and download completion can occur in either order.
+        for (auto it = retained_images.begin();
+             it != retained_images.end() && runtime.IsFree(it->tick);) {
+            if (it->image.use_count() != 1) {
+                ++it;
+                continue;
+            }
+            gpu_sentenced_bytes -= it->bytes;
+            it = retained_images.erase(it);
+        }
+    }
+}
+
+template <class P>
 void TextureCache<P>::TickFrame() {
     // Upload buffers grown for one huge image (title 1's 341 MiB terrain layer pools) are freed
     // rather than kept for the rest of the session.
@@ -528,13 +549,7 @@ void TextureCache<P>::TickFrame() {
             scratch->release();
         }
     }
-    if constexpr (requires { runtime.CurrentTick(); }) {
-        while (!gpu_sentenced_images.empty() &&
-               runtime.IsFree(gpu_sentenced_images.front().tick)) {
-            gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
-            gpu_sentenced_images.pop_front();
-        }
-    }
+    ReapRetiredImages();
     // If we can obtain the memory info, use it instead of the estimate. Read before the budget
     // check below, which counts what isn't images from it.
     if (runtime.CanReportMemoryUsage()) {
@@ -2829,18 +2844,16 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         return;
     }
 
-    const bool gpu_unswizzle_enabled = Settings::values.gpu_unswizzle_enabled.GetValue();
-
-    if (gpu_unswizzle_enabled &&
-        IsPixelFormatBCn(image.info.format) &&
-        image.info.type == ImageType::e3D &&
-        image.info.resources.levels == 1 &&
-        image.info.resources.layers == 1 &&
-        MapSizeBytes(image) >= gpu_unswizzle_maxsize &&
-        False(image.flags & ImageFlagBits::GpuModified)) {
-
-        QueueAsyncUnswizzle(image, image_id);
-        return;
+    // OpenGL's upload staging is not deferred and cannot be held across chunks.
+    if constexpr (requires { runtime.CurrentTick(); }) {
+        if (Settings::values.gpu_unswizzle_enabled.GetValue() &&
+            IsPixelFormatBCn(image.info.format) && image.info.type == ImageType::e3D &&
+            image.info.resources.levels == 1 && image.info.resources.layers == 1 &&
+            MapSizeBytes(image) >= gpu_unswizzle_maxsize &&
+            False(image.flags & ImageFlagBits::GpuModified)) {
+            QueueAsyncUnswizzle(image, image_id);
+            return;
+        }
     }
     ++images_uploaded;
     uploaded_bytes += image.guest_size_bytes;
@@ -4933,6 +4946,19 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete, const
             async_decode->cancelled = true;
         }
     }
+    if constexpr (requires { runtime.CurrentTick(); }) {
+        std::erase_if(unswizzle_queue, [&](auto& task) {
+            if (task.image_id != image_id) {
+                return false;
+            }
+            if (task.initialized) {
+                runtime.FreeDeferredStagingBuffer(task.staging_buffer);
+                // A submitted slice still owns the image even on an immediate-delete path.
+                immediate_delete &= task.last_submitted_offset == 0;
+            }
+            return true;
+        });
+    }
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }
@@ -5000,10 +5026,14 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete, const
         slot_image_views.erase(image_view_id);
         BumpImageViewGeneration(image_view_id);
     }
-    const bool retained = RetainPendingImageDownloads(image_id, slot_images[image_id],
-                                                       uncommitted_downloads, committed_downloads);
+    auto retained = RetainPendingImageDownloads(image_id, slot_images[image_id],
+                                                uncommitted_downloads, committed_downloads);
     if (retained) {
         LOG_INFO(Render_Vulkan, "Retained image for queued download: id={}", image_id.Value());
+        if constexpr (requires { runtime.CurrentTick(); }) {
+            retained_images.push_back({runtime.CurrentTick(), freed_bytes, std::move(retained)});
+            gpu_sentenced_bytes += freed_bytes;
+        }
     } else if (!immediate_delete) {
         if constexpr (requires { runtime.CurrentTick(); }) {
             gpu_sentenced_images.push_back(

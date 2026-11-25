@@ -15,7 +15,6 @@ void SetZeroFlag(EmitContext& ctx, IR::Inst* inst, Id result) {
         return;
     }
     zero->SetDefinition(ctx.OpIEqual(ctx.U1, result, ctx.u32_zero_value));
-    zero->Invalidate();
 }
 
 void SetSignFlag(EmitContext& ctx, IR::Inst* inst, Id result) {
@@ -24,7 +23,6 @@ void SetSignFlag(EmitContext& ctx, IR::Inst* inst, Id result) {
         return;
     }
     sign->SetDefinition(ctx.OpSLessThan(ctx.U1, result, ctx.u32_zero_value));
-    sign->Invalidate();
 }
 } // Anonymous namespace
 
@@ -37,7 +35,6 @@ Id EmitIAdd32(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
 
         const Id carry_value{ctx.OpCompositeExtract(ctx.U32[1], carry_result, 1U)};
         carry->SetDefinition(ctx.OpINotEqual(ctx.U1, carry_value, ctx.u32_zero_value));
-        carry->Invalidate();
     } else {
         result = ctx.OpIAdd(ctx.U32[1], a, b);
     }
@@ -50,10 +47,10 @@ Id EmitIAdd32(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
         const Id sub_a{ctx.OpISub(ctx.U32[1], ctx.Const(s32_max), a)};
 
         const Id positive_test{ctx.OpSGreaterThan(ctx.U1, b, sub_a)};
-        const Id negative_test{ctx.OpSLessThan(ctx.U1, b, sub_a)};
+        // The wrapped threshold for a negative a is INT_MIN - a - 1.
+        const Id negative_test{ctx.OpSLessThanEqual(ctx.U1, b, sub_a)};
         const Id carry_flag{ctx.OpSelect(ctx.U1, is_positive, positive_test, negative_test)};
         overflow->SetDefinition(carry_flag);
-        overflow->Invalidate();
     }
     return result;
 }

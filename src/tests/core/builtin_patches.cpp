@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +29,18 @@
 #include "core/ocarina_photo_mode.h"
 #include "core/oot_ultrawide.h"
 #include "core/oot_fps_patches.h"
+
+namespace FileSys {
+struct PatchManagerTestAccess {
+    using Fingerprint = PatchManager::OriginalFingerprintOverride;
+
+    static std::vector<u8> PatchNSO(const PatchManager& manager, const std::vector<u8>& nso,
+                                   const std::string& name,
+                                   std::span<const Fingerprint> fixture_fingerprints) {
+        return manager.PatchNSOImpl(nso, name, fixture_fingerprints);
+    }
+};
+} // namespace FileSys
 
 namespace {
 
@@ -347,6 +360,30 @@ TEST_CASE("Built-in Max Resolution patch is listed and loaded for Ocarina's main
 
 namespace {
 
+template <size_t Size>
+constexpr std::array<u8, Size> MakeGuardFixture(u8 seed) {
+    std::array<u8, Size> bytes{};
+    for (size_t index = 0; index < bytes.size(); ++index) {
+        bytes[index] = static_cast<u8>(seed + index * 73 + (index / 4) * 17);
+    }
+    return bytes;
+}
+
+constexpr size_t HitstopSite = 0x2F53268;
+constexpr size_t HitstopOffset = sizeof(Loader::NSOHeader) + HitstopSite;
+constexpr size_t HitstopCaveOffset = sizeof(Loader::NSOHeader) + 0x3C46B50;
+constexpr auto HitstopFixture = MakeGuardFixture<44>(0x27);
+constexpr std::array FpsFixtureFingerprints{
+    FileSys::PatchManagerTestAccess::Fingerprint{
+        HitstopSite,
+        Common::AsArray("f1089f6dc9956a82f740c0503a689572a0a63789cf0382ba400a0c95c6e976c1")},
+};
+
+std::vector<u8> PatchFpsFixture(const FileSys::PatchManager& manager, const std::vector<u8>& nso,
+                                const std::string& name = "main") {
+    return FileSys::PatchManagerTestAccess::PatchNSO(manager, nso, name, FpsFixtureFingerprints);
+}
+
 // The three "frame rate over 100" branches FPS Unlock removes, with their original words.
 constexpr std::array<std::pair<size_t, u32>, 3> GroundVelocityBranches{{
     {sizeof(Loader::NSOHeader) + 0x13A070, 0x5400196C},
@@ -368,13 +405,7 @@ void InitializeFpsHooks(std::vector<u8>& nso) {
     for (const auto& [offset, original] : originals) {
         std::memcpy(nso.data() + sizeof(Loader::NSOHeader) + offset, &original, sizeof(original));
     }
-    constexpr std::array<u8, 44> hitstop{
-        0x00, 0xB9, 0xA1, 0x5E, 0x09, 0x01, 0x38, 0x1E, 0x00, 0xD8, 0x21,
-        0x5E, 0x00, 0x39, 0x20, 0x1E, 0x00, 0x20, 0x30, 0x1E, 0xAA, 0x17,
-        0x00, 0x54, 0x00, 0x20, 0x31, 0x1E, 0x09, 0x18, 0x00, 0x54, 0x0A,
-        0x9B, 0x40, 0xB9, 0x3F, 0x05, 0x00, 0x71, 0x29, 0xC5, 0x9F, 0x1A};
-    std::copy(hitstop.begin(), hitstop.end(),
-              nso.begin() + sizeof(Loader::NSOHeader) + 0x2F53268);
+    std::ranges::copy(HitstopFixture, nso.begin() + HitstopOffset);
     for (const auto& [offset, original] : GroundVelocityBranches) {
         std::memcpy(nso.data() + offset, &original, sizeof(original));
     }
@@ -425,7 +456,7 @@ TEST_CASE("Built-in FPS Unlock defaults on and replaces Dynamic FPS", "[patch_ma
     REQUIRE(listed(DynamicFps).enabled);
     REQUIRE(listed(DynamicFps).version ==
             fmt::format("IPS, replaced by {} when it applies", FpsUnlock));
-    auto patched = manager.PatchNSO(nso, "main");
+    auto patched = PatchFpsFixture(manager, nso);
     REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicCallInstruction);
     REQUIRE(routine(patched, UnlockRoutineSize) ==
             std::string{RoutineHead} + "E300001C4268231EC300001C4278231E4840201EC0035FD6"
@@ -435,14 +466,14 @@ TEST_CASE("Built-in FPS Unlock defaults on and replaces Dynamic FPS", "[patch_ma
     // Unchecking only Dynamic FPS keeps FPS Unlock.
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{DynamicFps}};
     REQUIRE_FALSE(listed(DynamicFps).enabled);
-    REQUIRE(routine(manager.PatchNSO(nso, "main"), UnlockRoutineSize) ==
+    REQUIRE(routine(PatchFpsFixture(manager, nso), UnlockRoutineSize) ==
             routine(patched, UnlockRoutineSize));
 
     // Without FPS Unlock, Dark's routine applies unchanged.
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{FpsUnlock}};
     REQUIRE_FALSE(listed(FpsUnlock).enabled);
     REQUIRE(listed(DynamicFps).version == "IPS");
-    patched = manager.PatchNSO(nso, "main");
+    patched = PatchFpsFixture(manager, nso);
     REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicCallInstruction);
     REQUIRE(routine(patched, DynamicRoutineSize) ==
             std::string{RoutineHead} + "C300001C0309231E4020231E4D0000544840201EC0035FD6"
@@ -452,12 +483,12 @@ TEST_CASE("Built-in FPS Unlock defaults on and replaces Dynamic FPS", "[patch_ma
     // Both unchecked: hook and code cave stay untouched.
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{FpsUnlock},
                                                         std::string{DynamicFps}};
-    patched = manager.PatchNSO(nso, "main");
+    patched = PatchFpsFixture(manager, nso);
     REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicOriginalInstruction);
     REQUIRE(WordAt(patched, DynamicRoutineOffset) == 0);
 
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution}};
-    patched = manager.PatchNSO(nso, "main");
+    patched = PatchFpsFixture(manager, nso);
     REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicCallInstruction);
     REQUIRE(WordAt(patched) == TbzInstruction);
 
@@ -470,14 +501,14 @@ TEST_CASE("Built-in FPS Unlock removes the ground velocity branches", "[patch_ma
     PatchManagerTestContext context;
     const auto manager = context.Manager();
     auto nso = MakeDynamicMain();
-    auto patched = manager.PatchNSO(nso, "main");
+    auto patched = PatchFpsFixture(manager, nso);
     for (const auto& [offset, original] : GroundVelocityBranches) {
         REQUIRE(WordAt(patched, offset) == NopInstruction);
     }
 
     // Dynamic FPS never exceeds 60 fps and keeps the game's branches.
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{FpsUnlock}};
-    patched = manager.PatchNSO(nso, "main");
+    patched = PatchFpsFixture(manager, nso);
     REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicCallInstruction);
     for (const auto& [offset, original] : GroundVelocityBranches) {
         REQUIRE(WordAt(patched, offset) == original);
@@ -488,7 +519,7 @@ TEST_CASE("Built-in FPS Unlock removes the ground velocity branches", "[patch_ma
     for (const auto& [changed, word] : GroundVelocityBranches) {
         auto other = nso;
         other[changed] ^= 1;
-        patched = manager.PatchNSO(other, "main");
+        patched = PatchFpsFixture(manager, other);
         REQUIRE(WordAt(patched, DynamicCallOffset) == DynamicOriginalInstruction);
         for (const auto& [offset, original] : GroundVelocityBranches) {
             REQUIRE(WordAt(patched, offset) == WordAt(other, offset));
@@ -551,7 +582,7 @@ TEST_CASE("Built-in Dynamic FPS rejects mismatched or truncated modules transact
         header.segments[1].location = 0x3C46200;
         std::memcpy(nso.data(), &header, sizeof(header));
     }
-    REQUIRE(context.Manager(title).PatchNSO(nso, module) == nso);
+    REQUIRE(PatchFpsFixture(context.Manager(title), nso, module) == nso);
 }
 
 TEST_CASE("Built-in Dynamic FPS leaves both records alone when a user mod changes either",
@@ -576,7 +607,7 @@ TEST_CASE("Built-in Dynamic FPS leaves both records alone when a user mod change
     const auto nso = MakeDynamicMain();
     auto expected = nso;
     std::memcpy(expected.data() + offset, &mod_word, sizeof(mod_word));
-    REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
+    REQUIRE(PatchFpsFixture(context.Manager(), nso) == expected);
 }
 
 TEST_CASE("Built-in FPS Unlock validates the turn speed records before writing", "[patch_manager]") {
@@ -593,7 +624,7 @@ TEST_CASE("Built-in FPS Unlock validates the turn speed records before writing",
     SECTION("Nonzero turn speed cave") {
         nso[TurnSpeedRoutineOffset + TurnSpeedRoutineSize - 1] = 1;
     }
-    REQUIRE(context.Manager().PatchNSO(nso, "main") == nso);
+    REQUIRE(PatchFpsFixture(context.Manager(), nso) == nso);
 }
 
 TEST_CASE("Built-in FPS Unlock leaves all records alone when a user mod changes the turn speed fix",
@@ -613,19 +644,19 @@ TEST_CASE("Built-in FPS Unlock leaves all records alone when a user mod changes 
     const auto nso = MakeDynamicMain();
     auto expected = nso;
     std::memcpy(expected.data() + offset, &mod_word, sizeof(mod_word));
-    REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
+    REQUIRE(PatchFpsFixture(context.Manager(), nso) == expected);
 }
 
 TEST_CASE("Relocated Gohma steering code is guarded and belongs only to FPS Unlock", "[patch_manager]") {
     PatchManagerTestContext context;
     const auto original = MakeDynamicMain();
-    const auto patched = context.Manager().PatchNSO(original, "main");
+    const auto patched = PatchFpsFixture(context.Manager(), original);
     REQUIRE(WordAt(patched, TurnSpeedHookOffset) == TurnSpeedHookInstruction);
     REQUIRE(WordAt(patched, TurnSpeedHookOffset + 4) == TurnSpeedSecondInstruction);
     REQUIRE(Common::HexToString(std::span{patched}.subspan(TurnSpeedRoutineOffset, TurnSpeedRoutineSize)) ==
             "01102E1E0021211E8A0000540018281E0140211E1360A717E10F40BD0108211E0008281E0F60A717");
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{FpsUnlock}};
-    const auto dynamic = context.Manager().PatchNSO(original, "main");
+    const auto dynamic = PatchFpsFixture(context.Manager(), original);
     REQUIRE(WordAt(dynamic, TurnSpeedHookOffset) == TurnSpeedOriginalInstruction);
     REQUIRE(WordAt(dynamic, TurnSpeedRoutineOffset) == 0);
 }
@@ -642,20 +673,20 @@ TEST_CASE("Built-in Texture Pool x2 doubles the allocator's initial pool size",
     auto nso = MakeDynamicMain();
     std::memcpy(nso.data() + CallOffset, &StpInstruction, sizeof(StpInstruction));
 
-    auto patched = manager.PatchNSO(nso, "main");
+    auto patched = PatchFpsFixture(manager, nso);
     REQUIRE(WordAt(patched, CallOffset) == CallInstruction);
     REQUIRE(Common::HexToString(std::span{patched}.subspan(RoutineOffset, 12)) ==
             "08F97FD3E82701A9C0035FD6");
     REQUIRE(WordAt(patched, RoutineOffset + 12) == 0);
 
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{TexturePool}};
-    patched = manager.PatchNSO(nso, "main");
+    patched = PatchFpsFixture(manager, nso);
     REQUIRE(WordAt(patched, CallOffset) == StpInstruction);
     REQUIRE(WordAt(patched, RoutineOffset) == 0);
 
     Settings::values.disabled_addons.erase(OcarinaTitleId);
     std::memcpy(nso.data() + CallOffset, &NopInstruction, sizeof(NopInstruction));
-    patched = manager.PatchNSO(nso, "main");
+    patched = PatchFpsFixture(manager, nso);
     REQUIRE(WordAt(patched, CallOffset) == NopInstruction);
     REQUIRE(WordAt(patched, RoutineOffset) == 0);
 }
@@ -893,7 +924,7 @@ TEST_CASE("All OOT FPS fixes, Texture Pool, Photo Mode and aspects coexist",
     for (const auto& profile : Core::OotUltrawide::AspectProfiles) {
         INFO(profile.addon);
         UltrawideSettings settings{profile.aspect, Settings::ConsoleMode::Docked};
-        const auto patched = context.Manager().PatchNSO(nso, "main");
+        const auto patched = PatchFpsFixture(context.Manager(), nso);
         REQUIRE(WordAt(patched, UltrawideSizeOffset) == profile.width);
         REQUIRE(WordAt(patched, sizeof(Loader::NSOHeader) + Photo::SiteOffset) ==
                 Photo::Word(Photo::SiteBranch));
@@ -951,21 +982,119 @@ TEST_CASE("OOT FPS additions preserve transactional guards for every cave and sk
     PatchManagerTestContext context;
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{DynamicFps}};
     const auto original = MakeDynamicMain();
-    constexpr std::array<u32, 10> changed_sites{
+    constexpr std::array<u32, 11> changed_sites{
         0x475F8, 0x4760C, 0x3C46300, 0x415300, 0x415334,
-        0x3C46A20, 0x3C46280, 0x3C46B00, 0x3C46C00, Core::OotFpsPatches::StateBase};
+        0x3C46A20, 0x3C46280, 0x3C46B00, 0x3C46B50, 0x3C46C00,
+        Core::OotFpsPatches::StateBase};
     for (const u32 site : changed_sites) {
         auto nso = original;
         nso[sizeof(Loader::NSOHeader) + site] ^= 1;
-        const auto patched = context.Manager().PatchNSO(nso, "main");
+        const auto patched = PatchFpsFixture(context.Manager(), nso);
         CHECK(WordAt(patched, DynamicCallOffset) == DynamicOriginalInstruction);
         CHECK(WordAt(patched, sizeof(Loader::NSOHeader) + 0xA68300) == 0x1E38000C);
     }
-    for (u32 byte = 0; byte < 44; ++byte) {
+    for (size_t byte = 0; byte < HitstopFixture.size(); ++byte) {
         auto nso = original;
-        nso[sizeof(Loader::NSOHeader) + 0x2F53268 + byte] ^= 1;
-        const auto patched = context.Manager().PatchNSO(nso, "main");
+        nso[HitstopOffset + byte] ^= 1;
+        const auto patched = PatchFpsFixture(context.Manager(), nso);
         CHECK(WordAt(patched, DynamicCallOffset) == DynamicOriginalInstruction);
+    }
+}
+
+TEST_CASE("Hitstop verifies the full fingerprint and only replaces its branch word",
+          "[patch_manager]") {
+    PatchManagerTestContext context;
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution},
+                                                      std::string{DynamicFps}};
+    const auto nso = MakeDynamicMain();
+    const auto manager = context.Manager();
+    // The public path still uses the production digest and refuses the synthetic NSO.
+    REQUIRE(manager.PatchNSO(nso, "main") == nso);
+    const auto patched = PatchFpsFixture(manager, nso);
+    CHECK(WordAt(patched, HitstopOffset) == 0x1433CE3A);
+    CHECK(std::ranges::equal(std::span{HitstopFixture}.subspan(sizeof(u32)),
+                             std::span{patched}.subspan(HitstopOffset + sizeof(u32),
+                                                       HitstopFixture.size() - sizeof(u32))));
+    const auto& routine = Core::OotFpsPatches::STEP_HITSTOP_ROUTINE;
+    CHECK(std::ranges::equal(routine, std::span{patched}.subspan(HitstopCaveOffset, routine.size())));
+}
+
+TEST_CASE("A user change anywhere in the hitstop guard keeps the built-in unapplied",
+          "[patch_manager]") {
+    size_t mod_offset = HitstopOffset;
+    SECTION("Branch word") {}
+    SECTION("Last word of the unchanged tail") {
+        mod_offset += HitstopFixture.size() - sizeof(u32);
+    }
+    constexpr u32 mod_word = 0x11223344;
+    PatchManagerTestContext context{mod_word, mod_offset};
+    Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution},
+                                                      std::string{DynamicFps}};
+    const auto nso = MakeDynamicMain();
+    auto expected = nso;
+    std::memcpy(expected.data() + mod_offset, &mod_word, sizeof(mod_word));
+    REQUIRE(PatchFpsFixture(context.Manager(), nso) == expected);
+}
+
+TEST_CASE("Fast lookup applies both fingerprinted patches together", "[patch_manager]") {
+    constexpr size_t LookupASite = 0x58FC64, LookupBSite = 0x591E24;
+    constexpr size_t LookupAOffset = sizeof(Loader::NSOHeader) + LookupASite;
+    constexpr size_t LookupBOffset = sizeof(Loader::NSOHeader) + LookupBSite;
+    constexpr auto LookupA = MakeGuardFixture<240>(0x85);
+    constexpr auto LookupB = MakeGuardFixture<244>(0xd2);
+    constexpr std::array fixture_fingerprints{
+        FileSys::PatchManagerTestAccess::Fingerprint{
+            LookupASite,
+            Common::AsArray("63a2468530f5d906a916c878680c345a88fe9f0021e4947309f2bf4d90a777f4")},
+        FileSys::PatchManagerTestAccess::Fingerprint{
+            LookupBSite,
+            Common::AsArray("ebaccf3ba8fe625be97d8a8d99eb817b430b8a1000ade97a071b83f723fd13af")},
+    };
+    auto nso = MakeMain(OcarinaBuildId, NopInstruction);
+    std::ranges::copy(LookupA, nso.begin() + LookupAOffset);
+    std::ranges::copy(LookupB, nso.begin() + LookupBOffset);
+    const auto patch = [&](const FileSys::PatchManager& manager, const std::vector<u8>& input) {
+        return FileSys::PatchManagerTestAccess::PatchNSO(manager, input, "main",
+                                                        fixture_fingerprints);
+    };
+
+    SECTION("Both match and only their own spans change") {
+        PatchManagerTestContext context;
+        const auto manager = context.Manager();
+        REQUIRE(manager.PatchNSO(nso, "main") == nso);
+        const auto patched = patch(manager, nso);
+        CHECK(WordAt(patched, LookupAOffset) == 0xAA0803EA);
+        CHECK(WordAt(patched, LookupBOffset) == 0xAA0803EA);
+        CHECK(WordAt(patched, LookupAOffset + LookupA.size() - sizeof(u32)) == 0x17FFFF9C);
+        CHECK(WordAt(patched, LookupBOffset + LookupB.size() - sizeof(u32)) == 0x17FFFF9B);
+        auto unpatched = patched;
+        std::ranges::copy(LookupA, unpatched.begin() + LookupAOffset);
+        std::ranges::copy(LookupB, unpatched.begin() + LookupBOffset);
+        CHECK(unpatched == nso);
+    }
+    SECTION("A mismatching byte in either span skips both writes") {
+        PatchManagerTestContext context;
+        for (const size_t offset :
+             {LookupAOffset, LookupAOffset + LookupA.size() - 1, LookupBOffset,
+              LookupBOffset + LookupB.size() - 1}) {
+            auto changed = nso;
+            changed[offset] ^= 1;
+            CHECK(patch(context.Manager(), changed) == changed);
+        }
+    }
+    SECTION("The second span ends past the module boundary") {
+        PatchManagerTestContext context;
+        nso.resize(LookupBOffset + LookupB.size() - 1);
+        CHECK(patch(context.Manager(), nso) == nso);
+    }
+    SECTION("A user mod in either span skips both writes") {
+        constexpr u32 mod_word = 0x11223344;
+        for (const size_t offset : {LookupAOffset, LookupBOffset + LookupB.size() - sizeof(u32)}) {
+            PatchManagerTestContext context{mod_word, offset};
+            auto expected = nso;
+            std::memcpy(expected.data() + offset, &mod_word, sizeof(mod_word));
+            CHECK(patch(context.Manager(), nso) == expected);
+        }
     }
 }
 
@@ -1018,7 +1147,7 @@ TEST_CASE("Built-in text speed is off until checked in Add-Ons", "[patch_manager
                 REQUIRE(patch.off_by_default);
             }
         }
-        const auto patched = manager.PatchNSO(nso, "main");
+        const auto patched = PatchFpsFixture(manager, nso);
         REQUIRE(WordAt(patched, SiteOffset) == LdrhInstruction);
         REQUIRE(WordAt(patched, CaveOffset) == 0);
     }
@@ -1035,7 +1164,7 @@ TEST_CASE("Built-in text speed is off until checked in Add-Ons", "[patch_manager
             REQUIRE(std::ranges::any_of(patches, [&](const FileSys::Patch& patch) {
                 return patch.name == name && patch.enabled;
             }));
-            const auto patched = manager.PatchNSO(nso, "main");
+            const auto patched = PatchFpsFixture(manager, nso);
             REQUIRE(WordAt(patched, SiteOffset) == BranchToCave);
             REQUIRE(Common::HexToString(std::span{patched}.subspan(CaveOffset, 16)) ==
                     "9000001C0008301E69DE4079ABDC3A17");
@@ -1046,14 +1175,14 @@ TEST_CASE("Built-in text speed is off until checked in Add-Ons", "[patch_manager
     SECTION("With more than one checked, the fastest applies") {
         Settings::values.disabled_addons[OcarinaTitleId] = {FileSys::EnabledAddonKey(Double),
                                                             FileSys::EnabledAddonKey(Quadruple)};
-        const auto patched = manager.PatchNSO(nso, "main");
+        const auto patched = PatchFpsFixture(manager, nso);
         REQUIRE(WordAt(patched, CaveOffset + 16) == 0x40800000);
     }
 
     SECTION("Another word at the site skips") {
         Settings::values.disabled_addons[OcarinaTitleId] = {FileSys::EnabledAddonKey(Double)};
         std::memcpy(nso.data() + SiteOffset, &NopInstruction, sizeof(NopInstruction));
-        const auto patched = manager.PatchNSO(nso, "main");
+        const auto patched = PatchFpsFixture(manager, nso);
         REQUIRE(WordAt(patched, SiteOffset) == NopInstruction);
         REQUIRE(WordAt(patched, CaveOffset) == 0);
     }
@@ -1089,7 +1218,7 @@ TEST_CASE("Movie and Scarecrow hooks preserve fractional-step timing and atomic 
     Settings::values.disabled_addons[OcarinaTitleId] = {std::string{MaxResolution},
                                                       std::string{DynamicFps}};
     const auto nso = MakeDynamicMain();
-    const auto patched = context.Manager().PatchNSO(nso, "main");
+    const auto patched = PatchFpsFixture(context.Manager(), nso);
     const auto destination = [](u32 pc, u32 word) {
         return static_cast<u32>(pc + (static_cast<s32>(word << 6) >> 4));
     };
@@ -1105,11 +1234,11 @@ TEST_CASE("Movie and Scarecrow hooks preserve fractional-step timing and atomic 
         for (const u32 offset : {site, cave + size - 1}) {
             auto bad = nso;
             bad[sizeof(Loader::NSOHeader) + offset] ^= 1;
-            REQUIRE(context.Manager().PatchNSO(bad, "main") == bad);
+            REQUIRE(PatchFpsFixture(context.Manager(), bad) == bad);
         }
     }
     Settings::values.disabled_addons[OcarinaTitleId].push_back(std::string{FpsUnlock});
-    const auto disabled = context.Manager().PatchNSO(nso, "main");
+    const auto disabled = PatchFpsFixture(context.Manager(), nso);
     for (const auto [site, cave] : hooks) {
         REQUIRE(WordAt(disabled, sizeof(Loader::NSOHeader) + site) ==
                 WordAt(nso, sizeof(Loader::NSOHeader) + site));
@@ -1128,6 +1257,6 @@ TEST_CASE("User modifications take precedence over new movie and recording patch
         const auto nso = MakeDynamicMain();
         auto expected = nso;
         std::memcpy(expected.data() + offset, &word, sizeof(word));
-        REQUIRE(context.Manager().PatchNSO(nso, "main") == expected);
+        REQUIRE(PatchFpsFixture(context.Manager(), nso) == expected);
     }
 }

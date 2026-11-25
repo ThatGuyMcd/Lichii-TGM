@@ -939,7 +939,7 @@ bool RasterizerVulkan::TryNx2IndirectReset(bool is_indexed, u32 instance_count) 
     }
     const GPUVAddr program =
         (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
-    std::array<u32, VideoCommon::NativeIndirectReset::Program.size()> code{};
+    std::array<u8, VideoCommon::NativeIndirectReset::ProgramByteCount> code{};
     if (!gpu_memory->IsFullyMappedRange(program + 128, sizeof(code))) {
         return false;
     }
@@ -980,7 +980,7 @@ bool RasterizerVulkan::TryNx2IndirectReset(bool is_indexed, u32 instance_count) 
     }
     std::vector<u64> pointers(count);
     gpu_memory->ReadBlock(range->begin, pointers.data(), range->size);
-    static constexpr std::array<u32, 5> record{0, 1, 0, 0, 0};
+    constexpr auto& record = VideoCommon::NativeIndirectReset::Record;
     for (const u64 pointer : pointers) {
         if (!pointer) {
             return reject("record is null");

@@ -2289,6 +2289,10 @@ bool MainWindow::ConfirmLowRamBoot(const QString& filename,
 
 void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
                           StartGameType type, bool allow_recommended_settings_prompt) {
+    if (shutdown_game_in_progress || shutdown_dialog) {
+        return;
+    }
+
 #ifdef LICHII_NX_TOOLS
     if (nx_metadata_write_in_progress) {
         QMessageBox::information(this, tr("NX Archive"),
@@ -2940,9 +2944,14 @@ void MainWindow::OnEmulationStopped() {
 }
 
 void MainWindow::ShutdownGame() {
-    if (!emulation_running) {
+    if (!emulation_running || shutdown_game_in_progress) {
         return;
     }
+
+    shutdown_game_in_progress = true;
+    SCOPE_EXIT {
+        shutdown_game_in_progress = false;
+    };
 
     // TODO(crueter): make this common as well (frontend_common?)
     play_time_manager->Stop();
@@ -3994,6 +4003,10 @@ void MainWindow::OnPauseContinueGame() {
 }
 
 void MainWindow::OnStopGame() {
+    if (!emulation_running || shutdown_game_in_progress || shutdown_dialog) {
+        return;
+    }
+
     if (ConfirmShutdownGame()) {
         play_time_manager->Stop();
         if (OnShutdownBegin()) {
@@ -4040,6 +4053,12 @@ void MainWindow::OnLoadComplete() {
 }
 
 void MainWindow::OnExecuteProgram(std::size_t program_index) {
+    if (!emulation_running || shutdown_game_in_progress || shutdown_dialog) {
+        LOG_WARNING(Frontend, "Ignoring program switch to index {} during or after shutdown",
+                    program_index);
+        return;
+    }
+
     const u64 previous_program_id = QtCommon::system->GetApplicationProcessProgramID();
 
     const auto current_path =
@@ -4068,6 +4087,9 @@ void MainWindow::OnExecuteProgram(std::size_t program_index) {
 }
 
 void MainWindow::OnExit() {
+    if (shutdown_dialog) {
+        return;
+    }
     ShutdownGame();
 }
 

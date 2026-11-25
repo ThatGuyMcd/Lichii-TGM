@@ -186,33 +186,33 @@ ProcessMemoryUsage GetProcessMemoryUsage() {
     return usage;
 }
 
-u64 GetAvailablePhysicalMemory() {
+std::optional<u64> GetAvailablePhysicalMemory() {
 #ifdef _WIN32
     MEMORYSTATUSEX memorystatus;
     memorystatus.dwLength = sizeof(memorystatus);
     if (!GlobalMemoryStatusEx(&memorystatus)) {
-        return 0;
+        return std::nullopt;
     }
     return memorystatus.ullAvailPhys;
 #elif defined(__linux__)
     // MemAvailable counts the page cache the kernel can drop, which sysinfo's freeram doesn't.
     std::FILE* const file = std::fopen("/proc/meminfo", "r");
     if (file == nullptr) {
-        return 0;
+        return std::nullopt;
     }
-    u64 available_kib = 0;
+    std::optional<u64> available_bytes;
     char line[128];
     while (std::fgets(line, sizeof(line), file) != nullptr) {
         unsigned long long value = 0;
         if (std::sscanf(line, "MemAvailable: %llu kB", &value) == 1) {
-            available_kib = value;
+            available_bytes = value * 1024;
             break;
         }
     }
     std::fclose(file);
-    return available_kib * 1024;
+    return available_bytes;
 #else
-    return 0;
+    return std::nullopt;
 #endif
 }
 

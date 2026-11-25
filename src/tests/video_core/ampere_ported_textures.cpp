@@ -11,9 +11,36 @@ using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
 constexpr Instruction Exit{{0x794d, 0, 0x03800000, 0}};
 
-// TLD4.PTP R10/R8, R4 (x, y), R8 (offsets in R8, R9), 2D, RGBA: rejected as a texture gather
-// mode in the 040057C02159A000 log.
-constexpr Instruction CapturedPerTapGather{{0x040a7b63, 0x33800408, 0x041e2f08, 0x100fc200}};
+constexpr u32 GatherCoords = 14;
+constexpr u32 GatherOffsets = 18;
+constexpr u32 GatherResult = 20;
+constexpr u32 GatherBinding = 9;
+constexpr u32 GatherDescriptor = 13;
+constexpr u32 ShadowCoords = 30;
+constexpr u32 ShadowReference = 36;
+constexpr u32 ShadowResult = 42;
+constexpr u32 ShadowSecond = 44;
+constexpr u32 ShadowBinding = 5;
+constexpr u32 ShadowDescriptor = 27;
+
+constexpr Instruction MakeGather(u32 offset_type, u32 metadata = GatherOffsets) {
+    return {{
+        0xb63U | (7U << 12) | (GatherResult << 16) | (GatherCoords << 24),
+        metadata | (GatherDescriptor << 8) | (GatherBinding << 22) | (1U << 28) | (1U << 29),
+        GatherOffsets | (15U << 8) | (offset_type << 12) | (7U << 17) | (1U << 26),
+        0,
+    }};
+}
+
+constexpr Instruction MakeDepthGather(u32 guard = 7, u32 nodep = 0) {
+    return {{
+        0xb63U | (guard << 12) | (ShadowResult << 16) | (ShadowCoords << 24),
+        ShadowReference | (ShadowDescriptor << 8) | (ShadowBinding << 22) | (1U << 28) |
+            (1U << 29),
+        ShadowSecond | (15U << 8) | (1U << 14) | (7U << 17) | (nodep << 26),
+        0,
+    }};
+}
 
 u64 Copy(u64 predicate, u32 target, u32 source) {
     return 0x5c98000000000000ULL | predicate | target | (15ULL << 39) | (u64{source} << 20);
@@ -25,9 +52,9 @@ u64 MoveImmediate(u64 predicate, u32 target, u32 value) {
 
 std::array<Instruction, 4> PerTapProgram(u32 packed = 0xff00ff00) {
     return {{
-        {{0x00087802, packed, 0x00000f00, 0x000fe400}},
-        {{0x00097802, 0x01000001, 0x00000f00, 0x000fe400}},
-        CapturedPerTapGather,
+        {{0x7802U | (GatherOffsets << 16), packed, 0xf00, 0}},
+        {{0x7802U | ((GatherOffsets + 1) << 16), 0x01000001, 0xf00, 0}},
+        MakeGather(2),
         Exit,
     }};
 }
@@ -44,20 +71,20 @@ TEST_CASE("Ampere per-tap gathers pass proven constant offsets to Maxwell TLD4.P
                 const auto lowered = LowerToMaxwell(code);
                 INFO(lowered.error);
                 REQUIRE(lowered);
-                REQUIRE(lowered.required_texture_buffer == 14);
+                REQUIRE(lowered.required_texture_buffer == GatherBinding);
                 const u64 pred = u64{guard} << 16;
                 const std::array<u64, 9> expected{
                     MoveImmediate(7ULL << 16, 248, packed),
                     MoveImmediate(7ULL << 16, 249, 0x01000001),
-                    Copy(pred, 250, 4),
-                    Copy(pred, 251, 5),
+                    Copy(pred, 250, GatherCoords),
+                    Copy(pred, 251, GatherCoords + 1),
                     0xc800000000000000ULL | pred | 250 | (250ULL << 8) | (248ULL << 20) |
-                        (2ULL << 28) | (15ULL << 31) | (4ULL << 36) | (1ULL << 49) |
+                        (2ULL << 28) | (15ULL << 31) | (u64{GatherDescriptor} << 36) | (1ULL << 49) |
                         (7ULL << 51) | (2ULL << 54) | (u64{component} << 56),
-                    Copy(pred, 10, 250),
-                    Copy(pred, 11, 251),
-                    Copy(pred, 8, 252),
-                    Copy(pred, 9, 253),
+                    Copy(pred, GatherResult, 250),
+                    Copy(pred, GatherResult + 1, 251),
+                    Copy(pred, GatherOffsets, 252),
+                    Copy(pred, GatherOffsets + 1, 253),
                 };
                 const auto begin = lowered.instructions.begin() + lowered.source_instruction_offsets[2];
                 REQUIRE(std::equal(expected.begin(), expected.end(), begin));
@@ -96,8 +123,7 @@ TEST_CASE("Ampere per-tap gathers prove constants across unrelated arithmetic an
 
 TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes",
           "[video_core][ampere][gather]") {
-    // The captured instruction alone has no visible offset definitions.
-    const auto alone = LowerToMaxwell(std::array{CapturedPerTapGather, Exit});
+    const auto alone = LowerToMaxwell(std::array{MakeGather(2), Exit});
     REQUIRE_FALSE(alone);
     REQUIRE(alone.error == "native per-tap gather missing offsets");
     // Offsets are signed 6-bit values, one per byte.
@@ -115,26 +141,26 @@ TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes"
         REQUIRE_FALSE(LowerToMaxwell(invalid));
     }
     auto invalid = PerTapProgram();
-    invalid[0].words[0] = 0x00081802; // predicated offset definition
+    invalid[0].words[0] = 0x1802U | (GatherOffsets << 16); // predicated offset definition
     REQUIRE(LowerToMaxwell(invalid).error == "native per-tap gather nonconstant offsets");
     invalid = PerTapProgram();
-    invalid[1].words[0] = 0x000a7802; // R9 never defined
+    invalid[1].words[0] = 0x7802U | (GatherResult << 16); // second offset register never defined
     REQUIRE(LowerToMaxwell(invalid).error == "native per-tap gather missing offsets");
     // Register pairs that would reach the lowering scratch registers.
-    for (const u32 word : {0xf50a7b63U, 0x04f57b63U}) {
+    for (const u32 shift : {16U, 24U}) {
         invalid = PerTapProgram();
-        invalid[2].words[0] = word;
+        invalid[2].words[0] = (invalid[2].words[0] & ~(255U << shift)) | (245U << shift);
         REQUIRE_FALSE(LowerToMaxwell(invalid));
     }
     invalid = PerTapProgram();
-    invalid[2].words[1] = 0x338004f5;
+    invalid[2] = MakeGather(2, 245);
     REQUIRE_FALSE(LowerToMaxwell(invalid));
     invalid = PerTapProgram();
-    invalid[2].words[2] = 0x041e2ff5;
+    invalid[2].words[2] = (invalid[2].words[2] & ~255U) | 245U;
     REQUIRE_FALSE(LowerToMaxwell(invalid));
     // Uniform-handle gathers have no per-tap form here.
     invalid = PerTapProgram();
-    invalid[2].words[0] = 0x040a7f63;
+    invalid[2].words[0] = (invalid[2].words[0] & ~0xfffU) | 0xf63U;
     REQUIRE_FALSE(LowerToMaxwell(invalid));
     const Instruction branch{{0x00007947, 0, 0x03800000, 0}};
     const auto program = PerTapProgram();
@@ -146,7 +172,7 @@ TEST_CASE("Ampere gathers without per-tap offsets keep their previous lowering",
           "[video_core][ampere][gather]") {
     // Plain and AOFFI gathers still read no R248/R249 offsets.
     for (const u32 offsets : {0U, 1U}) {
-        const Instruction gather{{0x040a7b63, 0x33800408, 0x041e0f08U | (offsets << 12), 0x100fc200}};
+        const Instruction gather = MakeGather(offsets);
         const auto lowered = LowerToMaxwell(std::array{gather, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
@@ -161,21 +187,21 @@ TEST_CASE("Ampere depth gathers preserve coordinates reference and result pairs"
           "[video_core][ampere][gather]") {
     for (const u32 guard : {1U, 7U, 9U}) {
         for (const u32 nodep : {0U, 1U}) {
-            Instruction gather{{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}};
-            gather.words[0] = (gather.words[0] & ~0xf000U) | (guard << 12);
-            gather.words[2] |= nodep << 26;
+            const Instruction gather = MakeDepthGather(guard, nodep);
             const auto lowered = LowerToMaxwell(std::array{gather, Exit});
             INFO(lowered.error);
             REQUIRE(lowered);
-            REQUIRE(lowered.required_texture_buffer == 2);
+            REQUIRE(lowered.required_texture_buffer == ShadowBinding);
             const u64 pred = u64{guard} << 16;
             const std::array<u64, 8> expected{
-                Copy(pred, 250, 24), Copy(pred, 251, 25), Copy(pred, 246, 28),
+                Copy(pred, 250, ShadowCoords), Copy(pred, 251, ShadowCoords + 1),
+                Copy(pred, 246, ShadowReference),
                 0xc800000000000000ULL | pred | 250 | (250ULL << 8) | (246ULL << 20) |
-                    (2ULL << 28) | (15ULL << 31) | (14ULL << 36) | (u64{nodep} << 49) |
+                    (2ULL << 28) | (15ULL << 31) | (u64{ShadowDescriptor} << 36) |
+                    (u64{nodep} << 49) |
                     (1ULL << 50) | (7ULL << 51),
-                Copy(pred, 12, 250), Copy(pred, 13, 251),
-                Copy(pred, 14, 252), Copy(pred, 15, 253),
+                Copy(pred, ShadowResult, 250), Copy(pred, ShadowResult + 1, 251),
+                Copy(pred, ShadowSecond, 252), Copy(pred, ShadowSecond + 1, 253),
             };
             REQUIRE(std::equal(expected.begin(), expected.end(), lowered.instructions.begin()));
             REQUIRE(lowered.instructions.size() == expected.size() + 1);
@@ -340,6 +366,37 @@ TEST_CASE("Ampere half texel fetches reject forms without a TLDS half encoding",
     REQUIRE_FALSE(LowerToMaxwell(std::array{array_level, Exit}));
 }
 
+TEST_CASE("Unpacked Ampere array shadow sampling reads LOD and comparison from Rb",
+          "[video_core][ampere]") {
+    for (const u32 lod : {2U, 3U}) {
+        CAPTURE(lod);
+        const Instruction sample{{
+            0xb60U | (7U << 12) | (5U << 16) | (12U << 24),
+            40U | (0x10U << 8) | (2U << 22) | (5U << 29),
+            0xffU | (1U << 8) | (1U << 14) | (7U << 17) | (lod << 23),
+            0,
+        }};
+        const auto lowered = LowerToMaxwell(std::array{sample, Exit});
+        INFO(lowered.error);
+        REQUIRE(lowered);
+        REQUIRE(lowered.required_texture_buffer == 2);
+        constexpr u64 pred = 7ULL << 16;
+        const std::array<u64, 7> expected{
+            Copy(pred, 250, 12),
+            Copy(pred, 251, 13),
+            Copy(pred, 252, 14),
+            Copy(pred, 246, 40),
+            Copy(pred, 247, 41),
+            0xc000000000000000ULL | pred | 250 | (250ULL << 8) | (246ULL << 20) |
+                (3ULL << 28) | (1ULL << 31) | (0x10ULL << 36) | (1ULL << 50) |
+                (7ULL << 51) | (u64{lod} << 55),
+            Copy(pred, 5, 250),
+        };
+        REQUIRE(lowered.instructions.size() == expected.size() + 1);
+        CHECK(std::ranges::equal(expected, std::span{lowered.instructions}.first(expected.size())));
+    }
+}
+
 TEST_CASE("Ampere array depth comparisons support nonlegacy descriptor bindings",
           "[video_core][ampere]") {
     // TEX.DC R5, R8 (layer, x), R0 (y, reference in R1), ARRAY_2D, descriptor buffer 4.
@@ -389,41 +446,41 @@ TEST_CASE("Ampere array depth comparisons support nonlegacy descriptor bindings"
 
 TEST_CASE("Ampere gathers from a second descriptor buffer lower to Maxwell TLD4.B",
           "[video_core][ampere][gather]") {
-    // The depth gather binds descriptor buffer 2; the gathers after it read buffer 14, whose
-    // handle at c[14][0x10] is loaded with MOV and passed as the first TLD4.B meta register.
-    const Instruction depth{{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}};
+    // Only the other gathers need to load the handle from GatherBinding.
+    const Instruction depth = MakeDepthGather();
     const u64 pred = 7ULL << 16;
-    const u64 handle = 0x4c98000000070000ULL | (15ULL << 39) | (4ULL << 20) | (14ULL << 34);
+    const u64 handle = 0x4c98000000070000ULL | (15ULL << 39) |
+                       (u64{GatherDescriptor} << 20) | (u64{GatherBinding} << 34);
     const auto tld4b = [&](u32 meta, u32 offset_type) -> u64 {
         return 0xdec0000000000000ULL | pred | 250 | (250ULL << 8) | (u64{meta} << 20) |
                (2ULL << 28) | (15ULL << 31) | (u64{offset_type} << 36) | (1ULL << 49) |
                (7ULL << 51);
     };
-    const std::array<u64, 4> results{Copy(pred, 10, 250), Copy(pred, 11, 251), Copy(pred, 8, 252),
-                                     Copy(pred, 9, 253)};
+    const std::array<u64, 4> results{Copy(pred, GatherResult, 250), Copy(pred, GatherResult + 1, 251),
+                                     Copy(pred, GatherOffsets, 252), Copy(pred, GatherOffsets + 1, 253)};
     const auto check = [&](const auto& lowered, u32 index, const auto& expected) {
         INFO(lowered.error);
         REQUIRE(lowered);
-        REQUIRE(lowered.required_texture_buffer == 2);
+        REQUIRE(lowered.required_texture_buffer == ShadowBinding);
         const auto begin = lowered.instructions.begin() + lowered.source_instruction_offsets[index];
         REQUIRE(std::equal(expected.begin(), expected.end(), begin));
         REQUIRE(std::equal(results.begin(), results.end(), begin + expected.size()));
     };
     // Plain and AOFFI: the handle in R246, the offset register after it.
-    const Instruction plain{{0x040a7b63, 0x33800408, 0x041e0f08, 0x100fc200}};
+    const Instruction plain = MakeGather(0);
     check(LowerToMaxwell(std::array{depth, plain, Exit}), 1,
-          std::array<u64, 4>{Copy(pred, 250, 4), Copy(pred, 251, 8), handle | 246, tld4b(246, 0)});
-    auto aoffi = plain;
-    aoffi.words[2] |= 1U << 12;
+          std::array<u64, 4>{Copy(pred, 250, GatherCoords), Copy(pred, 251, GatherOffsets),
+                             handle | 246, tld4b(246, 0)});
+    const Instruction aoffi = MakeGather(1);
     check(LowerToMaxwell(std::array{depth, aoffi, Exit}), 1,
-          std::array<u64, 5>{Copy(pred, 250, 4), Copy(pred, 251, 5), handle | 246, Copy(pred, 247, 8),
-                     tld4b(246, 1)});
+          std::array<u64, 5>{Copy(pred, 250, GatherCoords), Copy(pred, 251, GatherCoords + 1),
+                             handle | 246, Copy(pred, 247, GatherOffsets), tld4b(246, 1)});
     // PTP: the handle in R247, so the packed offsets stay in R248 and R249.
     const auto per_tap = PerTapProgram();
     check(LowerToMaxwell(std::array{depth, per_tap[0], per_tap[1], per_tap[2], Exit}), 3,
           std::array<u64, 6>{MoveImmediate(7ULL << 16, 248, 0xff00ff00),
-                     MoveImmediate(7ULL << 16, 249, 0x01000001), Copy(pred, 250, 4),
-                     Copy(pred, 251, 5), handle | 247, tld4b(247, 2)});
+                     MoveImmediate(7ULL << 16, 249, 0x01000001), Copy(pred, 250, GatherCoords),
+                     Copy(pred, 251, GatherCoords + 1), handle | 247, tld4b(247, 2)});
     // Gathers from the bound buffer keep the bound TLD4.
     const auto same = LowerToMaxwell(std::array{plain, plain, Exit});
     INFO(same.error);

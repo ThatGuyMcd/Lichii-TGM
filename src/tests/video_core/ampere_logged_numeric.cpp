@@ -16,6 +16,7 @@
 #include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
+#include "tests/video_core/ampere_instruction_fixture.h"
 
 namespace {
 using Shader::Ampere::Instruction;
@@ -23,11 +24,36 @@ using Shader::Ampere::LowerToMaxwell;
 namespace IR = Shader::IR;
 
 constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0}};
-constexpr Instruction LoggedF2I{{0x00067b05, 0x40c03400, 0x00212800, 0x000e2200}};
-constexpr std::array<Instruction, 2> LoggedShifts{{
-    {{0xff107419, 0x000000ff, 0x0001060e, 0x080fe400}},
-    {{0xff0c7419, 0x000000ff, 0x0001060b, 0x080fe400}},
-}};
+// Independent instruction assembly: opcode [11:0], guard [15:12], destination [23:16],
+// first source [31:24]. The remaining fields are supplied explicitly by each synthetic case;
+// scheduling/reuse bits are zero. No captured instruction words are used by these cases.
+constexpr Instruction SyntheticInstruction(u32 opcode, u32 dest, u32 source, u32 operand,
+                                           u32 controls, u32 guard = 7) {
+    return {{opcode | (guard << 12) | (dest << 16) | (source << 24), operand, controls, 0}};
+}
+
+constexpr u32 F2IDestination = 19;
+constexpr u32 F2IBank = 5;
+constexpr u32 F2IOffset = 0x1ac;
+constexpr u32 AbsoluteCbuf = 1U << 30;
+constexpr u32 NegatedCbuf = 1U << 31;
+constexpr u32 CbufOperand = Shader::Ampere::Test::ConstantBufferOperand(F2IBank, F2IOffset);
+constexpr Instruction AbsoluteF2I =
+    SyntheticInstruction(0xb05, F2IDestination, 0, AbsoluteCbuf | CbufOperand, 0x00212800);
+
+struct ShiftFixture {
+    u32 destination;
+    u32 shift_register;
+    u32 value;
+
+    constexpr Instruction Encode() const {
+        constexpr u32 unsigned_high_left = 0x00010600;
+        return SyntheticInstruction(0x419, destination, 255, value,
+                                    unsigned_high_left | shift_register);
+    }
+};
+constexpr std::array ShiftFixtures{ShiftFixture{29, 41, 0x34ab911d},
+                                   ShiftFixture{63, 57, 0xe2095b37}};
 
 u32 Address(u32 index) {
     return 0x50 + index * 8 + ((index + 1) / 3) * 8;
@@ -149,81 +175,84 @@ u64 Store(u32 source) {
 }
 } // namespace
 
-TEST_CASE("Logged Pokopia absolute constant F2I retains U16 rounding and reaches SPIRV",
+TEST_CASE("Synthetic absolute constant F2I retains U16 rounding and reaches SPIRV",
           "[video_core][ampere][logged_numeric]") {
-    const auto lowered = LowerToMaxwell(std::array{LoggedF2I, Exit});
+    const auto lowered = LowerToMaxwell(std::array{AbsoluteF2I, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     const std::array<u64, 6> expected{
-        0x4c98000000070000ULL | 252 | (15ULL << 39) | (0x34ULL << 20) | (3ULL << 34),
+        0x4c98000000070000ULL | 252 | (15ULL << 39) | (u64{F2IOffset / 4} << 20) |
+            (u64{F2IBank} << 34),
         0x0400000000070000ULL | 252 | (252ULL << 8) | (0x7fffffffULL << 20),
         0x5800000000070000ULL | 250 | (252ULL << 8) | (252ULL << 20) |
             (7ULL << 39) | (7ULL << 48),
         0x5c40000000070000ULL | 250 | (252ULL << 8) | (250ULL << 20) | (7ULL << 48),
-        0x5cb0000000070000ULL | 6 | (1ULL << 8) | (2ULL << 10) | (250ULL << 20) |
-            (1ULL << 44),
+        0x5cb0000000070000ULL | F2IDestination | (1ULL << 8) | (2ULL << 10) |
+            (250ULL << 20) | (1ULL << 44),
         0xe30000000007000fULL,
     };
     REQUIRE(lowered.instructions.size() == expected.size());
     CHECK(std::equal(expected.begin(), expected.end(), lowered.instructions.begin()));
     auto code = lowered.instructions;
-    code.insert(code.end() - 1, Store(6));
+    code.insert(code.end() - 1, Store(F2IDestination));
     TranslateAndEmit(code);
 }
 
-TEST_CASE("Logged Pokopia F2I preserves guards and rejects unrelated modifiers",
+TEST_CASE("Synthetic F2I preserves guards and rejects unrelated modifiers",
           "[video_core][ampere][logged_numeric]") {
     for (const u32 guard : {0U, 6U, 7U, 8U, 14U}) {
-        auto instruction = LoggedF2I;
+        auto instruction = AbsoluteF2I;
         instruction.words[0] = (instruction.words[0] & ~0xf000U) | (guard << 12);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         REQUIRE(lowered);
         for (size_t index = 0; index + 1 < lowered.instructions.size(); ++index)
             CHECK(((lowered.instructions[index] >> 16) & 15) == guard);
     }
-    for (const u32 source : {0x80c03400U, 0xc0c03400U, 0x44c03400U, 0x40c03440U,
-                             0x48c03400U, 0x50c03400U, 0x60c03400U}) {
-        auto invalid = LoggedF2I;
-        invalid.words[1] = source;
+    for (const u32 changes : {NegatedCbuf ^ AbsoluteCbuf, NegatedCbuf, 1U << 26, 1U << 6,
+                              1U << 27, 1U << 28, 1U << 29}) {
+        auto invalid = AbsoluteF2I;
+        invalid.words[1] ^= changes;
         CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
     }
     for (const u32 bit : {0U, 8U, 30U, 31U}) {
-        auto invalid = LoggedF2I;
+        auto invalid = AbsoluteF2I;
         invalid.words[3] ^= 1U << bit;
         CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
     }
-    auto invalid = LoggedF2I;
+    auto invalid = AbsoluteF2I;
     invalid.words[0] |= 1U << 24;
     CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
-    invalid = LoggedF2I;
+    invalid = AbsoluteF2I;
     invalid.words[2] |= 1U << 27;
     CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
-    invalid.words = {0x00157b05, 0x40400400, 0x0021e100, 0x0001e400};
+    invalid = SyntheticInstruction(0xb05, 28, 0,
+                                   AbsoluteCbuf | Shader::Ampere::Test::ConstantBufferOperand(9, 0x158),
+                                   0x0021e100);
     CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
 }
 
-TEST_CASE("Logged Pokopia SHF clamps instead of wrapping through production translation",
+TEST_CASE("Synthetic SHF clamps instead of wrapping through production translation",
           "[video_core][ampere][logged_numeric]") {
-    for (const auto instruction : LoggedShifts) {
+    for (const auto& fixture : ShiftFixtures) {
         for (const bool wrap : {false, true}) {
-            auto variant = instruction;
+            auto variant = fixture.Encode();
             variant.words[2] |= u32{wrap} << 11;
             const auto lowered = LowerToMaxwell(std::array{variant, Exit});
             INFO(lowered.error);
             REQUIRE(lowered);
             REQUIRE(lowered.instructions.size() == 3);
             CHECK(lowered.instructions[0] ==
-                  (0x0100000000070000ULL | 250 | (15ULL << 12) | (255ULL << 20)));
+                  (0x0100000000070000ULL | 250 | (15ULL << 12) | (u64{fixture.value} << 20)));
             CHECK(lowered.instructions[1] ==
-                  (0x5c48000000070000ULL | instruction.Bits(16, 8) | (250ULL << 8) |
-                   (u64{instruction.Bits(64, 8)} << 20) | (u64{wrap} << 39)));
+                  (0x5c48000000070000ULL | fixture.destination | (250ULL << 8) |
+                   (u64{fixture.shift_register} << 20) | (u64{wrap} << 39)));
             for (const u32 shift : {0U, 1U, 7U, 24U, 31U, 32U, 33U, 63U, 0xffffffffU}) {
                 auto code = lowered.instructions;
-                code.insert(code.begin(), 0x0100000000070000ULL | instruction.Bits(64, 8) |
+                code.insert(code.begin(), 0x0100000000070000ULL | fixture.shift_register |
                                               (15ULL << 12) | (u64{shift} << 20));
-                code.insert(code.end() - 1, Store(instruction.Bits(16, 8)));
+                code.insert(code.end() - 1, Store(fixture.destination));
                 const u32 effective = wrap ? shift & 31 : std::min(shift, 32U);
-                const u32 expected = effective == 32 ? 0U : 255U << effective;
+                const u32 expected = effective == 32 ? 0U : fixture.value << effective;
                 CAPTURE(shift, wrap);
                 TranslateAndEmit(code, expected);
             }
@@ -231,12 +260,10 @@ TEST_CASE("Logged Pokopia SHF clamps instead of wrapping through production tran
     }
 }
 
-TEST_CASE("Logged Pokopia SHF register pressure identifies the register shift operand",
+TEST_CASE("Synthetic SHF register pressure identifies the register shift operand",
           "[video_core][ampere][logged_numeric]") {
     for (const u32 high : {216U, 217U, 240U, 246U, 254U}) {
-        auto instruction = LoggedShifts[0];
-        instruction.words[0] = (instruction.words[0] & ~0x00ff0000U) | (high << 16);
-        instruction.words[2] = (instruction.words[2] & ~255U) | high;
+        const auto instruction = ShiftFixture{high, high, ShiftFixtures[0].value}.Encode();
         const auto pressure = Shader::Ampere::PrepareRegisterPressure(instruction, 216);
         REQUIRE(pressure.valid);
         CHECK(pressure.prefix.size() == 8);
@@ -244,15 +271,15 @@ TEST_CASE("Logged Pokopia SHF register pressure identifies the register shift op
         CHECK(pressure.instruction.Bits(16, 8) < 216);
         CHECK(pressure.instruction.Bits(64, 8) == pressure.instruction.Bits(16, 8));
         CHECK(pressure.instruction.Bits(24, 8) == 255);
-        CHECK(pressure.instruction.words[1] == 255);
+        CHECK(pressure.instruction.words[1] == ShiftFixtures[0].value);
         REQUIRE(LowerToMaxwell(std::array{pressure.instruction, Exit}));
     }
     for (const u32 bit : {8U, 12U, 17U, 27U}) {
-        auto invalid = LoggedShifts[0];
+        auto invalid = ShiftFixtures[0].Encode();
         invalid.words[2] ^= 1U << bit;
         CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
     }
-    auto invalid = LoggedShifts[0];
+    auto invalid = ShiftFixtures[0].Encode();
     invalid.words[0] &= ~0xff000000U;
     CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
 }
@@ -277,34 +304,62 @@ TEST_CASE("TXD register pressure covers the layer and a single destination",
     CHECK_FALSE(Shader::Ampere::PrepareRegisterPressure(txd(247, 0, 1, 0x3), 216).valid);
 }
 
-TEST_CASE("Logged Kirby FMUL preserves high guest registers across uniform mirrors",
+namespace {
+constexpr u32 FlushDenormals = 1U << 16;
+constexpr u32 UnitMultiplyScale = 4U << 20;
+constexpr auto UniformBankMarker = SyntheticInstruction(0xc02, 0, 0, 0, 0, 15);
+
+constexpr Instruction SyntheticLoad(u32 destination, u32 address, u32 byte_offset) {
+    // LDG.E.32 with an even register address pair and a signed byte offset starting at bit 40.
+    constexpr u32 controls = (15U << 17) | (1U << 15) | (4U << 9) | (1U << 8);
+    return SyntheticInstruction(0x381, destination, address, byte_offset << 8, controls);
+}
+
+// Independent operands shared by the remapping checks and scalar execution checks below.
+constexpr auto RegisterAdd = SyntheticInstruction(0x221, 231, 137, 73, FlushDenormals);
+constexpr auto ImmediateMultiply = SyntheticInstruction(0x820, 234, 72, std::bit_cast<u32>(23.5f),
+                                                         FlushDenormals | UnitMultiplyScale);
+constexpr auto ImmediateAdd = SyntheticInstruction(0x421, 68, 224, std::bit_cast<u32>(1.25f),
+                                                    FlushDenormals);
+constexpr auto RegisterFma = SyntheticInstruction(0x223, 225, 233, 132, FlushDenormals | 51U);
+constexpr auto ImmediateFma = SyntheticInstruction(0x823, 123, 241, std::bit_cast<u32>(0.625f),
+                                                   FlushDenormals | 190U);
+} // namespace
+
+TEST_CASE("Synthetic FMUL preserves high guest registers across uniform mirrors",
           "[video_core][ampere][logged_numeric][kirby]") {
     using Shader::Ampere::NativeRegisterCopy;
-    constexpr Instruction multiply{{0x5fdc7220, 0x00000052, 0x00410000, 0x000fe200}};
+    constexpr u32 destination = 233, first = 61, second = 174, borrowed = 213;
+    constexpr auto multiply = SyntheticInstruction(0x220, destination, first, second,
+                                                    FlushDenormals | UnitMultiplyScale);
     const auto pressure = Shader::Ampere::PrepareRegisterPressure(multiply, 216);
     REQUIRE(pressure.valid);
-    CHECK(pressure.instruction.words[0] == 0x5fd47220);
+    CHECK(pressure.instruction.Bits(16, 8) == borrowed);
+    CHECK((pressure.instruction.words[0] & ~(255U << 16)) ==
+          (multiply.words[0] & ~(255U << 16)));
     CHECK(pressure.instruction.words[1] == multiply.words[1]);
     CHECK(pressure.instruction.words[2] == multiply.words[2]);
     CHECK(pressure.instruction.words[3] == multiply.words[3]);
     REQUIRE(pressure.prefix.size() == 8);
     REQUIRE(pressure.suffix.size() == 8);
 
-    const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
-    const auto lowered = LowerToMaxwell(std::array{uniform_marker, multiply, Exit});
+    const auto lowered = LowerToMaxwell(std::array{UniformBankMarker, multiply, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     REQUIRE(lowered.instructions.size() == 18);
     CHECK(std::equal(pressure.prefix.begin(), pressure.prefix.end(), lowered.instructions.begin()));
     CHECK(std::equal(pressure.suffix.begin(), pressure.suffix.end(), lowered.instructions.begin() + 9));
     CHECK(lowered.instructions[8] ==
-          (0x5c68000000070000ULL | 212 | (95ULL << 8) | (82ULL << 20) | (1ULL << 44)));
+          (0x5c68000000070000ULL | borrowed | (u64{first} << 8) | (u64{second} << 20) |
+           (1ULL << 44)));
     auto code = lowered.instructions;
-    code.insert(code.begin(), 0x0100000000070000ULL | 82 | (15ULL << 12) | (0x40400000ULL << 20));
-    code.insert(code.begin(), 0x0100000000070000ULL | 95 | (15ULL << 12) | (0x40000000ULL << 20));
-    code.insert(code.end() - 1, NativeRegisterCopy(0, 0, 1, 220));
+    code.insert(code.begin(), 0x0100000000070000ULL | second | (15ULL << 12) |
+                                  (u64{std::bit_cast<u32>(3.5f)} << 20));
+    code.insert(code.begin(), 0x0100000000070000ULL | first | (15ULL << 12) |
+                                  (u64{std::bit_cast<u32>(-2.0f)} << 20));
+    code.insert(code.end() - 1, NativeRegisterCopy(0, 0, 1, destination));
     code.insert(code.end() - 1, Store(0));
-    TranslateAndEmit(code, 0x40c00000);
+    TranslateAndEmit(code, std::bit_cast<u32>(-7.0f));
 
     for (const u32 field : {16U, 24U, 32U}) {
         for (const u32 high : {216U, 217U, 240U, 246U, 254U}) {
@@ -315,18 +370,21 @@ TEST_CASE("Logged Kirby FMUL preserves high guest registers across uniform mirro
             const auto remapped = Shader::Ampere::PrepareRegisterPressure(instruction, 216);
             REQUIRE(remapped.valid);
             CHECK(remapped.instruction.Bits(field, 8) < 216);
-            CHECK(LowerToMaxwell(std::array{uniform_marker, instruction, Exit}));
+            CHECK(LowerToMaxwell(std::array{UniformBankMarker, instruction, Exit}));
         }
     }
 }
 
-TEST_CASE("Logged Ocarina uniform IMAD preserves high destinations across uniform mirrors",
+TEST_CASE("Synthetic uniform IMAD preserves high destinations across uniform mirrors",
           "[video_core][ampere][logged_numeric][ocarina]") {
-    // Kakariko graveyard pixel shaders: IMAD R229 = R29 * UR10 + RZ (and R225 = R49 * UR10)
-    // were rejected with "native register shadowing mode", so the draw was skipped.
+    // Independently choose two destination quartets and different lanes in those quartets.
+    // IMAD's required predicate fields occupy bits 81..83 (7) and 87..90 (15);
+    // bit 91 selects the uniform operand,
+    // bit 73 selects signed multiplication, and bits 64..71 name the zero addend.
+    constexpr u32 mode = (7U << 17) | (15U << 23) | (1U << 27) | (1U << 9) | 255U;
     constexpr std::array multiplies{
-        Instruction{{0x1de57c24, 0x0000000a, 0x0f8e02ff, 0x000fe200}},
-        Instruction{{0x31e17c24, 0x0000000a, 0x0f8e02ff, 0x000fe200}},
+        SyntheticInstruction(0xc24, 232, 41, 9, mode),
+        SyntheticInstruction(0xc24, 239, 57, 9, mode),
     };
     const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
     for (const auto& multiply : multiplies) {
@@ -346,25 +404,25 @@ TEST_CASE("Logged Ocarina uniform IMAD preserves high destinations across unifor
     }
 }
 
-TEST_CASE("Logged Ocarina uniform SHF preserves high registers across uniform mirrors",
+TEST_CASE("Synthetic uniform SHF preserves high registers across uniform mirrors",
           "[video_core][ampere][logged_numeric][ocarina]") {
     using Shader::Ampere::NativeRegisterCopy;
-    // Two mesh programs: @P2 SHF.L.W.U32 R200 = R200 << UR6 was rejected with "native register
-    // shadowing mode", so the draw was skipped. Their high uniform registers put R200 inside
-    // the uniform mirrors.
-    constexpr Instruction shift{{0xc8c82c19, 0x00000006, 0x08000eff, 0x000fc800}};
+    // Aliasing low source/destination R201, UR8 amount, RZ high half; .U32 at 73..74,
+    // .W at 75, uniform form at 91. A high uniform below forces mirrors down to R200.
+    constexpr auto shift = SyntheticInstruction(0xc19, 201, 201, 8,
+                                                255U | (3U << 9) | (1U << 11) | (1U << 27), 3);
     const auto pressure = Shader::Ampere::PrepareRegisterPressure(shift, 200);
     REQUIRE(pressure.valid);
-    CHECK(pressure.instruction.words[0] == 0xc4c42c19);
+    CHECK(pressure.instruction.words[0] == (0xc19U | (3U << 12) | (197U << 16) | (197U << 24)));
     CHECK(pressure.instruction.words[1] == shift.words[1]);
     CHECK(pressure.instruction.words[2] == shift.words[2]);
     CHECK(pressure.instruction.words[3] == shift.words[3]);
     REQUIRE(pressure.prefix.size() == 8);
     REQUIRE(pressure.suffix.size() == 8);
 
-    // MOV R0, UR42 moves the mirrors of UR28 and up down to R200.
-    constexpr Instruction high_uniform{{0x00007c02, 0x0000002a, 0x08000f00, 0}};
-    for (const u32 guard : {2U, 7U}) {
+    // MOV R4, UR43: the same mirror boundary, independently selected destination/source.
+    constexpr auto high_uniform = SyntheticInstruction(0xc02, 4, 0, 43, (15U << 8) | (1U << 27));
+    for (const u32 guard : {3U, 7U}) {
         auto guarded = shift;
         guarded.words[0] = (guarded.words[0] & ~0xf000U) | (guard << 12);
         const auto lowered = LowerToMaxwell(std::array{high_uniform, guarded, Exit});
@@ -376,31 +434,31 @@ TEST_CASE("Logged Ocarina uniform SHF preserves high registers across uniform mi
         CHECK(std::equal(pressure.suffix.begin(), pressure.suffix.end(),
                          lowered.instructions.begin() + 10));
         CHECK(lowered.instructions[9] ==
-              (0x5bf8000000000000ULL | (u64{guard} << 16) | 196 | (255ULL << 8) | (222ULL << 20) |
-               (196ULL << 39) | (1ULL << 50)));
+              (0x5bf8000000000000ULL | (u64{guard} << 16) | 197 | (255ULL << 8) | (224ULL << 20) |
+               (197ULL << 39) | (1ULL << 50)));
         if (guard != 7)
             continue;
         for (const u32 amount : {0U, 3U, 31U, 35U}) {
             auto code = lowered.instructions;
-            code.insert(code.begin(), NativeRegisterCopy(1, 200, 0, 0));
+            code.insert(code.begin(), NativeRegisterCopy(1, 201, 0, 0));
             code.insert(code.begin(),
-                        0x0100000000070000ULL | (15ULL << 12) | (0x81234567ULL << 20));
+                        0x0100000000070000ULL | (15ULL << 12) | (0x9345abcdULL << 20));
             code.insert(code.begin(),
-                        0x0100000000070000ULL | 222 | (15ULL << 12) | (u64{amount} << 20));
-            code.insert(code.end() - 1, NativeRegisterCopy(0, 0, 1, 200));
+                        0x0100000000070000ULL | 224 | (15ULL << 12) | (u64{amount} << 20));
+            code.insert(code.end() - 1, NativeRegisterCopy(0, 0, 1, 201));
             code.insert(code.end() - 1, Store(0));
             CAPTURE(amount);
-            TranslateAndEmit(code, 0x81234567U << (amount & 31));
+            TranslateAndEmit(code, 0x9345abcdU << (amount & 31));
         }
     }
 }
 
-TEST_CASE("Logged Kirby global loads preserve high destinations across uniform mirrors",
+TEST_CASE("Synthetic global loads preserve high destinations across uniform mirrors",
           "[video_core][ampere][logged_numeric][kirby]") {
     constexpr std::array loads{
-        Instruction{{0x46fa7381, 0x00003000, 0x001e8900, 0x00013400}},
-        Instruction{{0x70ec7381, 0x00006c00, 0x001e8900, 0x00012800}},
-        Instruction{{0x72ef7381, 0x00006c00, 0x001e8900, 0x00012800}},
+        SyntheticLoad(245, 84, 0x74),
+        SyntheticLoad(225, 104, 0x4c),
+        SyntheticLoad(226, 118, 0xb8),
     };
     for (const auto& load : loads) {
         const auto pressure = Shader::Ampere::PrepareRegisterPressure(load, 216);
@@ -411,8 +469,7 @@ TEST_CASE("Logged Kirby global loads preserve high destinations across uniform m
         CHECK(pressure.instruction.words[2] == load.words[2]);
         REQUIRE(pressure.prefix.size() == 8);
         REQUIRE(pressure.suffix.size() == 8);
-        const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
-        const auto lowered = LowerToMaxwell(std::array{uniform_marker, load, Exit});
+        const auto lowered = LowerToMaxwell(std::array{UniformBankMarker, load, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
         REQUIRE(lowered.instructions.size() == 18);
@@ -425,29 +482,42 @@ TEST_CASE("Logged Kirby global loads preserve high destinations across uniform m
     }
 }
 
-TEST_CASE("Captured Kirby high-register ALU and memory operands preserve encoding fields",
+TEST_CASE("Synthetic ALU and memory operands preserve encoding fields during shadowing",
           "[video_core][ampere][logged_numeric][kirby]") {
     struct Fixture {
         Instruction instruction;
         std::vector<u32> fields;
     };
+    // P sets the comparison result, Q discards its complement, and PT combines with it.
+    constexpr u32 float_compare = (12U << 12) | FlushDenormals | (3U << 17) | (7U << 20) |
+                                  (7U << 23);
+    constexpr u32 uniform_load = (1U << 27) | (15U << 17) | (1U << 15) | (4U << 9) |
+                                 (1U << 8);
+    constexpr u32 extended_store = (1U << 20) | (1U << 15) | (1U << 13) | (4U << 9) |
+                                   (1U << 8);
     const std::array fixtures{
-        Fixture{{{0x8ee87221, 0x0000005a, 0x00010000, 0x000fe200}}, {16, 24, 32}},
-        Fixture{{{0x21db7820, 0x42fe0000, 0x00410000, 0x000fc600}}, {16, 24}},
-        Fixture{{{0xdb507421, 0x3f800000, 0x00010000, 0x042fe200}}, {16, 24}},
-        Fixture{{{0xde4f7421, 0x3f800000, 0x00010000, 0x042fe200}}, {16, 24}},
-        Fixture{{{0x00f97919, 0x00000000, 0x00002100, 0x000e2200}}, {16}},
-        Fixture{{{0xe3bd7823, 0x3c8efa35, 0x000100b1, 0x000fe400}}, {16, 24, 64}},
-        Fixture{{{0xdc00780b, 0x42fe0000, 0x03f5e000, 0x000fc800}}, {24}},
-        Fixture{{{0xdce57223, 0x0000008f, 0x0001004e, 0x000fe200}}, {16, 24, 32, 64}},
-        Fixture{{{0x21217208, 0x000000dc, 0x05000000, 0x000fe200}}, {16, 24, 32}},
-        Fixture{{{0xfb2ec981, 0x00000006, 0x081ea900, 0x00012200}}, {16, 24}},
-        Fixture{{{0xe3e37981, 0x0000000c, 0x081e8900, 0x000f2200}}, {16, 24}},
-        Fixture{{{0xe4e47817, 0x00000001, 0x07800200, 0x000fe200}}, {16, 24}},
-        Fixture{{{0xfa00920b, 0x000000ff, 0x03f1c000, 0x000fe400}}, {24, 32}},
-        Fixture{{{0x00307245, 0x000000e4, 0x00201000, 0x000fe200}}, {16, 32}},
-        Fixture{{{0x39007986, 0x000000fa, 0x0810a906, 0x0001e200}}, {24, 32}},
-        Fixture{{{0x86000386, 0x000000fa, 0x0010a900, 0x0005e200}}, {24, 32}},
+        Fixture{RegisterAdd, {16, 24, 32}},
+        Fixture{ImmediateMultiply, {16, 24}},
+        Fixture{ImmediateAdd, {16, 24}},
+        Fixture{SyntheticInstruction(0x421, 46, 243, std::bit_cast<u32>(-1.75f), FlushDenormals),
+                {16, 24}},
+        Fixture{SyntheticInstruction(0x919, 250, 0, 0, 34U << 8), {16}}, // S2R thread ID Z.
+        Fixture{ImmediateFma, {16, 24, 64}},
+        Fixture{SyntheticInstruction(0x80b, 0, 222, std::bit_cast<u32>(6.25f), float_compare), {24}},
+        Fixture{RegisterFma, {16, 24, 32, 64}},
+        Fixture{SyntheticInstruction(0x208, 57, 57, 228, (4U << 23) | (1U << 26)), {16, 24, 32}},
+        // Uniform base plus a register, with an independently chosen byte displacement.
+        Fixture{SyntheticInstruction(0x981, 47, 245, (0x148U << 8) | 14U,
+                                     uniform_load | (1U << 13), 11), {16, 24}},
+        Fixture{SyntheticInstruction(0x981, 237, 237, (0x28U << 8) | 18U, uniform_load), {16, 24}},
+        // Lower a signed immediate minimum/maximum in place, then a register comparison with RZ.
+        Fixture{SyntheticInstruction(0x817, 235, 235, 19, (15U << 23) | (1U << 9)), {16, 24}},
+        Fixture{SyntheticInstruction(0x20b, 0, 247, 255, float_compare, 10), {24, 32}},
+        Fixture{SyntheticInstruction(0x245, 58, 0, 220, (1U << 21) | (1U << 12)), {16, 32}},
+        Fixture{SyntheticInstruction(0x986, 0, 63, (0x54U << 8) | 242U,
+                                     (1U << 27) | extended_store | 10U), {24, 32}},
+        Fixture{SyntheticInstruction(0x386, 0, 168, (0x1cU << 8) | 249U, extended_store, 1),
+                {24, 32}},
     };
     for (const auto& fixture : fixtures) {
         const auto& instruction = fixture.instruction;
@@ -468,35 +538,40 @@ TEST_CASE("Captured Kirby high-register ALU and memory operands preserve encodin
             CHECK((pressure.instruction.words[word] & ~masks[word]) ==
                   (instruction.words[word] & ~masks[word]));
         }
-        const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
-        const auto lowered = LowerToMaxwell(std::array{uniform_marker, instruction, Exit});
+        const auto lowered = LowerToMaxwell(std::array{UniformBankMarker, instruction, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
     }
 }
 
-TEST_CASE("Captured Kirby shadowed floating arithmetic preserves values",
+TEST_CASE("Synthetic shadowed floating ALU operands preserve distinct values",
           "[video_core][ampere][logged_numeric][kirby]") {
+    struct Source {
+        u32 reg;
+        float value;
+    };
     struct Fixture {
         Instruction instruction;
-        std::vector<u32> sources;
+        std::vector<Source> sources;
         float expected;
     };
     const std::array fixtures{
-        Fixture{{{0x8ee87221, 0x0000005a, 0x00010000, 0x000fe200}}, {142, 90}, 4.0f},
-        Fixture{{{0x21db7820, 0x42fe0000, 0x00410000, 0x000fc600}}, {33}, 254.0f},
-        Fixture{{{0xdb507421, 0x3f800000, 0x00010000, 0x042fe200}}, {219}, 3.0f},
-        Fixture{{{0xdce57223, 0x0000008f, 0x0001004e, 0x000fe200}}, {220, 143, 78}, 6.0f},
-        Fixture{{{0xe3bd7823, 0x3c8efa35, 0x000100b1, 0x000fe400}}, {227, 177},
-                2.0f * std::bit_cast<float>(0x3c8efa35U) + 2.0f},
+        Fixture{RegisterAdd, {{137, 7.0f}, {73, -2.5f}}, 4.5f},
+        Fixture{ImmediateMultiply, {{72, 2.0f}}, 47.0f},
+        Fixture{ImmediateAdd, {{224, -4.0f}}, -2.75f},
+        Fixture{RegisterFma, {{233, 4.0f}, {132, 1.5f}, {51, -0.5f}}, 5.5f},
+        Fixture{ImmediateFma, {{241, 8.0f}, {190, 3.0f}}, 8.0f},
     };
     for (const auto& fixture : fixtures) {
-        const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
-        const auto lowered = LowerToMaxwell(std::array{uniform_marker, fixture.instruction, Exit});
+        CAPTURE(fixture.instruction.words);
+        const auto lowered = LowerToMaxwell(std::array{UniformBankMarker, fixture.instruction, Exit});
+        INFO(lowered.error);
         REQUIRE(lowered);
-        std::vector<u64> code{0x0100000000070000ULL | (15ULL << 12) | (0x40000000ULL << 20)};
-        for (const u32 source : fixture.sources) {
-            code.push_back(Shader::Ampere::NativeRegisterCopy(source >= 216 ? 1 : 0, source, 0, 0));
+        std::vector<u64> code;
+        for (const auto [reg, value] : fixture.sources) {
+            code.push_back(0x0100000000070000ULL | (15ULL << 12) |
+                           (u64{std::bit_cast<u32>(value)} << 20));
+            code.push_back(Shader::Ampere::NativeRegisterCopy(reg >= 216 ? 1 : 0, reg, 0, 0));
         }
         code.insert(code.end(), lowered.instructions.begin(), lowered.instructions.end() - 1);
         const u32 destination = fixture.instruction.Bits(16, 8);
@@ -508,17 +583,17 @@ TEST_CASE("Captured Kirby shadowed floating arithmetic preserves values",
     }
 }
 
-TEST_CASE("Logged Pokopia masked dependency barrier fences shared memory and rejects unknown modes",
+TEST_CASE("Synthetic masked dependency barrier fences shared memory and rejects unknown modes",
           "[video_core][ampere][logged_numeric]") {
-    constexpr Instruction wait{{0x0000791a, 0x0000800e, 0, 0x000fce00}};
-    for (const u32 mask : {0x800eU, 0x8000U}) {
-        auto supported = wait;
-        supported.words[1] = mask;
+    using Shader::Ampere::Test::DependencyWait;
+    using Shader::Ampere::Test::SharedCopy;
+    constexpr Instruction wait = DependencyWait(0, 2, 0x21);
+    for (const auto supported : {wait, DependencyWait(0, 0, 0)}) {
         const auto ordered = LowerToMaxwell(std::array{supported, Exit});
         REQUIRE(ordered);
         REQUIRE(ordered.instructions.size() == 1);
         CHECK(ordered.instructions.back() == 0xe30000000007000fULL);
-        const Instruction copy{{0x02067fae, 0, 0x0f901c08, 0}};
+        constexpr auto copy = SharedCopy(27, 40, 12, 0x90, 0x40);
         const auto copying = LowerToMaxwell(std::array{copy, supported, Exit});
         REQUIRE(copying);
         CHECK(copying.instructions[copying.source_instruction_offsets[1]] ==
@@ -541,12 +616,13 @@ TEST_CASE("Logged Pokopia masked dependency barrier fences shared memory and rej
     CHECK(rejected.error == "native dependency barrier mode");
 }
 
-TEST_CASE("Ocarina mesh attribute stores read shadowed high registers",
+TEST_CASE("Synthetic mesh attribute stores read shadowed high registers",
           "[video_core][ampere][logged_numeric][oot]") {
-    // Ocarina mesh 8159e91e0097876a at 0x83c0: ISBEWR.32.ATTR.SKEW.O [R197 + 0x780], R240. R240 is
-    // UR22's mirror once the uniform bank is in use, so the data must come from the shadow bank.
+    // ISBEWR [R179 + 0x540], R244. Operand fields: data [39:32], offset [63:40],
+    // .32 bit 75, .ATTR bits 76..77, .SKEW bit 78, .O bit 79. R244 overlaps UR26's mirror.
     const Instruction uniform_marker{{0x0000fc02, 0, 0, 0}};
-    const Instruction store{{0xc5007927, 0x000780f0, 0x0000f800, 0x000fe200}};
+    constexpr auto store = SyntheticInstruction(0x927, 0, 179, 244U | (0x540U << 8),
+                                                (1U << 11) | (3U << 12) | (1U << 14) | (1U << 15));
     const auto lowered = LowerToMaxwell(std::array{uniform_marker, store, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
@@ -556,7 +632,9 @@ TEST_CASE("Ocarina mesh attribute stores read shadowed high registers",
     REQUIRE(pseudo != end);
     const u32 data = static_cast<u32>(*pseudo & 0xff);
     CHECK(data < 216);
-    CHECK(std::find(begin, pseudo, Shader::Ampere::NativeRegisterCopy(0, data, 1, 240)) != pseudo);
+    CHECK(std::find(begin, pseudo, Shader::Ampere::NativeRegisterCopy(0, data, 1, 244)) != pseudo);
+    CHECK(((*pseudo >> 8) & 255) == 179);
+    CHECK(((*pseudo >> 20) & 0xffffff) == 0x540);
 }
 
 TEST_CASE("Global atomics read their data from shadowed high registers",
@@ -615,34 +693,40 @@ TEST_CASE("Gradient texture fetch shadows keep the array layer register",
     CHECK((gradients + 4 <= 210 || gradients >= 213));
 }
 
-TEST_CASE("Ocarina static sweep high-register operands preserve encoding fields",
+TEST_CASE("Synthetic high-register operands preserve encoding fields",
           "[video_core][ampere][logged_numeric][ocarina]") {
-    // The instructions at which 15 of the game's mesh and vertex programs were rejected with
-    // "native register shadowing mode" when lowered from the game files.
+    // Independently assembled coverage of each operand location and register-pair boundary.
+    // No game program or scheduling word is used. Mode fields follow the corresponding
+    // opcode decoder, while register numbers and payloads are arbitrary test inputs.
     struct Fixture {
         Instruction instruction;
         std::vector<u32> fields;
     };
     const std::array fixtures{
-        // R2UR UR35, R243; UR33, R216; UR4, R228: bits 16 to 23 name a uniform register.
-        Fixture{{{0xf32373c2, 0x00000000, 0x000e0000, 0x000e2400}}, {24}},
-        Fixture{{{0xd82173c2, 0x00000000, 0x000e0000, 0x000e3000}}, {24}},
-        Fixture{{{0xe40473c2, 0x00000000, 0x000e0000, 0x000e2400}}, {24}},
-        // FMNMX R217, R217, 1e-5 (and R242, R222).
-        Fixture{{{0xd9d97809, 0x3727c5ac, 0x07810000, 0x000fe200}}, {16, 24}},
-        Fixture{{{0xf2f27809, 0x3727c5ac, 0x07810000, 0x001fe200}}, {16, 24}},
-        Fixture{{{0xdede7809, 0x3727c5ac, 0x07810000, 0x001fe200}}, {16, 24}},
-        // @!P0 FMUL R219, R219, UR36.
-        Fixture{{{0xdbdb8c20, 0x00000024, 0x08410000, 0x000fe200}}, {16, 24}},
-        // P2R R221, PR, RZ, 0x1 (and R222).
-        Fixture{{{0xffdd7803, 0x00000001, 0x00000000, 0x000fe200}}, {16, 24}},
-        Fixture{{{0xffde7803, 0x00000001, 0x00000000, 0x000fe400}}, {16, 24}},
-        // I2FP.F32.U32 R250, UR11.
-        Fixture{{{0x00fa7c45, 0x0000000b, 0x08201400, 0x000fe200}}, {16}},
-        // LDC.64 R206 indexed by R227: the destination is a register pair.
-        Fixture{{{0xe3ce7b82, 0x01c00400, 0x00000a00, 0x000e3000}}, {16, 24}},
-        // FFMA R37, R24, UR5, R227: found once R2UR above lowered.
-        Fixture{{{0x18257c23, 0x00000005, 0x080100e3, 0x002fe200}}, {16, 24, 64}},
+        // R2UR: destination is uniform, source ordinary; PT field at 81..83.
+        Fixture{SyntheticInstruction(0x3c2, 34, 245, 0, 7U << 17), {24}},
+        Fixture{SyntheticInstruction(0x3c2, 32, 218, 0, 7U << 17), {24}},
+        Fixture{SyntheticInstruction(0x3c2, 9, 231, 0, 7U << 17), {24}},
+        // FMNMX immediate 0.125: FTZ at 80, PT at 87..89, negate predicate at 90 (max).
+        Fixture{SyntheticInstruction(0x809, 230, 230, std::bit_cast<u32>(0.125f),
+                                     (1U << 16) | (7U << 23) | (1U << 26)), {16, 24}},
+        Fixture{SyntheticInstruction(0x809, 241, 241, std::bit_cast<u32>(0.125f),
+                                     (1U << 16) | (7U << 23) | (1U << 26)), {16, 24}},
+        Fixture{SyntheticInstruction(0x809, 223, 223, std::bit_cast<u32>(0.125f),
+                                     (1U << 16) | (7U << 23) | (1U << 26)), {16, 24}},
+        // @!P3 FMUL R234, R234, UR37: FTZ at 80, unit scale at 84..86, uniform at 91.
+        Fixture{SyntheticInstruction(0xc20, 234, 234, 37,
+                                     (1U << 16) | (4U << 20) | (1U << 27), 11), {16, 24}},
+        // P2R from RZ with masks selecting distinct predicate subsets.
+        Fixture{SyntheticInstruction(0x803, 225, 255, 0x12, 0), {16, 24}},
+        Fixture{SyntheticInstruction(0x803, 226, 255, 0x24, 0), {16, 24}},
+        // I2FP: F32 at 74..75, U32 at 76..77, uniform-source field at 85/91.
+        Fixture{SyntheticInstruction(0xc45, 248, 0, 13,
+                                     (1U << 10) | (1U << 12) | (1U << 21) | (1U << 27)), {16}},
+        // LDC.64 R208/R209, indexed by R229; bank 3 and byte offset 0x180.
+        Fixture{SyntheticInstruction(0xb82, 208, 229, (3U << 22) | 0x180U, 5U << 9), {16, 24}},
+        // FFMA R45, R31, UR7, R235: addend occupies bits 64..71; FTZ at 80.
+        Fixture{SyntheticInstruction(0xc23, 45, 31, 7, 235U | (1U << 16) | (1U << 27)), {16, 24, 64}},
     };
     for (const auto& fixture : fixtures) {
         const auto& instruction = fixture.instruction;
@@ -671,17 +755,17 @@ TEST_CASE("Ocarina static sweep high-register operands preserve encoding fields"
         REQUIRE(lowered);
     }
 
-    // With the mirrors at R204 the pair R206, R207 is shadowed too, and stays a pair.
-    const Instruction load{{0xe3ce7b82, 0x01c00400, 0x00000a00, 0x000e3000}};
+    // With mirrors at R204, R208/R209 is shadowed too and must remain a consecutive pair.
+    constexpr auto load = SyntheticInstruction(0xb82, 208, 229, (3U << 22) | 0x180U, 5U << 9);
     const auto pressure = Shader::Ampere::PrepareRegisterPressure(load, 204);
     REQUIRE(pressure.valid);
-    CHECK(pressure.instruction.Bits(16, 8) == 202);
-    CHECK(pressure.instruction.Bits(24, 8) == 199);
+    CHECK(pressure.instruction.Bits(16, 8) == 200);
+    CHECK(pressure.instruction.Bits(24, 8) == 197);
     CHECK(pressure.prefix.size() == 16);
     CHECK(pressure.suffix.size() == 16);
 }
 
-TEST_CASE("Ocarina static sweep shadowed floating arithmetic preserves values",
+TEST_CASE("Synthetic shadowed floating arithmetic preserves values",
           "[video_core][ampere][logged_numeric][ocarina]") {
     struct Source {
         u32 bank, reg;
@@ -691,17 +775,15 @@ TEST_CASE("Ocarina static sweep shadowed floating arithmetic preserves values",
         std::vector<Source> sources;
         float expected;
     };
-    // Every source holds 2.0. A uniform register is read from its mirror in bank 0: UR5 at R221,
-    // and UR36 at R212 (mirrors at R204, the next aligned base under UR36's R206).
+    // Every source holds 2.0. Uniform mirrors: UR7 at R223, UR37 at R213 (base R204).
+    // Expected values come from scalar max/multiply/fused multiply-add, not emitted words.
     const std::array fixtures{
-        // FMNMX R217, R217, 1e-5 takes the larger one.
-        Fixture{{{0xd9d97809, 0x3727c5ac, 0x07810000, 0x000fe200}}, {{1, 217}}, 2.0f},
-        // FMUL R219, R219, UR36 without its guard.
-        Fixture{{{0xdbdb7c20, 0x00000024, 0x08410000, 0x000fe200}}, {{1, 219}, {0, 212}}, 4.0f},
-        // FFMA R37, R24, UR5, R227.
-        Fixture{{{0x18257c23, 0x00000005, 0x080100e3, 0x002fe200}},
-                {{0, 24}, {0, 221}, {1, 227}},
-                6.0f},
+        Fixture{SyntheticInstruction(0x809, 230, 230, std::bit_cast<u32>(0.125f),
+                                     (1U << 16) | (7U << 23) | (1U << 26)), {{1, 230}}, 2.0f},
+        Fixture{SyntheticInstruction(0xc20, 234, 234, 37, (1U << 16) | (4U << 20) | (1U << 27)),
+                {{1, 234}, {0, 213}}, 4.0f},
+        Fixture{SyntheticInstruction(0xc23, 45, 31, 7, 235U | (1U << 16) | (1U << 27)),
+                {{0, 31}, {0, 223}, {1, 235}}, 6.0f},
     };
     for (const auto& fixture : fixtures) {
         CAPTURE(fixture.instruction.words);

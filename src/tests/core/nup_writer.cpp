@@ -982,6 +982,54 @@ TEST_CASE("NUP edit applies name/icon/version to a metadata-less dump", "[nup]")
     REQUIRE(version == "1.0.3");
 }
 
+TEST_CASE("NUP metadata edits preserve module IDs stored in the legacy Publisher record",
+          "[nup][metadata]") {
+    TempDir temp;
+    const auto root = temp.path / "Synthetic";
+    const auto archive = temp.path / "Synthetic.nup";
+    MakeDump(root);
+
+    std::string module_id(32, '\0');
+    for (size_t i = 0; i < module_id.size(); ++i) {
+        module_id[i] = static_cast<char>(i + 17);
+    }
+    std::string executable_header(0x100, '\0');
+    executable_header.replace(0, 4, "NSO0");
+    executable_header.replace(0x40, module_id.size(), module_id);
+    Put(root / "Base/ExeFS/main", executable_header);
+
+    FileSys::Nup::PackOptions options;
+    options.metadata.publisher = module_id;
+    REQUIRE(FileSys::Nup::PackDump(root, archive, options) == FileSys::Nup::PackResult::Success);
+    const auto before = ReadAll(archive);
+    REQUIRE(FileSys::Nup::ProbeNupMetadata(archive).publisher == module_id);
+
+    std::string error;
+    FileSys::Nup::MetadataEdit edit;
+    edit.publisher = "Independent Publisher";
+    CHECK(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+          FileSys::Nup::EditResult::InvalidSource);
+    CHECK(error.find("Build ID") != std::string::npos);
+    REQUIRE(ReadAll(archive) == before);
+
+    FileSys::Nup::MetadataEdit rename;
+    rename.title_name = "Changed synthetic title";
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, rename) == FileSys::Nup::EditResult::Success);
+    const auto metadata = FileSys::Nup::ProbeNupMetadata(archive);
+    CHECK(metadata.publisher == module_id);
+    CHECK(metadata.title_name == *rename.title_name);
+    FileSys::RealVfsFilesystem filesystem;
+    FileSys::NupContainer nup{
+        filesystem.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+    REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+    REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+    const auto exefs = nup.GetExeFSDir(0);
+    REQUIRE(exefs != nullptr);
+    const auto main = exefs->GetFile("main");
+    REQUIRE(main != nullptr);
+    CHECK(Read(main) == executable_header);
+}
+
 TEST_CASE("NUP edits localized titles and keeps the rest", "[nup]") {
     TempDir t;
     const auto root = t.path / "Game";

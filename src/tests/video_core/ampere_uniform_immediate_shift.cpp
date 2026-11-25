@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 
@@ -10,19 +11,32 @@ using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
 
 constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0}};
-constexpr Instruction Clamped{{0x3f057499, 0xffffffff, 0x08010604, 0x000fe200}};
-constexpr Instruction Wrapped{{0x3f057499, 0x00000001, 0x08010e04, 0x000fc800}};
+constexpr u32 UniformShift = 7;
+constexpr u32 UniformResult = 11;
+constexpr u32 MaxwellShift = 216 + UniformShift;
+constexpr u32 MaxwellResult = 216 + UniformResult;
 
-TEST_CASE("Ampere captured uniform immediate high-word shifts lower", "[video_core][ampere]") {
+constexpr Instruction MakeShift(u32 high, bool wrap) {
+    constexpr u32 ShiftLeftHighUnsigned = 0x08010600;
+    constexpr u32 UniformZero = 63;
+    return {{0x499U | (7U << 12) | (UniformResult << 16) | (UniformZero << 24),
+             high, ShiftLeftHighUnsigned | UniformShift | (u32{wrap} << 11), 0}};
+}
+
+constexpr auto Clamped = MakeShift(0x93e8d510, false);
+constexpr auto Wrapped = MakeShift(0x00000013, true);
+
+TEST_CASE("Ampere uniform immediate high-word shifts lower", "[video_core][ampere]") {
     for (const Instruction instruction : {Clamped, Wrapped}) {
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
         REQUIRE(lowered.instructions.size() == 3);
         REQUIRE(lowered.instructions[0] ==
-                (instruction.words[1] == 1 ? 0x010000000017f0faULL : 0x010ffffffff7f0faULL));
+                (0x010000000007f0faULL | (u64{instruction.words[1]} << 20)));
         REQUIRE(lowered.instructions[1] ==
-                (instruction.words[1] == 1 ? 0x5c4800800dc7faddULL : 0x5c4800000dc7faddULL));
+                (0x5c4800000007fa00ULL | (u64{MaxwellShift} << 20) | MaxwellResult |
+                 (u64{instruction.Bits(75, 1)} << 39)));
     }
 }
 
@@ -35,7 +49,7 @@ TEST_CASE("Ampere uniform immediate high-word shifts clamp or wrap amounts", "[v
             REQUIRE(lowered);
             for (const u32 amount : {0U, 1U, 31U, 32U, 33U, 63U, 64U, 0xffffffffU}) {
                 std::array<u32, 256> registers{};
-                registers[220] = amount;
+                registers[MaxwellShift] = amount;
                 for (const u64 word : lowered.instructions) {
                     if ((word >> 56) == 0x01) {
                         registers[word & 255] = static_cast<u32>(word >> 20);
@@ -49,7 +63,7 @@ TEST_CASE("Ampere uniform immediate high-word shifts clamp or wrap amounts", "[v
                 const u32 shift = wrap ? amount & 31 : std::min(amount, 32U);
                 const u64 wide = u64{immediate} << 32;
                 const u32 expected = static_cast<u32>((wide << shift) >> 32);
-                REQUIRE(registers[221] == expected);
+                REQUIRE(registers[MaxwellResult] == expected);
             }
         }
     }

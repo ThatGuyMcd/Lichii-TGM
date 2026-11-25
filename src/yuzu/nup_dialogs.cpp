@@ -696,7 +696,7 @@ FileSys::Nup::MetadataEdit NupEditDialog::Edit() const {
         edit.localized_titles = std::move(localized);
     }
     if (const auto publisher = publisher_edit->text().trimmed().toStdString();
-        publisher != current.publisher) {
+        publisher_edit->isModified() && publisher != current.publisher) {
         edit.publisher = publisher;
     }
     if (const auto version = version_edit->text().trimmed().toStdString();

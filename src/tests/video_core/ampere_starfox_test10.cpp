@@ -17,19 +17,58 @@ using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
 
 constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0}};
-constexpr Instruction CapturedI2F{{0x00027d06, 0x00000004, 0x08101000, 0x000e6200}};
-constexpr Instruction CapturedUniformLoad{{0x00047ab9, 0x01800800, 0x00000400, 0x000fe200}};
-constexpr Instruction CapturedShift{{0xff247219, 0x00000025, 0x00011444, 0x000fc600}};
-constexpr Instruction CapturedGather{{0x201c7b63, 0xb0000a2b, 0x041e0f16, 0x000f4200}};
-constexpr Instruction CapturedLut{{0x00c8781c, 0x00000000, 0x0010f010, 0x000fc400}};
-constexpr std::array<Instruction, 6> CapturedGradients{{
-    {{0x10180f6c, 0xa0000a14, 0x0c1e0f1a, 0x00114200}},
-    {{0x14127f6c, 0xa0000410, 0x081e0f10, 0x001f4200}},
-    {{0x18300f6c, 0xa000041c, 0x0c1e0f32, 0x00814200}},
-    {{0x08027f6c, 0xa0000400, 0x081e0f00, 0x001f4200}},
-    {{0x14107f6c, 0xa0000410, 0x081e0f12, 0x001f4200}},
-    {{0x18320f6c, 0xa000041c, 0x0c1e0f34, 0x00414200}},
-}};
+constexpr u32 UniformRegister = 11;
+constexpr u32 UniformHostRegister = 216 + UniformRegister;
+constexpr u32 ConversionDest = 12;
+constexpr u32 UniformOffset = 0x74;
+constexpr u32 UniformBank = 8;
+constexpr Instruction UniformI2F{{0xd06U | (7U << 12) | (ConversionDest << 16),
+                                  UniformRegister, (1U << 12) | (1U << 20) | (1U << 27), 0}};
+constexpr Instruction UniformLoad{{0xab9U | (7U << 12) | (UniformRegister << 16),
+                                  (UniformOffset << 6) | (UniformBank << 22), 2U << 9, 0}};
+
+constexpr u32 ShiftDest = 170;
+constexpr u32 ShiftCount = 57;
+constexpr u32 ShiftValue = 81;
+constexpr Instruction SignedShift{{0x219U | (7U << 12) | (ShiftDest << 16) | (255U << 24),
+                                  ShiftCount, ShiftValue | (2U << 9) | (1U << 12) | (1U << 16), 0}};
+
+constexpr u32 GatherCoords = 52;
+constexpr u32 GatherCoordY = 65;
+constexpr u32 GatherDest = 70;
+constexpr u32 GatherSecond = 74;
+constexpr u32 GatherDescriptor = 13;
+constexpr u32 ArrayTexture = 5U << 29;
+constexpr u32 SplitRgba = (15U << 8) | (7U << 17) | (1U << 20);
+constexpr Instruction ArrayGather{{0xb63U | (7U << 12) | (GatherDest << 16) | (GatherCoords << 24),
+                                   GatherCoordY | (GatherDescriptor << 8) | (1U << 28) |
+                                       ArrayTexture,
+                                   GatherSecond | SplitRgba | (1U << 26), 0}};
+
+constexpr u32 FirstLut = 0x42;
+constexpr u32 SecondLut = 0x71;
+constexpr Instruction PredicateLut{{
+    0x81cU | (7U << 12) | (SecondLut << 16), 0,
+    (FirstLut & 7U) | (1U << 4) | ((FirstLut >> 3) << 8) | (7U << 13) | (1U << 20), 0}};
+
+constexpr Instruction MakeGradient(u32 coord, u32 derivative, u32 first, u32 second,
+                                   u32 uniform, u32 guard, bool nodep = false) {
+    return {{0xf6cU | (guard << 12) | (first << 16) | (coord << 24),
+             derivative | (uniform << 8) | ArrayTexture,
+             second | SplitRgba | (u32{nodep} << 26) | (1U << 27), 0}};
+}
+
+constexpr u32 GradientCoords = 65;
+constexpr u32 GradientInput = 56;
+constexpr u32 GradientOutput = 58;
+constexpr auto Gradients = std::array{
+    MakeGradient(40, 48, 60, 62, 6, 0, true),
+    MakeGradient(GradientCoords, GradientInput, GradientOutput, GradientInput, 12, 7),
+    MakeGradient(80, 86, 104, 106, 11, 0, true),
+    MakeGradient(98, 92, 94, 92, 7, 7),
+    MakeGradient(GradientCoords, GradientInput, GradientInput, GradientOutput, 12, 7),
+    MakeGradient(80, 86, 106, 108, 11, 0, true),
+};
 
 void SetBits(Instruction& instruction, u32 bit, u32 width, u32 value) {
     const u32 mask = ((1U << width) - 1) << (bit % 32);
@@ -102,7 +141,7 @@ u32 ConvertUniformHalfword(u64 word, u32 source_register, u32 input) {
             result = arg(0);
             break;
         case IR::Opcode::SetRegister:
-            REQUIRE(inst.Arg(0).Reg() == IR::Reg::R2);
+            REQUIRE(static_cast<u32>(inst.Arg(0).Reg()) == ConversionDest);
             REQUIRE_FALSE(output.has_value());
             output = arg(1);
             break;
@@ -170,7 +209,7 @@ struct Translation {
                 Vector result{};
                 switch (inst.GetOpcode()) {
                 case IR::Opcode::GetCbufU16:
-                    REQUIRE(arg(0) == 6);
+                    REQUIRE(arg(0) == UniformBank);
                     REQUIRE((arg(1) & 1) == 0);
                     result[0] = (constants.at(arg(1) & ~3U) >> ((arg(1) & 2) * 8)) & 0xffffU;
                     ++constant_reads;
@@ -257,23 +296,26 @@ struct Translation {
 };
 } // namespace
 
-TEST_CASE("Star Fox captured ULDC loads an unsigned halfword through the real translator",
+TEST_CASE("Direct ULDC loads an unsigned halfword through the real translator",
           "[video_core][ampere][starfox_uldc]") {
-    const auto lowered = LowerToMaxwell(std::array{CapturedUniformLoad, Exit});
+    const auto lowered = LowerToMaxwell(std::array{UniformLoad, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     REQUIRE(lowered.instructions.size() == 2);
-    CHECK(lowered.instructions.front() == 0xef9200600207ffdcULL);
+    CHECK(lowered.instructions.front() ==
+          (0xef9200000007ff00ULL | UniformHostRegister | (u64{UniformOffset} << 20) |
+           (u64{UniformBank} << 36)));
     for (const u32 input : {0x12340000U, 0x12340001U, 0x12347fffU, 0x12348000U, 0x1234ffffU}) {
         Translation translated;
-        translated.constants.emplace(0x20, input);
+        translated.constants.emplace(UniformOffset, input);
         translated.registers.fill(0xdeadbeefU);
         const auto predicates = translated.predicates;
         translated.Run(lowered);
         CHECK(translated.constant_reads == 1);
         CHECK(translated.predicates == predicates);
         for (u32 reg = 0; reg < IR::NUM_REGS; ++reg)
-            CHECK(translated.registers[reg] == (reg == 220 ? input & 0xffffU : 0xdeadbeefU));
+            CHECK(translated.registers[reg] ==
+                  (reg == UniformHostRegister ? input & 0xffffU : 0xdeadbeefU));
     }
 }
 
@@ -282,7 +324,7 @@ TEST_CASE("Star Fox ULDC U16 preserves halfword offsets uniform destinations and
     for (const u32 offset : {0U, 2U, 0x20U, 0x22U, 0x7ffeU}) {
         for (const u32 dest : {0U, 4U, 21U, 22U, 27U}) {
             for (const u32 guard : {0U, 7U, 8U}) {
-                auto instruction = CapturedUniformLoad;
+                auto instruction = UniformLoad;
                 SetBits(instruction, 38, 16, offset);
                 SetBits(instruction, 16, 8, dest);
                 SetBits(instruction, 12, 4, guard);
@@ -321,13 +363,13 @@ TEST_CASE("Star Fox ULDC U16 rejects unrepresentable offsets and unsupported mod
              std::array{73U, 3U, 1U}, std::array{73U, 3U, 3U},
              std::array{73U, 3U, 6U}, std::array{78U, 2U, 2U},
              std::array{91U, 1U, 1U}}) {
-        auto instruction = CapturedUniformLoad;
+        auto instruction = UniformLoad;
         SetBits(instruction, change[0], change[1], change[2]);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
         CHECK(lowered.instructions.empty());
     }
-    auto indexed = CapturedUniformLoad;
+    auto indexed = UniformLoad;
     SetBits(indexed, 0, 12, 0xabb);
     SetBits(indexed, 91, 1, 1);
     // Ocarina of Time loads U8 and U16 values through an index register.
@@ -340,14 +382,14 @@ TEST_CASE("Star Fox ULDC U16 rejects unrepresentable offsets and unsupported mod
 
 TEST_CASE("Star Fox Test10 uniform U16 conversion reaches the real translator",
           "[video_core][ampere][starfox_test10]") {
-    const auto lowered = LowerToMaxwell(std::array{CapturedI2F, Exit});
+    const auto lowered = LowerToMaxwell(std::array{UniformI2F, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     REQUIRE(lowered.instructions.size() == 2);
     CHECK(lowered.instructions.front() ==
-          (0x5cb8000000070602ULL | (u64{220} << 20)));
+          (0x5cb8000000070600ULL | ConversionDest | (u64{UniformHostRegister} << 20)));
     for (const u32 input : {0U, 1U, 0xffffU, 0xffff0000U, 0x12348000U}) {
-        CHECK(ConvertUniformHalfword(lowered.instructions.front(), 220, input) ==
+        CHECK(ConvertUniformHalfword(lowered.instructions.front(), UniformHostRegister, input) ==
               std::bit_cast<u32>(static_cast<float>(input & 0xffffU)));
     }
 }
@@ -357,7 +399,7 @@ TEST_CASE("Star Fox upstream U16 port keeps selectors uniform mapping and signed
     for (const u32 source : {0U, 4U, 21U, 22U, 27U}) {
         const u32 mapped = source < 22 ? source + 216 : source + 218;
         for (const u32 half : {0U, 1U}) {
-            auto instruction = CapturedI2F;
+            auto instruction = UniformI2F;
             instruction.words[1] = source | (half << 28);
             const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
             INFO(lowered.error);
@@ -387,21 +429,21 @@ TEST_CASE("Star Fox upstream U16 port keeps selectors uniform mapping and signed
 TEST_CASE("Star Fox uniform U16 conversion rejects invalid uniform sources and other modes",
           "[video_core][ampere][starfox_test10]") {
     for (const u32 source : {64U, 128U, 216U, 255U, 0x10004U, 0x20000004U, 0x30000004U}) {
-        auto instruction = CapturedI2F;
+        auto instruction = UniformI2F;
         instruction.words[1] = source;
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
         CHECK(lowered.instructions.empty());
     }
     for (const u32 mode : {0x00101000U, 0x08101400U, 0x08109000U, 0x08100800U}) {
-        auto instruction = CapturedI2F;
+        auto instruction = UniformI2F;
         instruction.words[2] = mode;
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
         CHECK(lowered.instructions.empty());
     }
     for (const u32 bit : {24U, 96U}) {
-        auto instruction = CapturedI2F;
+        auto instruction = UniformI2F;
         SetBits(instruction, bit, 1, 1);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
@@ -411,9 +453,9 @@ TEST_CASE("Star Fox uniform U16 conversion rejects invalid uniform sources and o
 
 TEST_CASE("Star Fox uniform U16 conversion preserves false guards and the zero uniform source",
           "[video_core][ampere][starfox_test10]") {
-    for (const u32 source : {4U, 63U}) {
+    for (const u32 source : {UniformRegister, 63U}) {
         for (const u32 guard : {0U, 7U, 8U}) {
-            auto instruction = CapturedI2F;
+            auto instruction = UniformI2F;
             SetBits(instruction, 32, 8, source);
             SetBits(instruction, 12, 4, guard);
             const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
@@ -421,12 +463,12 @@ TEST_CASE("Star Fox uniform U16 conversion preserves false guards and the zero u
             for (const bool enabled : {false, true}) {
                 Translation translated;
                 translated.registers.fill(0xdeadbeef);
-                translated.registers[220] = 0x1234ffff;
+                translated.registers[UniformHostRegister] = 0x1234ffff;
                 translated.predicates[0] = enabled;
                 const bool taken = translated.predicates[guard & 7] != ((guard & 8) != 0);
                 translated.Run(lowered);
                 const u32 expected = std::bit_cast<u32>(source == 63 ? 0.0f : 65535.0f);
-                CHECK(translated.registers[2] == (taken ? expected : 0xdeadbeefU));
+                CHECK(translated.registers[ConversionDest] == (taken ? expected : 0xdeadbeefU));
             }
         }
     }
@@ -437,9 +479,9 @@ TEST_CASE("Star Fox signed register shifts clamp wrap and preserve aliased input
     for (const u32 input : {0U, 1U, 0x7fffffffU, 0x80000000U, 0xffffffffU}) {
         for (const u32 shift : {0U, 1U, 31U, 32U, 63U, 0xffffffffU}) {
             for (const bool wrap : {false, true}) {
-                for (const u32 destination : {36U, 37U, 68U}) {
+                for (const u32 destination : {ShiftDest, ShiftCount, ShiftValue}) {
                     for (const u32 guard : {0U, 7U, 8U}) {
-                        auto instruction = CapturedShift;
+                        auto instruction = SignedShift;
                         SetBits(instruction, 16, 8, destination);
                         SetBits(instruction, 12, 4, guard);
                         SetBits(instruction, 75, 1, wrap);
@@ -450,8 +492,8 @@ TEST_CASE("Star Fox signed register shifts clamp wrap and preserve aliased input
                             Translation translated;
                             translated.predicates[0] = enabled;
                             translated.registers.fill(0xdeadbeef);
-                            translated.registers[68] = input;
-                            translated.registers[37] = shift;
+                            translated.registers[ShiftValue] = input;
+                            translated.registers[ShiftCount] = shift;
                             const auto before = translated.registers;
                             const auto predicates = translated.predicates;
                             const bool taken = predicates[guard & 7] != ((guard & 8) != 0);
@@ -477,7 +519,7 @@ TEST_CASE("Star Fox signed register shift keeps other funnel modes rejected",
              std::array{76U, 1U, 0U}, std::array{80U, 1U, 0U}, std::array{72U, 1U, 1U},
              std::array{32U, 16U, 0x125U}, std::array{0U, 12U, 0xc19U},
              std::array{96U, 1U, 1U}}) {
-        auto instruction = CapturedShift;
+        auto instruction = SignedShift;
         SetBits(instruction, change[0], change[1], change[2]);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
@@ -490,12 +532,12 @@ TEST_CASE("Star Fox array gather preserves layer coordinates components and spli
     for (const bool alias : {false, true}) {
         for (const u32 component : {0U, 1U, 2U, 3U}) {
             for (const u32 guard : {0U, 7U, 8U}) {
-                auto instruction = CapturedGather;
+                auto instruction = ArrayGather;
                 SetBits(instruction, 87, 2, component);
                 SetBits(instruction, 12, 4, guard);
                 if (alias) {
-                    SetBits(instruction, 16, 8, 32);
-                    SetBits(instruction, 64, 8, 42);
+                    SetBits(instruction, 16, 8, GatherCoords);
+                    SetBits(instruction, 64, 8, GatherCoordY - 1);
                 }
                 const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
                 INFO(lowered.error);
@@ -505,9 +547,9 @@ TEST_CASE("Star Fox array gather preserves layer coordinates components and spli
                     Translation translated;
                     translated.predicates[0] = enabled;
                     translated.registers.fill(0xdeadbeef);
-                    translated.registers[32] = 0xface0003;
-                    translated.registers[33] = 0x3e800000;
-                    translated.registers[43] = 0x3f400000;
+                    translated.registers[GatherCoords] = 0xface0003;
+                    translated.registers[GatherCoords + 1] = 0x3e800000;
+                    translated.registers[GatherCoordY] = 0x3f400000;
                     auto expected = translated.registers;
                     const bool taken = translated.predicates[guard & 7] != ((guard & 8) != 0);
                     if (taken) {
@@ -520,7 +562,7 @@ TEST_CASE("Star Fox array gather preserves layer coordinates components and spli
                     translated.Run(lowered);
                     CHECK(translated.textures == static_cast<u32>(taken));
                     if (taken) {
-                        CHECK(translated.handle == 40);
+                        CHECK(translated.handle == GatherDescriptor * 4);
                         CHECK(translated.coordinates == Translation::Vector{0x3e800000, 0x3f400000, 0x40400000});
                         CHECK(translated.texture_info.type == Shader::TextureType::ColorArray2D);
                         CHECK(translated.texture_info.gather_component == component);
@@ -541,23 +583,23 @@ TEST_CASE("Star Fox array gather rejects unsupported modes and scratch crossings
              std::array{76U, 2U, 2U}, std::array{78U, 1U, 1U}, std::array{79U, 1U, 1U},
              std::array{80U, 1U, 1U}, std::array{81U, 3U, 0U}, std::array{72U, 4U, 3U},
              std::array{24U, 8U, 245U}, std::array{32U, 8U, 255U}, std::array{64U, 8U, 245U},
-             std::array{64U, 8U, 28U}, std::array{0U, 12U, 0xf63U}}) {
-        auto instruction = CapturedGather;
+             std::array{64U, 8U, GatherDest}, std::array{0U, 12U, 0xf63U}}) {
+        auto instruction = ArrayGather;
         SetBits(instruction, change[0], change[1], change[2]);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
         CHECK(lowered.instructions.empty());
     }
-    auto instruction = CapturedGather;
+    auto instruction = ArrayGather;
     SetBits(instruction, 24, 8, 215);
-    const auto lowered = LowerToMaxwell(std::array{CapturedI2F, instruction, Exit});
+    const auto lowered = LowerToMaxwell(std::array{UniformI2F, instruction, Exit});
     CHECK_FALSE(lowered);
     CHECK(lowered.instructions.empty());
 }
 
-TEST_CASE("Star Fox captured uniform TXD instructions preserve handles gradients and output aliases",
+TEST_CASE("Uniform TXD instructions preserve handles gradients and output aliases",
           "[video_core][ampere][starfox_test10]") {
-    for (const auto instruction : CapturedGradients) {
+    for (const auto instruction : Gradients) {
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
@@ -604,12 +646,12 @@ TEST_CASE("Star Fox uniform TXD maps uniform banks and preserves partial masks",
     for (const u32 uniform : {0U, 21U, 22U, 27U, 28U, 29U, 62U}) {
         for (const u32 mask : {1U, 3U, 5U, 7U, 15U}) {
             for (const u32 dimension : {1U, 5U}) {
-                auto instruction = CapturedGradients[1];
+                auto instruction = Gradients[1];
                 SetBits(instruction, 40, 6, uniform);
                 SetBits(instruction, 61, 3, dimension);
                 SetBits(instruction, 72, 4, mask);
                 const u32 channels = static_cast<u32>(std::popcount(mask));
-                SetBits(instruction, 64, 8, channels > 2 ? 16U : 255U);
+                SetBits(instruction, 64, 8, channels > 2 ? GradientInput : 255U);
                 const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
                 INFO(lowered.error);
                 REQUIRE(lowered);
@@ -618,14 +660,15 @@ TEST_CASE("Star Fox uniform TXD maps uniform banks and preserves partial masks",
                 const u32 mapped = uniform < 22 ? uniform + 216
                                    : uniform < 28 ? uniform + 218 : 214 + (uniform & 1);
                 translated.registers[mapped] = 0x24681234;
-                translated.registers[20] = 0x3e800000;
-                translated.registers[21] = 0x3f400000;
-                translated.registers[22] = 5;
+                translated.registers[GradientCoords] = 0x3e800000;
+                translated.registers[GradientCoords + 1] = 0x3f400000;
+                translated.registers[GradientCoords + 2] = 5;
                 auto expected = translated.registers;
                 u32 output = 0;
                 for (u32 channel = 0; channel < 4; ++channel) {
                     if (!(mask & (1U << channel))) continue;
-                    expected[output < 2 ? 18 + output : 16 + output - 2] = translated.sample[channel];
+                    const u32 dest = output < 2 ? GradientOutput + output : GradientInput + output - 2;
+                    expected[dest] = translated.sample[channel];
                     ++output;
                 }
                 translated.Run(lowered);
@@ -649,14 +692,15 @@ TEST_CASE("Star Fox uniform TXD rejects unsupported modes and reserved register 
              std::array{60U, 1U, 1U}, std::array{61U, 3U, 7U}, std::array{76U, 1U, 1U},
              std::array{77U, 1U, 1U}, std::array{79U, 1U, 1U}, std::array{91U, 1U, 0U},
              std::array{24U, 8U, 214U}, std::array{32U, 8U, 213U}, std::array{16U, 8U, 215U},
-             std::array{64U, 8U, 17U}, std::array{64U, 8U, 18U}, std::array{72U, 4U, 0U}}) {
-        auto instruction = CapturedGradients[1];
+             std::array{64U, 8U, GradientOutput - 1}, std::array{64U, 8U, GradientOutput},
+             std::array{72U, 4U, 0U}}) {
+        auto instruction = Gradients[1];
         SetBits(instruction, change[0], change[1], change[2]);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);
         CHECK(lowered.instructions.empty());
     }
-    auto instruction = CapturedGradients[1];
+    auto instruction = Gradients[1];
     SetBits(instruction, 40, 6, 28);
     SetBits(instruction, 24, 8, 212);
     const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
@@ -666,16 +710,16 @@ TEST_CASE("Star Fox uniform TXD rejects unsupported modes and reserved register 
 
 TEST_CASE("Star Fox dual predicate LUT snapshots aliased inputs and execution predicates",
           "[video_core][ampere][starfox_test10]") {
-    for (const bool captured_inputs : {false, true}) {
+    for (const bool always_true_input : {false, true}) {
         for (const u32 primary_lut : {0x80U, 0x96U, 0xffU}) {
             for (const u32 second_lut : {0xc8U, 0xf8U, 0xffU}) {
                 for (const u32 guard : {0U, 1U, 7U, 8U, 9U}) {
-                    auto instruction = CapturedLut;
+                    auto instruction = PredicateLut;
                     SetBits(instruction, 12, 4, guard);
                     SetBits(instruction, 16, 8, second_lut);
                     SetBits(instruction, 64, 3, primary_lut & 7);
                     SetBits(instruction, 72, 5, primary_lut >> 3);
-                    if (!captured_inputs) SetBits(instruction, 77, 4, 2);
+                    if (!always_true_input) SetBits(instruction, 77, 4, 2);
                     const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
                     INFO(lowered.error);
                     REQUIRE(lowered);
@@ -687,7 +731,8 @@ TEST_CASE("Star Fox dual predicate LUT snapshots aliased inputs and execution pr
                         auto expected = translated.predicates;
                         const bool taken = expected[guard & 7] != ((guard & 8) != 0);
                         const u32 index = (u32{expected[0]} << 2) |
-                                          (u32{captured_inputs || expected[2]} << 1) | u32{expected[1]};
+                                          (u32{always_true_input || expected[2]} << 1) |
+                                          u32{expected[1]};
                         if (taken) {
                             expected[0] = (primary_lut >> index) & 1;
                             expected[1] = (second_lut >> index) & 1;
@@ -708,7 +753,7 @@ TEST_CASE("Star Fox dual LUT preserves uniform predicate inputs negations and di
     for (const u32 operand : {0U, 1U, 7U, 8U, 9U, 15U}) {
         for (const u32 primary : {0U, 7U}) {
             for (const u32 negations : {0U, 1U, 2U, 3U}) {
-                auto instruction = CapturedLut;
+                auto instruction = PredicateLut;
                 SetBits(instruction, 67, 1, 1);
                 SetBits(instruction, 68, 4, operand);
                 SetBits(instruction, 81, 3, primary);
@@ -727,8 +772,8 @@ TEST_CASE("Star Fox dual LUT preserves uniform predicate inputs negations and di
                     const bool b = expected[2] != ((negations & 2) != 0);
                     const bool c = ((operand & 7) == 7 || (bits & 4)) != ((operand & 8) != 0);
                     const u32 index = (u32{a} << 2) | (u32{b} << 1) | u32{c};
-                    if (primary != 7) expected[primary] = (0x80U >> index) & 1;
-                    expected[1] = (0xc8U >> index) & 1;
+                    if (primary != 7) expected[primary] = (FirstLut >> index) & 1;
+                    expected[1] = (SecondLut >> index) & 1;
                     translated.Run(lowered);
                     CHECK(translated.predicates == expected);
                     CHECK(translated.registers[239] == ((bits & 4) ? 0x7fU : 0U));
@@ -743,7 +788,7 @@ TEST_CASE("Star Fox dual predicate LUT rejects ambiguous destinations and reserv
     for (const auto change : std::array{
              std::array{81U, 3U, 1U}, std::array{24U, 8U, 1U}, std::array{32U, 1U, 1U},
              std::array{91U, 1U, 1U}, std::array{96U, 1U, 1U}}) {
-        auto instruction = CapturedLut;
+        auto instruction = PredicateLut;
         SetBits(instruction, change[0], change[1], change[2]);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CHECK_FALSE(lowered);

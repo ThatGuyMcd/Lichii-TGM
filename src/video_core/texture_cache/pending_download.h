@@ -37,11 +37,10 @@ size_t DeduplicatePendingImageDownloads(Downloads& downloads, Common::SlotVector
     return previous_size - downloads.size();
 }
 
-// Cache slots may be recycled before queued GPU downloads are submitted or
-// consumed. Keep the actual image, including its metadata, until those finish.
+// Keep the actual image after slot reuse. The caller can also retain it through the delete tick.
 template <class Image, class Downloads, class Batches>
-bool RetainPendingImageDownloads(Common::SlotId id, Image& image, Downloads& pending,
-                                 Batches& submitted) {
+std::shared_ptr<Image> RetainPendingImageDownloads(Common::SlotId id, Image& image,
+                                                  Downloads& pending, Batches& submitted) {
     std::shared_ptr<Image> retained;
     const auto retain = [&](auto& downloads) {
         for (auto& download : downloads) {
@@ -52,7 +51,7 @@ bool RetainPendingImageDownloads(Common::SlotId id, Image& image, Downloads& pen
     };
     retain(pending);
     for (auto& downloads : submitted) retain(downloads);
-    return retained != nullptr;
+    return retained;
 }
 
 } // namespace VideoCommon

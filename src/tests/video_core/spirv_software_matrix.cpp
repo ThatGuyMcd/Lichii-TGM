@@ -739,19 +739,39 @@ TEST_CASE("16x16x16 cooperative HMMA falls back to the software helper",
     REQUIRE_FALSE(fixture.program.info.uses_cooperative_matrix);
 }
 
-TEST_CASE("Captured Bananza matrix shaders lower without an environment override",
+TEST_CASE("Independent matrix instructions lower without an environment override",
           "[video_core][tensor][ampere]") {
     TensorMode mode{nullptr};
-    for (const Ampere::Instruction instruction : {
-             Ampere::Instruction{{0x102c723c, 0x30, 0x8ff, 0x04aff000}},
-             Ampere::Instruction{{0x1020723c, 0x24, 0x8ff, 0x04aff000}},
-             Ampere::Instruction{{0x1418723c, 0x1c, 0x8ff, 0x04aff000}}}) {
+    struct Registers {
+        u32 dest;
+        u32 a;
+        u32 b;
+        u32 accumulator;
+        u32 depth;
+    };
+    for (const auto& [dest, a, b, accumulator, depth] :
+         {Registers{62, 56, 70, 255, 16}, Registers{90, 108, 88, 54, 16},
+          Registers{38, 32, 36, 255, 16}, Registers{102, 52, 113, 92, 8}}) {
+        // HMMA.1688/16816.F16 with independently selected aligned register groups.
+        constexpr u32 Always = 7;
+        constexpr u32 HmmaOpcode = 0x23c;
+        constexpr u32 ExitOpcode = 0x94d;
+        const Ampere::Instruction instruction{{
+            HmmaOpcode | (Always << 12) | (dest << 16) | (a << 24),
+            b, accumulator | (u32{depth == 16} << 11), 0,
+        }};
         const std::array code{instruction,
-                              Ampere::Instruction{{0x794d, 0, 0x03800000, 0}}};
+                              Ampere::Instruction{{ExitOpcode | (Always << 12), 0, Always << 23, 0}}};
         const auto lowered = Ampere::LowerToMaxwell(code, false, true);
         REQUIRE(lowered);
         REQUIRE(lowered.instructions.size() == 2);
-        REQUIRE(Maxwell::Decode(lowered.instructions[0]) == Maxwell::Opcode::TENSOR_MUL_ADD);
+        const u64 hmma = lowered.instructions.front();
+        CHECK(Maxwell::Decode(hmma) == Maxwell::Opcode::TENSOR_MUL_ADD);
+        CHECK((hmma & 0xff) == dest);
+        CHECK(((hmma >> 8) & 0xff) == a);
+        CHECK(((hmma >> 20) & 0xff) == b);
+        CHECK(((hmma >> 39) & 0xff) == accumulator);
+        CHECK(((hmma >> 49) & 1) == u64{depth == 8});
     }
 }
 

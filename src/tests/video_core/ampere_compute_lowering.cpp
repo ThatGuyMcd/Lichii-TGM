@@ -5,28 +5,52 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
+#include "tests/video_core/ampere_instruction_fixture.h"
 
 namespace {
 using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
+using Shader::Ampere::Test::ConstantBufferOperand;
+using Shader::Ampere::Test::DependencyWait;
+using Shader::Ampere::Test::EncodeInstruction;
+using Shader::Ampere::Test::SharedCopy;
 
 constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0}};
+constexpr u32 ZeroRegister = 255;
+constexpr u32 NoCarry = 7U << 17;
+constexpr u32 NoCarryIn = 15U << 23;
+constexpr u32 HighResult = 1U << 16;
 
-TEST_CASE("Ampere Ocarina high effective address negates the register base",
+constexpr Instruction ConstantLea(u32 destination, u32 source, u32 bank, u32 offset, u32 shift,
+                                  bool high) {
+    return EncodeInstruction(0xa11, destination, source, ConstantBufferOperand(bank, offset),
+                             ZeroRegister | (shift << 11) | (high ? HighResult : 0) | NoCarry |
+                                 NoCarryIn);
+}
+
+constexpr auto HighConstantLea = ConstantLea(12, 31, 7, 0x19c, 23, true);
+
+TEST_CASE("Ampere high effective address negates the register base",
           "[video_core][ampere]") {
-    const Instruction capture{{0x01017211, 0x80000000, 0x078ff0ff, 0x000fca00}};
+    constexpr u32 shift = 9, destination = 27, source = 53, base = 18;
+    constexpr u32 negate_base = 1U << 31;
+    constexpr u32 controls = ZeroRegister | (shift << 11) | HighResult | NoCarry | NoCarryIn;
     for (const u32 guard : {1U, 7U, 9U}) {
-        auto instruction = capture;
-        instruction.words[0] = (instruction.words[0] & ~0xf000U) | (guard << 12);
+        const auto instruction =
+            EncodeInstruction(0x211, destination, source, negate_base | base, controls, guard);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
         REQUIRE(lowered.instructions.size() == 3);
-        CHECK(lowered.instructions[0] == (0x38280000002001faULL | (u64{guard} << 16)));
-        CHECK(lowered.instructions[1] == (0x5c1100000000fa01ULL | (u64{guard} << 16)));
+        CHECK(lowered.instructions[0] ==
+              (0x3828000000000000ULL | 250 | (u64{source} << 8) | (u64{guard} << 16) |
+               (u64{32 - shift} << 20)));
+        CHECK(lowered.instructions[1] ==
+              (0x5c11000000000000ULL | destination | (250ULL << 8) | (u64{guard} << 16) |
+               (u64{base} << 20)));
     }
     for (const u32 bit : {62U, 74U, 81U}) {
-        auto invalid = capture;
+        auto invalid = EncodeInstruction(0x211, destination, source, negate_base | base, controls);
         invalid.words[bit / 32] ^= 1U << (bit % 32);
         CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
     }
@@ -54,94 +78,97 @@ TEST_CASE("Ampere surface reductions preserve every U32 atomic operation",
 }
 
 TEST_CASE("Ampere LEA.HI with a constant base and no carry lowers", "[video_core][ampere]") {
-    // LEA.HI R1, R17, c[0][0x0], RZ, 0x1e from Pokemon Pokopia's compute shaders.
-    const std::array<Instruction, 2> code{{{{0x11017a11, 0x00c00000, 0x078ff0ff, 0x000fe400}}, Exit}};
-    const auto lowered = LowerToMaxwell(code);
+    const auto lowered = LowerToMaxwell(std::array{HighConstantLea, Exit});
     INFO(lowered.error);
     REQUIRE(static_cast<bool>(lowered));
     const auto& out = lowered.instructions;
-    // R250 = R17 >> 2 (32 - 0x1e, unsigned), then R1 = R250 + the constant.
-    REQUIRE(std::find(out.begin(), out.end(), 0x38280000002711faULL) != out.end());
-    REQUIRE(std::find(out.begin(), out.end(), 0x5c1000000fb7fa01ULL) != out.end());
+    // R250 = R31 >> 9, then R12 = R250 + the constant loaded in R251.
+    const u64 load = 0x4c98000000070000ULL | 251 | (15ULL << 39) | (7ULL << 34) |
+                     ((0x19cULL / 4) << 20);
+    const u64 shift = 0x3828000000070000ULL | 250 | (31ULL << 8) | (9ULL << 20);
+    const u64 add = 0x5c10000000070000ULL | 12 | (250ULL << 8) | (251ULL << 20);
+    REQUIRE(std::find(out.begin(), out.end(), load) != out.end());
+    REQUIRE(std::find(out.begin(), out.end(), shift) != out.end());
+    REQUIRE(std::find(out.begin(), out.end(), add) != out.end());
 }
 
 TEST_CASE("Ampere LEA.HI with a constant base still rejects a carry out", "[video_core][ampere]") {
     // The same LEA.HI writing a carry out to P0 has no lowering yet.
-    Instruction carry{{0x11017a11, 0x00c00000, 0x078ff0ff, 0x000fe400}};
-    carry.words[2] &= ~(7U << 17);
+    auto carry = HighConstantLea;
+    carry.words[2] &= ~NoCarry;
     const std::array<Instruction, 2> code{{carry, Exit}};
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
 }
 
 TEST_CASE("Ampere LEA with a constant base and no carry out lowers to ISCADD", "[video_core][ampere]") {
-    // LEA R0, R0, c[0][0x2e0]-style constant, 0x8 from Pokemon Pokopia's album compute shaders.
-    const std::array<Instruction, 2> code{{{{0x00007a11, 0x01002e00, 0x078e40ff, 0x000fe200}}, Exit}};
-    const auto lowered = LowerToMaxwell(code);
+    constexpr auto lea = ConstantLea(36, 24, 2, 0x250, 11, false);
+    const auto lowered = LowerToMaxwell(std::array{lea, Exit});
     INFO(lowered.error);
     REQUIRE(static_cast<bool>(lowered));
-    // ISCADD R0, R0, R251, 8 with the constant loaded into R251, and no carry compare.
+    // ISCADD R36, R24, R251, 11 with the constant loaded into R251, and no carry compare.
     const auto& out = lowered.instructions;
-    REQUIRE(std::find(out.begin(), out.end(), 0x5c1804000fb70000ULL) != out.end());
+    const u64 load = 0x4c98000000070000ULL | 251 | (15ULL << 39) | (2ULL << 34) |
+                     ((0x250ULL / 4) << 20);
+    const u64 add = 0x5c18000000070000ULL | 36 | (24ULL << 8) | (251ULL << 20) | (11ULL << 39);
+    REQUIRE(std::find(out.begin(), out.end(), load) != out.end());
+    REQUIRE(std::find(out.begin(), out.end(), add) != out.end());
     REQUIRE(std::none_of(out.begin(), out.end(), [](u64 i) { return (i >> 48) == 0x5b60; }));
 }
 
 TEST_CASE("Ampere SHF.L.U32.HI immediate without .W lowers to a clamping SHL", "[video_core][ampere]") {
-    // SHF.L.U32.HI R16, RZ, R14, 0xff from Pokemon Pokopia's photo compute shaders.
-    const std::array<Instruction, 2> code{{{{0xff107419, 0x000000ff, 0x0001060e, 0x080fe400}}, Exit}};
-    const auto lowered = LowerToMaxwell(code);
+    constexpr u32 high_left_u32 = HighResult | (3U << 9);
+    constexpr auto shift = EncodeInstruction(0x419, 44, ZeroRegister, 0xa37c125b, high_left_u32 | 35);
+    const auto lowered = LowerToMaxwell(std::array{shift, Exit});
     INFO(lowered.error);
     REQUIRE(static_cast<bool>(lowered));
-    // SHL R16, R250, R14 without .W (bit 39), so a shift of 32 or more gives zero.
+    // SHL R44, R250, R35 without .W (bit 39), so a shift of 32 or more gives zero.
     const auto& out = lowered.instructions;
-    REQUIRE(std::find(out.begin(), out.end(), 0x5c48000000e7fa10ULL) != out.end());
+    const u64 shl = 0x5c48000000070000ULL | 44 | (250ULL << 8) | (35ULL << 20);
+    REQUIRE(std::find(out.begin(), out.end(), shl) != out.end());
 }
 
 TEST_CASE("Ampere guarded UIADD3 lowers to a guarded IADD32I or IADD", "[video_core][ampere]") {
-    // @!UP0 UIADD3 UR6, UR14, 0x1c, URZ from Pokemon Pokopia's photo compute shaders.
-    // @UP0 UIADD3 UR6, UR6, UR7, URZ from the same shaders (UR second source).
-    struct Case { u32 guarded, plain, guard; };
-    // @!UP1 UIADD3 UR6, UR9, UR8, UR6 (a third source: two guarded adds).
-    struct Words { u32 b, w2, w3; };
-    const auto words = [](u32 guarded) {
-        return guarded == 0x0e068890 ? Words{0x1c, 0x0fffe03f, 0x000fcc00}
-             : guarded == 0x06060290 ? Words{0x7, 0x0fffe03f, 0x000fc800}
-                                     : Words{0x8, 0x0fffe006, 0x000fc800};
-    };
-    for (const Case c : {Case{0x0e068890, 0x0e067890, 0xe}, Case{0x06060290, 0x06067290, 0x6},
-                         Case{0x09069290, 0x09067290, 0xd}}) {
-        const Words w = words(c.guarded);
-        const std::array<Instruction, 2> guarded{{{{c.guarded, w.b, w.w2, w.w3}}, Exit}};
-        const std::array<Instruction, 2> plain{{{{c.plain, w.b, w.w2, w.w3}}, Exit}};
+    constexpr u32 uniform = 1U << 27;
+    constexpr u32 ignored_predicates = (15U << 13) | (63U << 17) | (15U << 23);
+    struct Case { u32 opcode, destination, a, b, c, guard, mapped_guard; };
+    for (const auto& test : {Case{0x890, 11, 18, 0x73, 63, 10, 12},
+                             Case{0x290, 13, 13, 17, 63, 3, 3},
+                             Case{0x290, 19, 15, 4, 19, 12, 10}}) {
+        const u32 controls = uniform | ignored_predicates | test.c;
+        const std::array guarded{EncodeInstruction(test.opcode, test.destination, test.a, test.b,
+                                                   controls, test.guard), Exit};
+        const std::array plain{EncodeInstruction(test.opcode, test.destination, test.a, test.b,
+                                                 controls), Exit};
         const auto lowered = LowerToMaxwell(guarded);
         INFO(lowered.error);
         REQUIRE(static_cast<bool>(lowered));
         const auto reference = LowerToMaxwell(plain);
         REQUIRE(static_cast<bool>(reference));
-        // The same add as the unguarded one, predicated on P6 (negated for @!UP0) where UP0 is swapped in.
-        // Every add of the unguarded lowering appears again, predicated on the swapped-in guard.
+        // Every add appears predicated on the swapped-in guard.
         const auto& out = lowered.instructions;
         for (const u64 add : reference.instructions) {
             if ((add >> 52) == 0xe30) continue; // EXIT
-            const u64 guarded_add = (add & ~(u64{0xf} << 16)) | (u64{c.guard} << 16);
+            const u64 guarded_add = (add & ~(u64{0xf} << 16)) | (u64{test.mapped_guard} << 16);
             REQUIRE(std::find(out.begin(), out.end(), guarded_add) != out.end());
         }
     }
 }
 
 TEST_CASE("Ampere DEPBAR.LE preserves shared visibility for SB0 wait lists", "[video_core][ampere]") {
-    // DEPBAR.LE SB5, 0x1 and DEPBAR.LE SB0, 0x0, {3,2,1} (Pokemon Pokopia's photo compute shaders).
-    for (const u32 word : {0x0000d040U, 0x0000800eU, 0x00008000U, 0x00008fffU, 0x0000ffffU}) {
-        const std::array<Instruction, 2> code{{{{0x0000791a, word, 0, 0x000fce00}}, Exit}};
+    constexpr auto copy = SharedCopy(45, 32, 20, 0x70, 0x50);
+    for (const auto wait : {DependencyWait(3, 4, 0x11), DependencyWait(0, 0, 0x25),
+                            DependencyWait(0, 0, 0), DependencyWait(0, 63, 63),
+                            DependencyWait(7, 63, 63)}) {
+        const std::array code{wait, Exit};
         const auto lowered = LowerToMaxwell(code);
         INFO(lowered.error);
         REQUIRE(static_cast<bool>(lowered));
         REQUIRE(lowered.instructions.size() == 1);
         REQUIRE(lowered.instructions.back() == 0xe30000000007000fULL);
-        const Instruction copy{{0x02067fae, 0, 0x0f901c08, 0}};
-        const auto copying = LowerToMaxwell(std::array{copy, code[0], Exit});
+        const auto copying = LowerToMaxwell(std::array{copy, wait, Exit});
         INFO(copying.error);
         REQUIRE(copying);
-        const bool shared_wait = (word & 0x7000U) == 0;
+        const bool shared_wait = wait.Bits(44, 3) == 0;
         REQUIRE(std::count(copying.instructions.begin(), copying.instructions.end(),
                            0xef98000000070000ULL) == (shared_wait ? 1 : 0));
         REQUIRE(copying.source_instruction_offsets[2] - copying.source_instruction_offsets[1] ==
@@ -155,16 +182,18 @@ TEST_CASE("Ampere DEPBAR.LE preserves shared visibility for SB0 wait lists", "[v
 }
 
 TEST_CASE("Ampere guarded USHF.R.U32.HI lowers to a guarded SHR", "[video_core][ampere]") {
-    // @UP0 USHF.R.U32.HI UR7, URZ, 0x2, UR6 from Pokemon Pokopia's photo compute shaders.
-    const std::array<Instruction, 2> guarded{{{{0x3f070899, 0x2, 0x08011606, 0x000fcc00}}, Exit}};
-    const std::array<Instruction, 2> plain{{{{0x3f077899, 0x2, 0x08011606, 0x000fcc00}}, Exit}};
+    constexpr u32 high_right_u32 = (1U << 27) | HighResult | (2U << 11) | (3U << 9);
+    constexpr auto guarded_shift_input = EncodeInstruction(0x899, 11, 63, 13, high_right_u32 | 17, 2);
+    constexpr auto plain_shift_input = EncodeInstruction(0x899, 11, 63, 13, high_right_u32 | 17);
+    const std::array guarded{guarded_shift_input, Exit};
+    const std::array plain{plain_shift_input, Exit};
     const auto lowered = LowerToMaxwell(guarded);
     INFO(lowered.error);
     REQUIRE(static_cast<bool>(lowered));
     const auto reference = LowerToMaxwell(plain);
     REQUIRE(static_cast<bool>(reference));
     const u64 shift = reference.instructions.front();
-    const u64 guarded_shift = (shift & ~(u64{0xf} << 16)) | (u64{6} << 16);
+    const u64 guarded_shift = (shift & ~(u64{0xf} << 16)) | (u64{4} << 16);
     const auto& out = lowered.instructions;
     REQUIRE(std::find(out.begin(), out.end(), guarded_shift) != out.end());
 }

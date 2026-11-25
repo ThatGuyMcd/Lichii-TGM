@@ -11,6 +11,7 @@
 #include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
+#include "tests/video_core/ampere_instruction_fixture.h"
 
 namespace {
 using Shader::Ampere::Instruction;
@@ -149,12 +150,16 @@ private:
 } // namespace
 
 TEST_CASE("Fire Emblem native TANH reaches SPIRV without enabling it for Maxwell", "[ampere][fe_restore]") {
-    const Instruction tanh{{0x000c7308, 12, 0x2400, 0x000e3000}};
+    constexpr u32 source = 43, destination = 29;
+    constexpr u32 tanh_mode = 9U << 10;
+    constexpr auto tanh =
+        Shader::Ampere::Test::EncodeInstruction(0x308, destination, 0, source, tanh_mode);
     const auto lowered = Shader::Ampere::LowerToMaxwell(std::array{tanh, Exit});
     REQUIRE(lowered);
     auto code = lowered.instructions;
-    code.insert(code.begin(), 0xf0c800000007000cULL); // lane id in R12
-    code.insert(code.end() - 1, 0xef5800000007000cULL | (4ULL << 48) | (255ULL << 8));
+    code.insert(code.begin(), 0xf0c8000000070000ULL | source); // lane ID
+    code.insert(code.end() - 1,
+                0xef58000000070000ULL | destination | (4ULL << 48) | (255ULL << 8));
     for (const bool native : {true, false}) {
         CopyEnvironment env{code};
         env.native = native;
@@ -297,7 +302,10 @@ TEST_CASE("Fire Emblem conditional ReLU reaches SPIRV with P6 guards", "[ampere]
 }
 
 TEST_CASE("Fire Emblem skipped clamp still restores borrowed registers", "[ampere][fe_restore]") {
-    const Instruction uniform_vote{{0x00107886, 0, 0x038e0100, 0}};
+    constexpr u32 any_vote = 1U << 8;
+    constexpr u32 true_source = 7U << 23, discard_predicate = 7U << 17;
+    constexpr auto uniform_vote = Shader::Ampere::Test::EncodeInstruction(
+        0x886, 14, 0, 0, true_source | discard_predicate | any_vote);
     for (const u32 guard : {0U, 7U}) {
         const Instruction hfma{{0xd8d80831U | (guard << 12), 0x3c003c00, 0x800b, 0}};
         const auto lowered = Shader::Ampere::LowerToMaxwell(std::array{uniform_vote, hfma, Exit});

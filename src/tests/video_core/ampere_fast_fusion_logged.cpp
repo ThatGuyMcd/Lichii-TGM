@@ -15,37 +15,161 @@
 namespace {
 using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
-constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0}};
-constexpr Instruction UniformBank{{0x00007ab9, 0x00004000, 0x00000800, 0}};
-constexpr Instruction LoggedMove{{0x00d87a02, 0x00006700, 0x00000f00, 0x000fc800}};
-constexpr Instruction LoggedZero{{0xffea7224, 0x000000ff, 0x078e00ff, 0x000fe200}};
-constexpr Instruction LoggedCompare{{0xf4007a0c, 0x00009e00, 0x03f06270, 0x000fce00}};
-constexpr Instruction LoggedLoad{{0x00047ab9, 0x00006000, 0x00000000, 0x000fe200}};
-constexpr Instruction LoggedMultiply{{0x0a0c02a4, 0x00000006, 0x0f8e0207, 0x000fe200}};
-constexpr Instruction LoggedCopy{{0x100b7fae, 0x00000000, 0x09901d4a, 0x0003e200}};
-constexpr Instruction CapturedMin{{0x79de7c17, 0x00000004, 0x0b800200, 0x040fe200}};
-constexpr Instruction CapturedSpecialZero{{0x00da7805, 0x00000000, 0x0001ff00, 0x000fe200}};
-constexpr Instruction CapturedMultiply{{0x03257a24, 0x00009e00, 0x078e02f4, 0x040fe200}};
-constexpr Instruction CapturedSelect{{0xe4e47207, 0x000000ff, 0x01000000, 0x000fe400}};
-constexpr Instruction CapturedPredicates{{0xd9007804, 0x0000000e, 0x00000000, 0x000fe200}};
-constexpr Instruction CapturedHalfConversion{{0x00087305, 0x00000002, 0x00103100, 0x000e2600}};
-constexpr Instruction CapturedCarry{{0x09097290, 0x00000006, 0x0ff5e03f, 0x000fe200}};
-constexpr Instruction CapturedTwoCarries{{0x09097290, 0x00000004, 0x0f83e006, 0x000fe400}};
-constexpr Instruction CapturedExtendedCarry{{0x08087290, 0x00000007, 0x097fe43f, 0x000fea00}};
-constexpr Instruction CapturedExtendedTwoCarries{{0x08087290, 0x00000005, 0x08fe0407, 0x000fe200}};
-constexpr Instruction CapturedImmediateSelect{{0xffea7807, 0x00000008, 0x04000000, 0x000fe400}};
-constexpr Instruction CapturedRegisterCompare{{0xf200720c, 0x000000ff, 0x03f05270, 0x000fe200}};
-constexpr Instruction CapturedHalfFloor{{0x00087305, 0x00000002, 0x00107100, 0x000e2400}};
-constexpr Instruction CapturedIntegerHalf{{0x00247306, 0x0000000a, 0x00200c00, 0x000e2400}};
-constexpr Instruction CapturedScopedLoad{{0x08087981, 0x0000000c, 0x0c1ebd00, 0x000ea200}};
-constexpr Instruction CapturedHalfTrunc{{0x00297307, 0x00000013, 0x0010c800, 0x000fe200}};
-constexpr Instruction CapturedHalfRound{{0x00317307, 0x00000030, 0x00100800, 0x000fe200}};
-constexpr Instruction CapturedUniformPack{{0xff077c3e, 0x00000008, 0x080000ff, 0x002fe400}};
-constexpr Instruction CapturedFloatUp{{0x000e7306, 0x00000006, 0x00209400, 0x000e3000}};
-constexpr Instruction CapturedShuffleDown{{0x00077589, 0x08001f05, 0x000e0000, 0x000e2200}};
-constexpr Instruction CapturedImmediateFloatUp{{0x00077906, 0x00000020, 0x00209000, 0x000e2200}};
-constexpr Instruction CapturedImmediatePackedFloatTrunc{
-    {0x00047845, 0x00000100, 0x0020d000, 0x000fe200}};
+constexpr Instruction FixtureInstruction(u32 opcode, u32 dest, u32 source_a, u32 source_b,
+                                         u32 modifiers, u32 guard = 7) {
+    return {{opcode | (guard << 12) | (dest << 16) | (source_a << 24),
+             source_b, modifiers, 0}};
+}
+
+constexpr u32 HalfSource = 6;
+constexpr u32 HalfDestination = 18;
+constexpr u32 FloorSource = 23;
+constexpr u32 FloorDestination = 31;
+constexpr u32 IntegerSource = 14;
+constexpr u32 IntegerHalfDestination = 47;
+constexpr u32 FloatSource = 27;
+constexpr u32 FloatDestination = 36;
+constexpr u32 PackDestination = 13;
+constexpr u32 PackUniform = 15;
+constexpr u32 UniformMirror = 216;
+constexpr u32 ScopedAddress = 20;
+constexpr u32 ScopedPolicyUniform = 18;
+
+// Independently selected operands. These format bits select the respective half,
+// signed word and rounding modes without embedding any shader instruction.
+constexpr u32 SignedHalfToWord = (1U << 20) | (3U << 12) | (1U << 8);
+constexpr u32 HalfRoundToNearest = (1U << 20) | (1U << 11);
+constexpr u32 HalfRoundTowardZero = HalfRoundToNearest | (3U << 14);
+constexpr u32 ScopedOrdering = (1U << 15) | (1U << 13);
+constexpr u32 WeakDescriptorLoad = (3U << 26) | (15U << 17) | (1U << 12) |
+                                   (6U << 9) | (1U << 8);
+constexpr auto HalfConversion = FixtureInstruction(0x305, HalfDestination, 0, HalfSource,
+                                                    SignedHalfToWord);
+constexpr auto HalfFloor = FixtureInstruction(0x305, FloorDestination, 0, FloorSource,
+                                               SignedHalfToWord | (1U << 14));
+constexpr auto SignedWordToHalf = FixtureInstruction(0x306, IntegerHalfDestination, 0, IntegerSource,
+                                                      (1U << 21) | (3U << 10));
+constexpr auto FloatUp = FixtureInstruction(0x306, FloatDestination, 0, FloatSource,
+                                             (1U << 21) | (2U << 14) | (1U << 12) |
+                                                 (1U << 10));
+constexpr auto HalfTrunc = FixtureInstruction(0x307, 37, 0, 15, HalfRoundTowardZero);
+constexpr auto HalfRound = FixtureInstruction(0x307, 63, 0, 42, HalfRoundToNearest);
+constexpr auto UniformPack = FixtureInstruction(0xc3e, PackDestination, 255, PackUniform,
+                                                 (1U << 27) | 255U);
+constexpr auto ScopedLoad = FixtureInstruction(0x981, ScopedAddress, ScopedAddress,
+                                                ScopedPolicyUniform,
+                                                WeakDescriptorLoad | ScopedOrdering);
+
+constexpr u32 ZeroRegister = 255;
+constexpr u32 AlwaysPredicate = 7;
+constexpr u32 SourceTrue = AlwaysPredicate << 23;
+constexpr u32 SourceFalse = (AlwaysPredicate | 8U) << 23;
+constexpr u32 DiscardPredicate = AlwaysPredicate << 17;
+constexpr u32 DiscardSecondPredicate = AlwaysPredicate << 20;
+constexpr u32 UniformMode = 1U << 27;
+constexpr u32 SignedOperands = 1U << 9;
+constexpr auto Exit = FixtureInstruction(0x94d, 0, 0, 0, SourceTrue);
+constexpr u32 BankSeedUniform = 2;
+constexpr u32 BankSeedMirror = UniformMirror + BankSeedUniform;
+constexpr u32 BankSeedOffset = 0x134;
+constexpr u32 ShadowMoveOffset = 0x24c;
+constexpr u32 ShadowZeroDest = 232;
+constexpr u32 ShadowCompareInput = 243;
+constexpr u32 CompareConstantOffset = 0x314;
+constexpr u32 ByteLoadUniform = 13;
+constexpr u32 MultiplyA = 16;
+constexpr u32 MultiplyB = 4;
+constexpr u32 MultiplyC = 20;
+constexpr u32 MultiplyDest = 11;
+constexpr u32 CopyShared = 25;
+constexpr u32 CopyGlobal = 34;
+constexpr u32 MinSource = 107;
+constexpr u32 MinUniform = 9;
+constexpr u32 MinShadow = UniformMirror + MinUniform;
+constexpr u32 PairShadow = 226;
+constexpr u32 RegisterMultiplyDest = 41;
+constexpr u32 RegisterMultiplyA = 5;
+constexpr u32 SelectShadow = 231;
+constexpr u32 SelectPredicate = 4;
+constexpr u32 PredicateInput = 229;
+constexpr u32 PredicateMask = 0x34;
+constexpr u32 ImmediateSelectShadow = 237;
+constexpr u32 SelectImmediate = 27;
+constexpr u32 NonzeroShadow = 240;
+
+constexpr auto UniformBank =
+    FixtureInstruction(0xab9, BankSeedUniform, 0, BankSeedOffset << 6, 4U << 9);
+constexpr auto ShadowMove =
+    FixtureInstruction(0xa02, BankSeedMirror, 0, ShadowMoveOffset << 6, 15U << 8);
+constexpr auto ShadowZero =
+    FixtureInstruction(0x224, ShadowZeroDest, ZeroRegister, ZeroRegister,
+                       SourceFalse | DiscardPredicate | ZeroRegister);
+constexpr auto ShadowCompare =
+    FixtureInstruction(0xa0c, 0, ShadowCompareInput, CompareConstantOffset << 6,
+                       SourceTrue | DiscardSecondPredicate | (6U << 12) | SignedOperands);
+constexpr auto ByteLoad = FixtureInstruction(0xab9, ByteLoadUniform, 0, 0x264U << 6, 0);
+constexpr auto UniformMultiply =
+    FixtureInstruction(0x2a4, MultiplyDest, MultiplyA, MultiplyB,
+                       UniformMode | SourceFalse | DiscardPredicate | SignedOperands | MultiplyC,
+                       0);
+
+// LDGSTS.E.BYPASS.128 with a policy descriptor and non-zero global/shared displacements.
+constexpr auto AsyncCopy =
+    FixtureInstruction(0xfae, CopyShared, CopyGlobal, (1U << 16) | 12U,
+                       UniformMode | (1U << 20) | (3U << 23) | (1U << 12) |
+                           (6U << 9) | (1U << 8) | (1U << 6) | 12U);
+constexpr auto ShadowMin = FixtureInstruction(0xc17, MinShadow, MinSource, MinUniform,
+                                               UniformMode | SourceTrue | SignedOperands);
+constexpr auto ShadowPairZero =
+    FixtureInstruction(0x805, PairShadow, 0, 0, (1U << 16) | (ZeroRegister << 8));
+constexpr auto ShadowMultiply =
+    FixtureInstruction(0xa24, RegisterMultiplyDest, RegisterMultiplyA, CompareConstantOffset << 6,
+                       SourceFalse | DiscardPredicate | SignedOperands | ShadowCompareInput);
+constexpr auto ShadowSelect = FixtureInstruction(0x207, SelectShadow, SelectShadow, ZeroRegister,
+                                                  SelectPredicate << 23);
+constexpr auto ShadowPredicates = FixtureInstruction(0x804, 0, PredicateInput, PredicateMask, 0);
+constexpr u32 ZeroUniform = 63;
+constexpr u32 IgnoreCarry = 15;
+constexpr u32 UniformPredicates = 239;
+constexpr Instruction UniformAddCarry(u32 dst, u32 a, u32 b, u32 c, u32 carry_out_a,
+                                      u32 carry_out_b) {
+    // Both input predicates are !UPT. Carry destinations are at bits 81 and 84.
+    return FixtureInstruction(0x290, dst, a, b,
+                              UniformMode | SourceFalse | (IgnoreCarry << 13) |
+                                  (carry_out_a << 17) | (carry_out_b << 20) | c);
+}
+
+constexpr Instruction UniformAddExtended(u32 dst, u32 a, u32 b, u32 c, u32 carry_in_a,
+                                         u32 carry_in_b) {
+    return FixtureInstruction(0x290, dst, a, b,
+                              UniformMode | (carry_in_b << 23) | DiscardSecondPredicate |
+                                  DiscardPredicate | (carry_in_a << 13) | (1U << 10) | c);
+}
+
+constexpr auto UniformCarry = UniformAddCarry(12, 21, 17, ZeroUniform, 3, AlwaysPredicate);
+constexpr auto UniformTwoCarries = UniformAddCarry(6, 18, 13, 19, 3, 6);
+constexpr auto UniformExtendedCarry = UniformAddExtended(15, 11, 20, ZeroUniform, IgnoreCarry, 4);
+constexpr auto UniformExtendedTwoCarries = UniformAddExtended(10, 7, 16, 12, 2, 5);
+constexpr auto ImmediateSelect =
+    FixtureInstruction(0x807, ImmediateSelectShadow, ZeroRegister, SelectImmediate, 8U << 23);
+constexpr auto RegisterCompare =
+    FixtureInstruction(0x20c, 0, NonzeroShadow, ZeroRegister,
+                       SourceTrue | DiscardSecondPredicate | (5U << 12) | SignedOperands);
+constexpr u32 ShuffleDestination = 27;
+constexpr u32 ShuffleSource = 12;
+constexpr u32 ShuffleLane = 19;
+constexpr u32 ShufflePredicate = 5;
+constexpr u32 ShuffleMask = 0x170f;
+constexpr auto ShuffleDown = FixtureInstruction(0x589, ShuffleDestination, ShuffleSource,
+                                                ShuffleLane | (ShuffleMask << 8) | (2U << 26),
+                                                ShufflePredicate << 17);
+constexpr u32 ImmediateRoundUp = 2;
+constexpr u32 ImmediateRoundTowardZero = 3;
+constexpr u32 UnsignedToFloat = (1U << 21) | (1U << 12);
+constexpr auto ImmediateFloatUp = FixtureInstruction(0x906, 24, 0, 37,
+                                                      UnsignedToFloat | (ImmediateRoundUp << 14));
+constexpr auto ImmediateFloatTrunc =
+    FixtureInstruction(0x845, 4, 0, 260, UnsignedToFloat | (ImmediateRoundTowardZero << 14));
 
 f64 HalfValue(u16 bits) {
     const u32 exponent = (bits >> 10) & 31, fraction = bits & 1023;
@@ -561,8 +685,12 @@ struct HalfIR {
 };
 } // namespace
 
-TEST_CASE("Ocarina packed float-to-byte conversion clamps before packing", "[video_core][ampere][oot]") {
-    const Instruction convert{{0xff0a7243, 9, 0x0000c4ff, 0x000fe400}};
+TEST_CASE("Packed float-to-byte conversion clamps before packing", "[video_core][ampere][oot]") {
+    constexpr u32 source = 27;
+    constexpr u32 destination = 32;
+    constexpr u32 register_zero = 255;
+    const Instruction convert{{0x243U | (7U << 12) | (destination << 16) | (register_zero << 24),
+                               source, register_zero | (1U << 10) | (3U << 14), 0}};
     const auto lowered = LowerToMaxwell(std::array{convert, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
@@ -572,23 +700,32 @@ TEST_CASE("Ocarina packed float-to-byte conversion clamps before packing", "[vid
                             std::numeric_limits<f32>::infinity(),
                             std::numeric_limits<f32>::quiet_NaN()}) {
         const u32 expected = std::isnan(input) ? 0U : u32(std::clamp(input, 0.0f, 255.0f));
-        CHECK(translation.Run(std::bit_cast<u32>(input), 9, 10) == expected);
+        CHECK(translation.Run(std::bit_cast<u32>(input), source, destination) == expected);
     }
 }
 
-TEST_CASE("Ocarina I2F from a uniform register selects any byte", "[video_core][ampere][oot]") {
-    // I2F.F32.U8 R9, UR17.B3
-    const Instruction convert{{0x00097d06, 0x30000011, 0x08001000, 0x000fe200}};
-    const auto lowered = LowerToMaxwell(std::array{convert, Exit});
-    INFO(lowered.error);
-    REQUIRE(lowered);
-    CHECK(lowered.instructions[lowered.source_instruction_offsets[0]] ==
-          (0x5cb8000000070000ULL | 9 | (u64{2} << 8) | (u64{233} << 20) | (u64{3} << 41)));
+TEST_CASE("I2F from a uniform register selects any byte", "[video_core][ampere][oot]") {
+    constexpr u32 destination = 34;
+    constexpr u32 uniform = 13;
+    for (u32 byte = 0; byte < 4; ++byte) {
+        const Instruction convert{{0xd06U | (7U << 12) | (destination << 16),
+                                   uniform | (byte << 28), (1U << 27) | (1U << 12), 0}};
+        const auto lowered = LowerToMaxwell(std::array{convert, Exit});
+        INFO(lowered.error);
+        REQUIRE(lowered);
+        CHECK(lowered.instructions[lowered.source_instruction_offsets[0]] ==
+              (0x5cb8000000070000ULL | destination | (u64{2} << 8) |
+               (u64{216 + uniform} << 20) | (u64{byte} << 41)));
+    }
 }
 
-TEST_CASE("Ocarina F2IP packs two rounded unorm bytes", "[video_core][ampere][oot]") {
-    // F2IP.U8.F32 R41, R40, R39, RZ, from a compute program that scales both inputs by 255.
-    const Instruction convert{{0x28297243, 0x27, 0x000004ff, 0x000fc400}};
+TEST_CASE("F2IP packs two rounded unorm bytes", "[video_core][ampere][oot]") {
+    constexpr u32 source_a = 57;
+    constexpr u32 source_b = 62;
+    constexpr u32 destination = 49;
+    constexpr u32 register_zero = 255;
+    const Instruction convert{{0x243U | (7U << 12) | (destination << 16) | (source_a << 24),
+                               source_b, register_zero | (1U << 10), 0}};
     const auto lowered = LowerToMaxwell(std::array{convert, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
@@ -604,8 +741,8 @@ TEST_CASE("Ocarina F2IP packs two rounded unorm bytes", "[video_core][ampere][oo
             CAPTURE(a, b);
             translation.values.clear();
             translation.registers.fill(0xdeadbeef);
-            translation.registers[40] = std::bit_cast<u32>(a);
-            translation.registers[39] = std::bit_cast<u32>(b);
+            translation.registers[source_a] = std::bit_cast<u32>(a);
+            translation.registers[source_b] = std::bit_cast<u32>(b);
             for (const auto& inst : translation.block.Instructions()) {
                 if (inst.GetOpcode() == IR::Opcode::SetRegister)
                     translation.registers.at(static_cast<size_t>(inst.Arg(0).Reg())) =
@@ -613,9 +750,9 @@ TEST_CASE("Ocarina F2IP packs two rounded unorm bytes", "[video_core][ampere][oo
                 else
                     translation.values.emplace(&inst, translation.Evaluate(inst));
             }
-            CHECK(translation.registers[41] == (byte(b) | (byte(a) << 8)));
-            CHECK(translation.registers[40] == std::bit_cast<u32>(a));
-            CHECK(translation.registers[39] == std::bit_cast<u32>(b));
+            CHECK(translation.registers[destination] == (byte(b) | (byte(a) << 8)));
+            CHECK(translation.registers[source_a] == std::bit_cast<u32>(a));
+            CHECK(translation.registers[source_b] == std::bit_cast<u32>(b));
         }
     }
     // Other rounding modes and a merge register aren't known forms yet.
@@ -627,33 +764,46 @@ TEST_CASE("Ocarina F2IP packs two rounded unorm bytes", "[video_core][ampere][oo
     CHECK_FALSE(LowerToMaxwell(std::array{modified, Exit}));
 }
 
-TEST_CASE("Ocarina uniform multiply adds an immediate rather than reading a register",
+TEST_CASE("Uniform multiply adds its immediate operand",
           "[video_core][ampere][oot]") {
-    const Instruction multiply{{0x040474a4, 0x00003c00, 0x0f8e0206, 0x000fc600}};
+    constexpr u32 source = 10;
+    constexpr u32 factor = 14;
+    constexpr u32 addend = 0x7100;
+    constexpr u32 multiply_add_mode = 0x0f8e0200;
+    const Instruction multiply{{0x4a4U | (7U << 12) | (source << 16) | (source << 24),
+                                addend, multiply_add_mode | factor, 0}};
     const auto lowered = LowerToMaxwell(std::array{multiply, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     for (const u32 a : {0U, 1U, 0x80000000U, 0xffffffffU}) {
         for (const u32 b : {0U, 3U, 0x40000001U, 0xffffffffU}) {
             LoggedMachine machine;
-            machine.registers[0][220] = a;
-            machine.registers[0][222] = b;
+            machine.registers[0][216 + source] = a;
+            machine.registers[0][216 + factor] = b;
             const auto predicates = machine.predicates;
             machine.Run(lowered.instructions);
-            CHECK(machine.registers[0][220] == a * b + 0x3c00U);
-            CHECK(machine.registers[0][222] == b);
+            CHECK(machine.registers[0][216 + source] == a * b + addend);
+            CHECK(machine.registers[0][216 + factor] == b);
             CHECK(machine.predicates == predicates);
         }
     }
 }
 
-TEST_CASE("Ocarina 64-bit right shifts include both words and clamp at 64",
+TEST_CASE("64-bit right shifts include both words and clamp at 64",
           "[video_core][ampere][oot]") {
+    constexpr u32 shift_register = 67;
+    constexpr u32 right_u64 = (1U << 9) | (1U << 12);
     for (const bool uniform : {false, true}) {
+        const u32 low = uniform ? 12 : 57;
+        const u32 high = uniform ? 18 : 65;
+        const u32 destination = uniform ? 15 : 59;
+        const u32 base = uniform ? 216 : 0;
         for (const u32 shift : {0U, 1U, 16U, 24U, 31U, 32U, 33U, 63U, 64U, 65U, 0xffffffffU}) {
-            const Instruction instruction = uniform
-                ? Instruction{{0x04077899, shift, 0x08001206, 0x002fc400}}
-                : Instruction{{0x032b7219, 44, 0x0000122d, 0x000fe200}};
+            const u32 opcode = uniform ? 0x899 : 0x219;
+            const u32 uniform_mode = uniform ? 1U << 27 : 0;
+            const Instruction instruction{{opcode | (7U << 12) | (destination << 16) | (low << 24),
+                                           uniform ? shift : shift_register,
+                                           right_u64 | uniform_mode | high, 0}};
             const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
             INFO(lowered.error);
             REQUIRE(lowered);
@@ -662,9 +812,9 @@ TEST_CASE("Ocarina 64-bit right shifts include both words and clamp at 64",
                                    0xfedcba9876543210ULL, 0xffffffffffffffffULL}) {
                 CAPTURE(uniform, shift, input);
                 translation.registers.fill(0xdeadbeef);
-                translation.registers[uniform ? 220 : 3] = u32(input);
-                translation.registers[uniform ? 222 : 45] = u32(input >> 32);
-                translation.registers[44] = shift;
+                translation.registers[base + low] = u32(input);
+                translation.registers[base + high] = u32(input >> 32);
+                translation.registers[shift_register] = shift;
                 translation.values.clear();
                 for (const auto& inst : translation.block.Instructions()) {
                     if (inst.GetOpcode() == IR::Opcode::SetRegister)
@@ -673,38 +823,48 @@ TEST_CASE("Ocarina 64-bit right shifts include both words and clamp at 64",
                     else
                         translation.values.emplace(&inst, translation.Evaluate(inst));
                 }
-                CHECK(translation.registers[uniform ? 223 : 43] ==
+                CHECK(translation.registers[base + destination] ==
                       (shift >= 64 ? 0U : u32(input >> shift)));
             }
         }
     }
 }
 
-TEST_CASE("Ocarina funnel shift unpacks 21-bit fields across both words",
+TEST_CASE("Synthetic U64 funnel shifts preserve both source words and destination aliases",
           "[video_core][ampere][oot]") {
-    // 1a55fa57a335b963 (vertex shader of the 128x128 environment capture and scene draws):
-    // SHF.R.U64 R14, R14, 0x15, R17
-    for (const u32 shift : {0U, 1U, 21U, 31U, 32U}) {
-        const Instruction instruction{{0x0e0e7819, shift, 0x00001211, 0x020fe200}};
-        const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
-        INFO(lowered.error);
-        REQUIRE(lowered);
-        HalfIR translation{lowered.instructions};
-        for (const u64 input : {0ULL, 0x00000001ffe00000ULL, 0x8000000180000000ULL,
-                               0xfedcba9876543210ULL, 0xffffffffffffffffULL}) {
-            CAPTURE(shift, input);
-            translation.registers.fill(0xdeadbeef);
-            translation.registers[14] = u32(input);
-            translation.registers[17] = u32(input >> 32);
-            translation.values.clear();
-            for (const auto& inst : translation.block.Instructions()) {
-                if (inst.GetOpcode() == IR::Opcode::SetRegister)
-                    translation.registers.at(static_cast<size_t>(inst.Arg(0).Reg())) =
-                        u32(translation.Value(inst.Arg(1)));
-                else
-                    translation.values.emplace(&inst, translation.Evaluate(inst));
+    // Independently assemble SHF.R.U64: immediate opcode [0:11], PT [12:15],
+    // destination [16:23], low source [24:31], shift [32:63], high source [64:71],
+    // U64 mode [73:74] and right direction [76]. Scheduling/control word is zero.
+    // Keep the 21-bit shift as one arithmetic boundary, not as a copied instruction.
+    constexpr u32 low = 53, high = 61;
+    for (const u32 destination : {low, 47U}) {
+        for (const u32 shift : {0U, 1U, 21U, 31U, 32U}) {
+            const Instruction instruction{{0x819U | (7U << 12) | (destination << 16) | (low << 24),
+                                           shift, high | (1U << 9) | (1U << 12), 0}};
+            const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
+            INFO(lowered.error);
+            REQUIRE(lowered);
+            HalfIR translation{lowered.instructions};
+            for (const u64 input : {0ULL, 0x00000001ffe00000ULL, 0x8000000180000000ULL,
+                                   0xfedcba9876543210ULL, 0xffffffffffffffffULL}) {
+                CAPTURE(destination, shift, input);
+                translation.registers.fill(0xdeadbeef);
+                translation.registers[low] = u32(input);
+                translation.registers[high] = u32(input >> 32);
+                translation.values.clear();
+                for (const auto& inst : translation.block.Instructions()) {
+                    if (inst.GetOpcode() == IR::Opcode::SetRegister)
+                        translation.registers.at(static_cast<size_t>(inst.Arg(0).Reg())) =
+                            u32(translation.Value(inst.Arg(1)));
+                    else
+                        translation.values.emplace(&inst, translation.Evaluate(inst));
+                }
+                CHECK(translation.registers[destination] == u32(input >> shift));
+                CHECK(translation.registers[high] == u32(input >> 32));
+                if (destination != low) {
+                    CHECK(translation.registers[low] == u32(input));
+                }
             }
-            CHECK(translation.registers[14] == u32(input >> shift));
         }
     }
 }
@@ -769,32 +929,36 @@ TEST_CASE("Ampere register-absolute F2I applies absolute before rounding and sat
     }
 }
 
-TEST_CASE("Fast Fusion logged high registers preserve uniform mirrors and borrowed quartets",
+TEST_CASE("Ampere high registers preserve uniform mirrors and borrowed quartets",
           "[video_core][ampere][fast_fusion_logged]") {
-    for (const auto instruction : {LoggedMove, LoggedZero, LoggedCompare}) {
+    for (const auto instruction : {ShadowMove, ShadowZero, ShadowCompare}) {
         DYNAMIC_SECTION("opcode " << instruction.Bits(0, 12)) {
             for (const u32 value : {0U, 0x7fffffffU, 0x80000000U, 0xffffffffU}) {
                 const auto lowered = LowerToMaxwell(std::array{UniformBank, instruction, Exit});
                 INFO(lowered.error);
                 REQUIRE(lowered);
                 LoggedMachine machine;
-                machine.registers[1][244] = value;
+                machine.registers[1][ShadowCompareInput] = value;
                 const auto before = machine.registers;
                 const auto predicates = machine.predicates;
                 machine.Run(lowered.instructions);
                 for (u32 reg = 0; reg < 255; ++reg) {
                     if (reg < 246)
                         CHECK(machine.registers[0][reg] ==
-                              (reg == 216 ? machine.Constant(0x100, 4) : before[0][reg]));
-                    const u32 expected = instruction.words[0] == LoggedMove.words[0] && reg == 216
-                                             ? machine.Constant(0x19c, 4)
-                                         : instruction.words[0] == LoggedZero.words[0] && reg == 234
+                              (reg == BankSeedMirror ? machine.Constant(BankSeedOffset, 4)
+                                                     : before[0][reg]));
+                    const u32 expected = instruction.words[0] == ShadowMove.words[0] &&
+                                                 reg == BankSeedMirror
+                                             ? machine.Constant(ShadowMoveOffset, 4)
+                                         : instruction.words[0] == ShadowZero.words[0] &&
+                                                   reg == ShadowZeroDest
                                              ? 0U
                                              : before[1][reg];
                     CHECK(machine.registers[1][reg] == expected);
                 }
-                if (instruction.words[0] == LoggedCompare.words[0]) {
-                    CHECK(machine.predicates[0] == (s32(value) >= s32(machine.Constant(0x278, 4))));
+                if (instruction.words[0] == ShadowCompare.words[0]) {
+                    CHECK(machine.predicates[0] ==
+                          (s32(value) >= s32(machine.Constant(CompareConstantOffset, 4))));
                     for (u32 p = 1; p < 8; ++p)
                         CHECK(machine.predicates[p] == predicates[p]);
                 } else {
@@ -805,10 +969,10 @@ TEST_CASE("Fast Fusion logged high registers preserve uniform mirrors and borrow
     }
 }
 
-TEST_CASE("Fast Fusion logged ULDC loads one unsigned byte without neighboring bits",
+TEST_CASE("Ampere ULDC loads one unsigned byte without neighboring bits",
           "[video_core][ampere][fast_fusion_logged]") {
-    for (u32 offset : {0x180U, 0x181U, 0x182U, 0x183U, 0x7fffU}) {
-        auto load = LoggedLoad;
+    for (u32 offset : {0x264U, 0x265U, 0x266U, 0x267U, 0x7fffU}) {
+        auto load = ByteLoad;
         load.words[1] = offset << 6;
         const auto lowered = LowerToMaxwell(std::array{load, Exit});
         INFO(lowered.error);
@@ -818,43 +982,44 @@ TEST_CASE("Fast Fusion logged ULDC loads one unsigned byte without neighboring b
         machine.Run(lowered.instructions);
         for (u32 reg = 0; reg < 246; ++reg)
             CHECK(machine.registers[0][reg] ==
-                  (reg == 220 ? machine.constants[offset] : before[reg]));
+                  (reg == UniformMirror + ByteLoadUniform ? machine.constants[offset] : before[reg]));
     }
     for (u32 offset : {0x8000U, 0xffffU}) {
-        auto load = LoggedLoad;
+        auto load = ByteLoad;
         load.words[1] = offset << 6;
         CHECK_FALSE(LowerToMaxwell(std::array{load, Exit}));
     }
 }
 
-TEST_CASE("Fast Fusion captured register shadows distinguish pairs uniform inputs and constants",
+TEST_CASE("Ampere register shadows distinguish pairs, uniform inputs and constants",
           "[video_core][ampere][fast_fusion_logged]") {
-    for (const auto instruction : {CapturedMin, CapturedSpecialZero, CapturedMultiply}) {
+    for (const auto instruction : {ShadowMin, ShadowPairZero, ShadowMultiply}) {
         DYNAMIC_SECTION("opcode " << instruction.Bits(0, 12)) {
             const auto lowered = LowerToMaxwell(std::array{UniformBank, instruction, Exit});
             INFO(lowered.error);
             REQUIRE(lowered);
             LoggedMachine machine;
-            machine.registers[0][121] = 0x80000000;
-            machine.registers[0][220] = 9;
-            machine.registers[0][3] = 0xffff1234;
-            machine.registers[1][244] = 0xfedcba98;
+            machine.registers[0][MinSource] = 0x80000000;
+            machine.registers[0][MinShadow] = 9;
+            machine.registers[0][RegisterMultiplyA] = 0xffff1234;
+            machine.registers[1][ShadowCompareInput] = 0xfedcba98;
             const auto before = machine.registers;
             const auto predicates = machine.predicates;
             machine.Run(lowered.instructions);
             for (u32 reg = 0; reg < 255; ++reg) {
                 if (reg < 246) {
                     const u32 expected =
-                        reg == 216 ? machine.Constant(0x100, 4)
-                        : instruction.words[0] == CapturedMultiply.words[0] && reg == 37
-                            ? 0xffff1234U * machine.Constant(0x278, 4) + 0xfedcba98U
+                        reg == BankSeedMirror ? machine.Constant(BankSeedOffset, 4)
+                        : instruction.words[0] == ShadowMultiply.words[0] &&
+                                  reg == RegisterMultiplyDest
+                            ? 0xffff1234U * machine.Constant(CompareConstantOffset, 4) + 0xfedcba98U
                             : before[0][reg];
                     CHECK(machine.registers[0][reg] == expected);
                 }
-                const u32 expected = instruction.words[0] == CapturedMin.words[0] && reg == 222
+                const u32 expected = instruction.words[0] == ShadowMin.words[0] && reg == MinShadow
                                          ? 0x80000000U
-                                     : instruction.words[0] == CapturedSpecialZero.words[0] &&
-                                             (reg == 218 || reg == 219)
+                                     : instruction.words[0] == ShadowPairZero.words[0] &&
+                                             (reg == PairShadow || reg == PairShadow + 1)
                                          ? 0U
                                          : before[1][reg];
                 CHECK(machine.registers[1][reg] == expected);
@@ -864,86 +1029,94 @@ TEST_CASE("Fast Fusion captured register shadows distinguish pairs uniform input
     }
 }
 
-TEST_CASE("Fast Fusion logged uniform multiply uses UP0 and restores ordinary predicates",
+TEST_CASE("Ampere uniform multiply uses UP0 and restores ordinary predicates",
           "[video_core][ampere][fast_fusion_logged]") {
     for (u32 guard : {0U, 8U}) {
         for (const bool enabled : {false, true}) {
             for (const auto values : {std::array{0U, 0U, 0xffffffffU},
                                       std::array{0x89abcdefU, 0xfedcba98U, 0x12345678U}}) {
-                auto multiply = LoggedMultiply;
+                auto multiply = UniformMultiply;
                 multiply.words[0] |= guard << 12;
                 const auto lowered = LowerToMaxwell(std::array{multiply, Exit});
                 INFO(lowered.error);
                 REQUIRE(lowered);
                 LoggedMachine machine;
-                machine.registers[0][226] = values[0];
-                machine.registers[0][222] = values[1];
-                machine.registers[0][223] = values[2];
+                machine.registers[0][UniformMirror + MultiplyA] = values[0];
+                machine.registers[0][UniformMirror + MultiplyB] = values[1];
+                machine.registers[0][UniformMirror + MultiplyC] = values[2];
                 machine.registers[0][239] = enabled ? 0x55U : 0x15U;
                 machine.predicates[6] = !enabled;
                 const auto before = machine.registers[0];
                 const auto predicates = machine.predicates;
                 machine.Run(lowered.instructions);
                 for (u32 reg = 0; reg < 246; ++reg)
-                    CHECK(machine.registers[0][reg] == (reg == 228 && (enabled != bool(guard & 8))
-                                                            ? values[0] * values[1] + values[2]
-                                                            : before[reg]));
+                    CHECK(machine.registers[0][reg] ==
+                          (reg == UniformMirror + MultiplyDest && (enabled != bool(guard & 8))
+                               ? values[0] * values[1] + values[2]
+                               : before[reg]));
                 CHECK(machine.predicates == predicates);
             }
         }
     }
 }
 
-TEST_CASE("Fast Fusion captured select and predicate writes read guest shadows not uniform mirrors",
+TEST_CASE("Ampere select and predicate writes read the guest register shadow",
           "[video_core][ampere][fast_fusion_logged]") {
-    for (const auto instruction : {CapturedSelect, CapturedPredicates}) {
+    for (const auto instruction : {ShadowSelect, ShadowPredicates}) {
         DYNAMIC_SECTION("opcode " << instruction.Bits(0, 12)) {
             for (const bool selected : {false, true}) {
                 const auto lowered = LowerToMaxwell(std::array{UniformBank, instruction, Exit});
                 INFO(lowered.error);
                 REQUIRE(lowered);
                 LoggedMachine machine;
-                machine.registers[1][217] = 0xa;
-                machine.registers[1][228] = 0xdeadbeef;
-                machine.predicates[2] = selected;
+                constexpr u32 PredicateBits = 0x14;
+                machine.registers[1][PredicateInput] = PredicateBits;
+                machine.registers[1][SelectShadow] = 0xdeadbeef;
+                machine.predicates[SelectPredicate] = selected;
                 const auto before = machine.registers;
                 const auto predicates = machine.predicates;
                 machine.Run(lowered.instructions);
                 for (u32 reg = 0; reg < 255; ++reg) {
                     if (reg < 246)
                         CHECK(machine.registers[0][reg] ==
-                              (reg == 216 ? machine.Constant(0x100, 4) : before[0][reg]));
+                              (reg == BankSeedMirror ? machine.Constant(BankSeedOffset, 4)
+                                                     : before[0][reg]));
                     const u32 expected =
-                        instruction.words[0] == CapturedSelect.words[0] && reg == 228
+                        instruction.words[0] == ShadowSelect.words[0] && reg == SelectShadow
                             ? (selected ? 0xdeadbeefU : 0U)
                             : before[1][reg];
                     CHECK(machine.registers[1][reg] == expected);
                 }
                 for (u32 p = 0; p < 8; ++p)
                     CHECK(machine.predicates[p] ==
-                          (instruction.words[0] == CapturedPredicates.words[0] && p >= 1 && p <= 3
-                               ? bool(0xaU & (1U << p))
+                          (instruction.words[0] == ShadowPredicates.words[0] &&
+                                   (PredicateMask & (1U << p))
+                               ? bool(PredicateBits & (1U << p))
                                : predicates[p]));
             }
         }
     }
 }
 
-TEST_CASE("Fast Fusion logged async copy uses its source predicate and full 64-bit address",
+TEST_CASE("Ampere async copy uses its source predicate and full 64-bit address",
           "[video_core][ampere][fast_fusion_logged]") {
     for (u32 guard : {0U, 7U, 8U}) {
         for (u32 enable : {3U, 11U}) {
             for (const bool condition : {false, true}) {
-                auto copy = LoggedCopy;
+                auto copy = AsyncCopy;
                 copy.words[0] = (copy.words[0] & ~0xf000U) | (guard << 12);
                 copy.words[2] = (copy.words[2] & ~0x07800000U) | (enable << 23);
                 const auto lowered = LowerToMaxwell(std::array{copy, Exit});
                 INFO(lowered.error);
                 REQUIRE(lowered);
                 LoggedMachine machine;
-                machine.registers[0][11] = 128;
-                machine.registers[0][16] = 0xfffffff0U;
-                machine.registers[0][17] = 3;
+                constexpr u64 GlobalBase = 0x5fffffff4ULL;
+                constexpr u64 GlobalAddress = GlobalBase + 12;
+                constexpr u32 SharedBase = 144;
+                constexpr u32 SharedAddress = SharedBase + 16;
+                machine.registers[0][CopyShared] = SharedBase;
+                machine.registers[0][CopyGlobal] = static_cast<u32>(GlobalBase);
+                machine.registers[0][CopyGlobal + 1] = static_cast<u32>(GlobalBase >> 32);
                 machine.predicates[0] = condition;
                 machine.predicates[3] = condition;
                 const auto before = machine.registers[0];
@@ -951,14 +1124,14 @@ TEST_CASE("Fast Fusion logged async copy uses its source predicate and full 64-b
                 const bool active = machine.Predicate(guard), source = machine.Predicate(enable);
                 for (u32 i = 0; i < 4; ++i) {
                     if (active && source)
-                        machine.global[0x3fffffff0ULL + i * 4] = 0xfeedfaceU + i;
-                    machine.shared[128 + i * 4] = 0xdeadbeef;
+                        machine.global[GlobalAddress + i * 4] = 0xfeedfaceU + i;
+                    machine.shared[SharedAddress + i * 4] = 0xdeadbeef;
                 }
                 machine.Run(lowered.instructions);
                 CHECK(machine.reads == (active && source ? 4U : 0U));
                 CHECK(machine.writes == (active ? 4U : 0U));
                 for (u32 i = 0; i < 4; ++i)
-                    CHECK(machine.shared.at(128 + i * 4) == (!active  ? 0xdeadbeefU
+                    CHECK(machine.shared.at(SharedAddress + i * 4) == (!active  ? 0xdeadbeefU
                                                              : source ? 0xfeedfaceU + i
                                                                       : 0U));
                 for (u32 reg = 0; reg < 246; ++reg)
@@ -969,45 +1142,49 @@ TEST_CASE("Fast Fusion logged async copy uses its source predicate and full 64-b
     }
 }
 
-TEST_CASE("Fast Fusion captured half conversion rounds every half value to a signed even integer",
+TEST_CASE("Ampere half conversion rounds every half value to a signed even integer",
           "[video_core][ampere][fast_fusion_logged]") {
-    const auto lowered = LowerToMaxwell(std::array{CapturedHalfConversion, Exit});
+    const auto lowered = LowerToMaxwell(std::array{HalfConversion, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     LoggedMachine machine;
     const auto predicates = machine.predicates;
     for (u32 half = 0; half < 65536; ++half) {
-        machine.registers[0][2] = 0xfc000000U | half;
+        machine.registers[0][HalfSource] = 0xfc000000U | half;
         machine.Run(lowered.instructions);
         CAPTURE(half);
-        CHECK(machine.registers[0][8] == RoundedHalfInteger(half));
-        CHECK(machine.registers[0][2] == (0xfc000000U | half));
+        CHECK(machine.registers[0][HalfDestination] == RoundedHalfInteger(half));
+        CHECK(machine.registers[0][HalfSource] == (0xfc000000U | half));
         CHECK(machine.predicates == predicates);
     }
 }
 
 TEST_CASE(
-    "Fast Fusion captured uniform carry outputs preserve unrelated UP and ordinary predicates",
+    "Ampere uniform carry outputs preserve unrelated UP and ordinary predicates",
     "[video_core][ampere][fast_fusion_logged]") {
     constexpr std::array values{0U, 1U, 0x7fffffffU, 0x80000000U, 0xffffffffU};
-    for (const auto instruction : {CapturedCarry, CapturedTwoCarries}) {
+    for (const auto instruction : {UniformCarry, UniformTwoCarries}) {
         DYNAMIC_SECTION("mode " << instruction.words[2]) {
             const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
             INFO(lowered.error);
             REQUIRE(lowered);
+            const u32 destination = UniformMirror + instruction.Bits(16, 8);
+            const u32 source_a = UniformMirror + instruction.Bits(24, 8);
+            const u32 source_b = UniformMirror + instruction.Bits(32, 8);
+            const u32 source_c = instruction.Bits(64, 8);
             LoggedMachine machine;
             for (u32 a : values) {
                 for (u32 b : values) {
                     for (u32 c : values) {
                         for (u32 packed : {0x12340015U, 0x1234006aU}) {
-                            machine.registers[0][225] = a;
-                            machine.registers[0][instruction.words[1] == 6 ? 222 : 220] = b;
-                            if (instruction.words[1] == 4)
-                                machine.registers[0][222] = c;
-                            machine.registers[0][239] = packed;
+                            machine.registers[0][source_a] = a;
+                            machine.registers[0][source_b] = b;
+                            if (source_c != ZeroUniform)
+                                machine.registers[0][UniformMirror + source_c] = c;
+                            machine.registers[0][UniformPredicates] = packed;
                             const auto before = machine.registers[0];
                             const auto predicates = machine.predicates;
-                            const u64 sum = u64{a} + b + (instruction.words[1] == 4 ? c : 0);
+                            const u64 sum = u64{a} + b + (source_c != ZeroUniform ? c : 0);
                             u32 expected_predicates = packed;
                             for (u32 i = 0; i < 2; ++i) {
                                 const u32 output = instruction.Bits(81 + i * 3, 3);
@@ -1020,8 +1197,8 @@ TEST_CASE(
                             machine.Run(lowered.instructions);
                             CAPTURE(a, b, c, packed);
                             for (u32 reg = 0; reg < 246; ++reg)
-                                CHECK(machine.registers[0][reg] == (reg == 225 ? u32(sum)
-                                                                    : reg == 239
+                                CHECK(machine.registers[0][reg] == (reg == destination ? u32(sum)
+                                                                    : reg == UniformPredicates
                                                                         ? expected_predicates
                                                                         : before[reg]));
                             CHECK(machine.predicates == predicates);
@@ -1040,7 +1217,7 @@ TEST_CASE("Ocarina call links stay proven across a predicate-to-register write",
         {{0xff107803, 0x40, 0, 0}}, // P2R R16, RZ, 0x40
         {{0x00007944, 0x10, 0x03c00000, 0}},
         Exit,
-        CapturedImmediatePackedFloatTrunc,
+        {{0x845U | (7U << 12) | (21U << 16), 0x183, (1U << 21) | (13U << 12), 0}},
         {{0x00047202, 9, 0xf00, 0}},
         {{0x04007950, 0xffffff90, 0x03c3ffff, 0}},
     }};
@@ -1053,16 +1230,32 @@ TEST_CASE("Ocarina call links stay proven across a predicate-to-register write",
     CHECK(clobbered.error == "native call linkage mode");
 }
 
-TEST_CASE("Ocarina uniform LEA carries through any UP and preserves the rest",
+// Independently assembled ISA operands for the three uniform cases below. Field positions
+// follow Instruction::Bits consumers in lower_to_maxwell.h; no logged instruction is a seed.
+constexpr Instruction UniformArithmetic(u32 opcode, u32 target, u32 source, u32 operand,
+                                        u32 controls) {
+    return {{opcode | (7U << 12) | (target << 16) | (source << 24), operand, controls, 0}};
+}
+
+constexpr Instruction UniformLoad(bool indexed, u32 target, u32 index, u32 bank,
+                                  u32 offset, u32 width, u32 guard = 7) {
+    // Opcode [0:11], guard [12:15], URd [16:23], URindex [24:31],
+    // signed displacement [38:53], bank [54:58], width [73:75], indexed flag [91].
+    return {{(indexed ? 0xabbU : 0xab9U) | (guard << 12) | (target << 16) | (index << 24),
+             ((offset & 0xffffU) << 6) | (bank << 22),
+             (width << 9) | (indexed ? 1U << 27 : 0U), 0}};
+}
+
+TEST_CASE("Synthetic uniform LEA carries through any UP and preserves the rest",
           "[video_core][ampere][fast_fusion_logged]") {
-    // ULEA UR10, UR6, UR10, 2 with the carry out in UP2, from Ocarina of Time.
-    constexpr Instruction captured{{0x060a7291, 0x0000000a, 0x0f84103f, 0x000fe200}};
-    constexpr u32 ur6 = 222, ur10 = 226;
-    constexpr std::array values{0U, 1U, 0x3fffffffU, 0x40000000U, 0xffffffffU};
+    // ULEA UR14, UR3, UR14, 5. Rc=URZ [64:71], shift [75:79],
+    // carry destination [81:83], unused carry input [87:90], uniform flag [91].
+    constexpr u32 shift = 5, source = 216 + 3, target = 216 + 14;
+    constexpr std::array values{0U, 1U, 0x07ffffffU, 0x08000000U, 0xffffffffU};
     for (u32 up = 0; up < 7; ++up) {
         const u32 mask = 1U << (6 - up);
-        auto instruction = captured;
-        instruction.words[2] = (instruction.words[2] & ~(7U << 17)) | (up << 17);
+        const auto instruction = UniformArithmetic(
+            0x291, 14, 3, 14, 63U | (shift << 11) | (up << 17) | (15U << 23) | (1U << 27));
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         CAPTURE(up);
         INFO(lowered.error);
@@ -1071,17 +1264,17 @@ TEST_CASE("Ocarina uniform LEA carries through any UP and preserves the rest",
         for (u32 a : values) {
             for (u32 b : values) {
                 for (u32 packed : {0x12340015U, 0x1234006aU}) {
-                    machine.registers[0][ur6] = a;
-                    machine.registers[0][ur10] = b;
+                    machine.registers[0][source] = a;
+                    machine.registers[0][target] = b;
                     machine.registers[0][239] = packed;
                     const auto before = machine.registers[0];
                     const auto predicates = machine.predicates;
                     machine.Run(lowered.instructions);
                     CAPTURE(a, b, packed);
-                    const u32 sum = (a << 2) + b;
+                    const u32 sum = (a << shift) + b;
                     for (u32 reg = 0; reg < 246; ++reg)
                         CHECK(machine.registers[0][reg] ==
-                              (reg == ur10  ? sum
+                              (reg == target ? sum
                                : reg == 239 ? (packed & ~mask) | (sum < b ? mask : 0)
                                             : before[reg]));
                     CHECK(machine.predicates == predicates);
@@ -1091,18 +1284,19 @@ TEST_CASE("Ocarina uniform LEA carries through any UP and preserves the rest",
     }
 }
 
-TEST_CASE("Ocarina indexed uniform constant loads keep their U8 and U16 widths",
+TEST_CASE("Synthetic indexed uniform constant loads keep their U8 and U16 widths",
           "[video_core][ampere][fast_fusion_logged]") {
     struct Case {
         Instruction instruction;
         u64 target, index, offset, bank, width;
     };
-    // ULDC UR, c[bank][UR + offset] from Ocarina of Time's compute programs.
+    // Arbitrary distinct registers, banks and byte offsets, including repeated source/offset
+    // with a different destination. The expected Maxwell words are assembled separately.
     const std::array cases{
-        Case{{{0x11047abb, 0x01400000, 0x08000400, 0x000fe400}}, 220, 233, 0x00, 5, 2},
-        Case{{{0x06077abb, 0x01002080, 0x08000000, 0x000fe400}}, 223, 222, 0x82, 4, 0},
-        Case{{{0x0d047abb, 0x014000c0, 0x08000000, 0x000fe400}}, 220, 229, 0x03, 5, 0},
-        Case{{{0x06087abb, 0x01002080, 0x08000000, 0x000fe400}}, 224, 222, 0x82, 4, 0},
+        Case{UniformLoad(true, 2, 9, 2, 0x24, 2), 218, 225, 0x24, 2, 2},
+        Case{UniformLoad(true, 11, 1, 7, 0x15b, 0), 227, 217, 0x15b, 7, 0},
+        Case{UniformLoad(true, 8, 5, 3, 0x0d, 0), 224, 221, 0x0d, 3, 0},
+        Case{UniformLoad(true, 16, 1, 7, 0x15b, 0), 232, 217, 0x15b, 7, 0},
     };
     for (const Case& test : cases) {
         CAPTURE(test.instruction.words[0]);
@@ -1113,42 +1307,44 @@ TEST_CASE("Ocarina indexed uniform constant loads keep their U8 and U16 widths",
               (0xef90000000070000ULL | test.target | (test.index << 8) | (test.offset << 20) |
                (test.bank << 36) | (test.width << 48)));
     }
-    // @UP0 with an index register and offset -1: the guard moves, the signed offset stays.
-    const Instruction negative{{0x0f070abb, 0x013fffc0, 0x08000000, 0x000fe400}};
+    // @UP3 with an index register and offset -3: the guard moves, the signed offset stays.
+    const Instruction negative = UniformLoad(true, 13, 4, 9, 0xfffd, 0, 3);
     const auto guarded = LowerToMaxwell(std::array{negative, Exit});
     INFO(guarded.error);
     REQUIRE(guarded);
-    const u64 load = 0xef90000000060000ULL | 223 | (u64{231} << 8) | (u64{0xffff} << 20) | (u64{4} << 36);
+    const u64 load = 0xef90000000030000ULL | 229 | (u64{220} << 8) |
+                     (u64{0xfffd} << 20) | (u64{9} << 36);
     CHECK(std::ranges::find(guarded.instructions, load) != guarded.instructions.end());
-    const u64 transfer = 0x38f0000000070000ULL | (u64{239} << 8) | (u64{1U << 6} << 20);
+    const u64 transfer = 0x38f0000000070000ULL | (u64{239} << 8) | (u64{1U << 3} << 20);
     CHECK(std::ranges::find(guarded.instructions, transfer) != guarded.instructions.end());
-    // An indexed load can have any immediate: the register can align it (ULDC.32 at UR15 + 0x29).
-    const Instruction indexed_word{{0x0f077abb, 0x01000a40, 0x08000800, 0x000fc600}};
+    // An indexed load can have any immediate: the register can align UR7 + 0x37.
+    const Instruction indexed_word = UniformLoad(true, 15, 7, 6, 0x37, 4);
     const auto word = LowerToMaxwell(std::array{indexed_word, Exit});
     INFO(word.error);
     REQUIRE(word);
     CHECK(word.instructions[word.source_instruction_offsets[0]] ==
-          (0xef90000000070000ULL | 223 | (u64{231} << 8) | (u64{0x29} << 20) | (u64{4} << 36) |
+          (0xef90000000070000ULL | 231 | (u64{223} << 8) | (u64{0x37} << 20) | (u64{6} << 36) |
            (u64{4} << 48)));
     // A direct U16 load needs an even offset, and a direct subword load the short offset range.
-    Instruction misaligned{{0x00077ab9, 0x01000040, 0x00000400, 0x000fe400}};
+    const Instruction misaligned = UniformLoad(false, 20, 0, 8, 3, 2);
     CHECK_FALSE(LowerToMaxwell(std::array{misaligned, Exit}));
-    Instruction far{{0x00077ab9, 0x01200000, 0x00000000, 0x000fe400}};
+    const Instruction far = UniformLoad(false, 21, 0, 1, 0x8007, 0);
     CHECK_FALSE(LowerToMaxwell(std::array{far, Exit}));
 }
 
-TEST_CASE("Ocarina uniform immediate add carries through any UP and preserves the rest",
+TEST_CASE("Synthetic uniform immediate add carries through any UP and preserves the rest",
           "[video_core][ampere][fast_fusion_logged]") {
-    // UIADD3 UR12, UR12, 0x10 with the carry out in UP4, from Ocarina of Time.
-    constexpr Instruction captured{{0x0c0c7890, 0x00000010, 0x0ff9e03f, 0x000fc400}};
-    constexpr u32 ur12 = 228;
-    constexpr std::array values{0U, 1U, 0xffffffefU, 0xfffffff0U, 0xffffffffU};
+    // UIADD3 UR18, UR18, 0x35. Rc=URZ, first carry destination [81:83],
+    // second carry destination [84:86] disabled, carry input [87:90], .X [74].
+    constexpr u32 target = 216 + 18, immediate = 0x35;
+    constexpr std::array values{0U, 1U, 0xffffffcaU, 0xffffffcbU, 0xffffffffU};
     for (u32 up = 0; up < 7; ++up) {
         const u32 mask = 1U << (6 - up);
-        auto carry_out = captured;
-        carry_out.words[2] = (carry_out.words[2] & ~(7U << 17)) | (up << 17);
-        auto carry_in = captured;
-        carry_in.words[2] = (carry_in.words[2] & ~(0xfU << 23)) | (7U << 17) | (1U << 10) | (up << 23);
+        const u32 shared_controls = 63U | (15U << 13) | (7U << 20) | (1U << 27);
+        const auto carry_out = UniformArithmetic(
+            0x890, 18, 18, immediate, shared_controls | (up << 17) | (15U << 23));
+        const auto carry_in = UniformArithmetic(
+            0x890, 18, 18, immediate, shared_controls | (7U << 17) | (1U << 10) | (up << 23));
         const auto lowered_out = LowerToMaxwell(std::array{carry_out, Exit});
         const auto lowered_in = LowerToMaxwell(std::array{carry_in, Exit});
         CAPTURE(up);
@@ -1159,24 +1355,24 @@ TEST_CASE("Ocarina uniform immediate add carries through any UP and preserves th
         LoggedMachine machine;
         for (u32 a : values) {
             for (u32 packed : {0x12340015U, 0x1234006aU}) {
-                machine.registers[0][ur12] = a;
+                machine.registers[0][target] = a;
                 machine.registers[0][239] = packed;
                 const auto before = machine.registers[0];
                 const auto predicates = machine.predicates;
                 machine.Run(lowered_out.instructions);
                 CAPTURE(a, packed);
-                const bool carried = u64{a} + 0x10 > 0xffffffffULL;
+                const bool carried = u64{a} + immediate > 0xffffffffULL;
                 for (u32 reg = 0; reg < 246; ++reg)
                     CHECK(machine.registers[0][reg] ==
-                          (reg == ur12  ? a + 0x10U
+                          (reg == target ? a + immediate
                            : reg == 239 ? (packed & ~mask) | (carried ? mask : 0)
                                         : before[reg]));
                 CHECK(machine.predicates == predicates);
 
-                machine.registers[0][ur12] = a;
+                machine.registers[0][target] = a;
                 machine.registers[0][239] = packed;
                 machine.Run(lowered_in.instructions);
-                CHECK(machine.registers[0][ur12] == a + 0x10U + ((packed & mask) != 0 ? 1U : 0U));
+                CHECK(machine.registers[0][target] == a + immediate + ((packed & mask) != 0 ? 1U : 0U));
                 CHECK(machine.registers[0][239] == packed);
                 CHECK(machine.predicates == predicates);
             }
@@ -1185,23 +1381,24 @@ TEST_CASE("Ocarina uniform immediate add carries through any UP and preserves th
 }
 
 TEST_CASE(
-    "Fast Fusion captured half conversion keeps production IR conversions finite and in range",
+    "Ampere half conversion keeps production IR conversions finite and in range",
     "[video_core][ampere][fast_fusion_logged]") {
-    const auto lowered = LowerToMaxwell(std::array{CapturedHalfConversion, Exit});
+    const auto lowered = LowerToMaxwell(std::array{HalfConversion, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     HalfIR translation{lowered.instructions};
     for (u32 half = 0; half < 65536; ++half) {
         CAPTURE(half);
-        CHECK(translation.Run(0xfc000000U | half) == RoundedHalfInteger(u16(half)));
+        CHECK(translation.Run(0xfc000000U | half, HalfSource, HalfDestination) ==
+              RoundedHalfInteger(u16(half)));
     }
 }
 
 TEST_CASE(
-    "Fast Fusion captured half conversion preserves its execution predicate and other registers",
+    "Ampere half conversion preserves its execution predicate and other registers",
     "[video_core][ampere][fast_fusion_logged]") {
     for (u32 guard : {0U, 7U, 8U}) {
-        auto instruction = CapturedHalfConversion;
+        auto instruction = HalfConversion;
         instruction.words[0] = (instruction.words[0] & ~0xf000U) | (guard << 12);
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         INFO(lowered.error);
@@ -1209,7 +1406,7 @@ TEST_CASE(
         for (const bool condition : {false, true}) {
             for (u32 half : {0x0001U, 0x3e00U, 0xbe00U, 0x7bffU, 0x7c00U, 0xfc00U, 0x7e00U}) {
                 LoggedMachine machine;
-                machine.registers[0][2] = 0xfc000000U | half;
+                machine.registers[0][HalfSource] = 0xfc000000U | half;
                 machine.predicates[0] = condition;
                 const auto before = machine.registers[0];
                 const auto predicates = machine.predicates;
@@ -1217,16 +1414,17 @@ TEST_CASE(
                 machine.Run(lowered.instructions);
                 for (u32 reg = 0; reg < 246; ++reg)
                     CHECK(machine.registers[0][reg] ==
-                          (reg == 8 && active ? RoundedHalfInteger(u16(half)) : before[reg]));
+                          (reg == HalfDestination && active ? RoundedHalfInteger(u16(half))
+                                                            : before[reg]));
                 CHECK(machine.predicates == predicates);
             }
         }
     }
 }
 
-TEST_CASE("Fast Fusion captured upper half conversion ignores the poisoned lower half",
+TEST_CASE("Ampere upper half conversion ignores the poisoned lower half",
           "[video_core][ampere][fast_fusion_logged]") {
-    auto instruction = CapturedHalfConversion;
+    auto instruction = HalfConversion;
     instruction.words[1] |= 1U << 28;
     const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
     INFO(lowered.error);
@@ -1234,14 +1432,15 @@ TEST_CASE("Fast Fusion captured upper half conversion ignores the poisoned lower
     HalfIR translation{lowered.instructions};
     for (u32 half = 0; half < 65536; ++half) {
         CAPTURE(half);
-        CHECK(translation.Run((half << 16) | 0xfc00U) == RoundedHalfInteger(u16(half)));
+        CHECK(translation.Run((half << 16) | 0xfc00U, HalfSource, HalfDestination) ==
+              RoundedHalfInteger(u16(half)));
     }
 }
 
-TEST_CASE("Fast Fusion captured half floor converts every half pattern safely",
+TEST_CASE("Ampere half floor converts every half pattern safely",
           "[video_core][ampere][fast_fusion_logged]") {
     for (const bool high : {false, true}) {
-        auto instruction = CapturedHalfFloor;
+        auto instruction = HalfFloor;
         instruction.words[1] |= u32{high} << 28;
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         INFO(lowered.error);
@@ -1252,26 +1451,28 @@ TEST_CASE("Fast Fusion captured half floor converts every half pattern safely",
             const u32 expected = (half & 0x7c00) == 0x7c00
                                      ? RoundedHalfInteger(u16(half))
                                      : u32(s32(std::floor(HalfValue(u16(half)))));
-            CHECK(translation.Run(high ? (half << 16) | 0xfc00U : 0xfc000000U | half) == expected);
+            CHECK(translation.Run(high ? (half << 16) | 0xfc00U : 0xfc000000U | half,
+                                  FloorSource, FloorDestination) == expected);
         }
     }
 }
 
-TEST_CASE("Fast Fusion captured register comparison reads the high guest shadow",
+TEST_CASE("Ampere register comparison reads the high guest shadow",
           "[video_core][ampere][fast_fusion_logged]") {
-    const auto lowered = LowerToMaxwell(std::array{UniformBank, CapturedRegisterCompare, Exit});
+    const auto lowered = LowerToMaxwell(std::array{UniformBank, RegisterCompare, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     for (u32 input : {0U, 1U, 0x80000000U, 0xffffffffU}) {
         LoggedMachine machine;
-        machine.registers[1][242] = input;
+        machine.registers[1][NonzeroShadow] = input;
         const auto before = machine.registers;
         const auto predicates = machine.predicates;
         machine.Run(lowered.instructions);
         for (u32 reg = 0; reg < 255; ++reg) {
             if (reg < 246)
                 CHECK(machine.registers[0][reg] ==
-                      (reg == 216 ? machine.Constant(0x100, 4) : before[0][reg]));
+                      (reg == BankSeedMirror ? machine.Constant(BankSeedOffset, 4)
+                                             : before[0][reg]));
             CHECK(machine.registers[1][reg] == before[1][reg]);
         }
         for (u32 p = 0; p < 8; ++p)
@@ -1279,9 +1480,9 @@ TEST_CASE("Fast Fusion captured register comparison reads the high guest shadow"
     }
 }
 
-TEST_CASE("Fast Fusion captured integer to half conversion rounds ties and clears the upper half",
+TEST_CASE("Ampere integer to half conversion rounds ties and clears the upper half",
           "[video_core][ampere][fast_fusion_logged]") {
-    const auto lowered = LowerToMaxwell(std::array{CapturedIntegerHalf, Exit});
+    const auto lowered = LowerToMaxwell(std::array{SignedWordToHalf, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     HalfIR translation{lowered.instructions};
@@ -1307,7 +1508,7 @@ TEST_CASE("Fast Fusion captured integer to half conversion rounds ties and clear
         }
         expected |= input < 0 ? 0x8000U : 0U;
         CAPTURE(input);
-        CHECK(translation.Run(u32(input), 10, 36) == expected);
+        CHECK(translation.Run(u32(input), IntegerSource, IntegerHalfDestination) == expected);
     };
     for (s32 input = -65536; input <= 65536; ++input)
         check(input);
@@ -1317,28 +1518,32 @@ TEST_CASE("Fast Fusion captured integer to half conversion rounds ties and clear
 }
 
 TEST_CASE(
-    "Fast Fusion captured scoped load uses the complete register pointer not its policy descriptor",
+    "Ampere scoped load uses the full register pointer despite a bound policy descriptor",
     "[video_core][ampere][fast_fusion_logged]") {
     for (s32 offset : {-32, 0, 32}) {
-        auto instruction = CapturedScopedLoad;
+        auto instruction = ScopedLoad;
         instruction.words[1] |= u32(offset) << 8;
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
         LoggedMachine machine;
-        machine.registers[0][8] = 0x10;
-        machine.registers[0][9] = 4;
-        machine.registers[0][228] = 0xfedcba98;
-        machine.registers[0][229] = 0x76543210;
+        constexpr u64 AddressBase = 0x600000028ULL;
+        constexpr u32 Policy = UniformMirror + ScopedPolicyUniform;
+        machine.registers[0][ScopedAddress] = static_cast<u32>(AddressBase);
+        machine.registers[0][ScopedAddress + 1] = static_cast<u32>(AddressBase >> 32);
+        machine.registers[0][Policy] = 0x6ba871de;
+        machine.registers[0][Policy + 1] = 0x4320f5c6;
         const auto before = machine.registers[0];
         const auto predicates = machine.predicates;
         for (u32 i = 0; i < 4; ++i)
-            machine.global[0x400000010ULL + offset + i * 4] = 0xfeed0000U + i;
+            machine.global[AddressBase + offset + i * 4] = 0xfeed0000U + i;
         machine.Run(lowered.instructions);
         CHECK(machine.reads == 4);
         for (u32 reg = 0; reg < 246; ++reg)
             CHECK(machine.registers[0][reg] ==
-                  (reg >= 8 && reg < 12 ? 0xfeed0000U + reg - 8 : before[reg]));
+                  (reg >= ScopedAddress && reg < ScopedAddress + 4
+                       ? 0xfeed0000U + reg - ScopedAddress
+                       : before[reg]));
         CHECK(machine.predicates == predicates);
     }
 }
@@ -1346,9 +1551,9 @@ TEST_CASE(
 TEST_CASE("Fast Fusion scoped load marks production IR coherent without changing weak descriptors",
           "[video_core][ampere][fast_fusion_logged]") {
     for (const bool scoped : {false, true}) {
-        auto instruction = CapturedScopedLoad;
+        auto instruction = ScopedLoad;
         if (!scoped)
-            instruction.words[2] = 0x0c1e1d00;
+            instruction.words[2] = WeakDescriptorLoad;
         const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
@@ -1379,9 +1584,9 @@ TEST_CASE("Fast Fusion scoped load marks production IR coherent without changing
     }
 }
 
-TEST_CASE("Fast Fusion captured half rounds preserve special values and clear the upper half",
+TEST_CASE("Ampere half rounds preserve special values and clear the upper half",
           "[video_core][ampere][fast_fusion_logged]") {
-    for (const auto instruction : {CapturedHalfTrunc, CapturedHalfRound}) {
+    for (const auto instruction : {HalfTrunc, HalfRound}) {
         DYNAMIC_SECTION("mode " << instruction.words[2]) {
             for (const bool high : {false, true}) {
                 auto selected = instruction;
@@ -1402,7 +1607,7 @@ TEST_CASE("Fast Fusion captured half rounds preserve special values and clear th
                         else
                             CHECK(output == half);
                     } else {
-                        const f64 expected = instruction.words[2] == 0x0010c800
+                        const f64 expected = instruction.words[2] == HalfRoundTowardZero
                                                  ? std::trunc(HalfValue(u16(half)))
                                                  : f64(s32(RoundedHalfInteger(u16(half))));
                         CHECK(HalfValue(u16(output)) == expected);
@@ -1415,9 +1620,9 @@ TEST_CASE("Fast Fusion captured half rounds preserve special values and clear th
 }
 
 TEST_CASE(
-    "Fast Fusion captured zero-high uniform pack preserves half rounding and exceptional values",
+    "Ampere zero-high uniform pack preserves half rounding and exceptional values",
     "[video_core][ampere][fast_fusion_logged]") {
-    const auto lowered = LowerToMaxwell(std::array{CapturedUniformPack, Exit});
+    const auto lowered = LowerToMaxwell(std::array{UniformPack, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     HalfIR translation{lowered.instructions};
@@ -1425,7 +1630,8 @@ TEST_CASE(
     bool repaired_output = false;
     for (const auto& inst : translation.block.Instructions()) {
         nan_checks += inst.GetOpcode() == IR::Opcode::FPIsNan32;
-        if (inst.GetOpcode() == IR::Opcode::SetRegister && static_cast<u32>(inst.Arg(0).Reg()) == 7)
+        if (inst.GetOpcode() == IR::Opcode::SetRegister &&
+            static_cast<u32>(inst.Arg(0).Reg()) == PackDestination)
             repaired_output = inst.Arg(1).Inst()->GetOpcode() == IR::Opcode::BitwiseOr32;
     }
     CHECK(nan_checks > 0);
@@ -1439,18 +1645,18 @@ TEST_CASE(
           std::pair{0xb3800000U, 0x8001U}, std::pair{0xb3000000U, 0x8000U},
           std::pair{0x7f800000U, 0x7c00U}, std::pair{0xff800000U, 0xfc00U}}) {
         CAPTURE(input);
-        CHECK(translation.Run(input, 224, 7) == expected);
+        CHECK(translation.Run(input, UniformMirror + PackUniform, PackDestination) == expected);
     }
     for (u32 input : {0x7fc00000U, 0xffc12345U, 0x7f800001U}) {
-        const u32 output = translation.Run(input, 224, 7);
+        const u32 output = translation.Run(input, UniformMirror + PackUniform, PackDestination);
         CHECK((output >> 16) == 0);
         CHECK(std::isnan(HalfValue(u16(output))));
     }
 }
 
-TEST_CASE("Fast Fusion captured signed integer to float rounds toward positive infinity",
+TEST_CASE("Ampere signed integer to float rounds toward positive infinity",
           "[video_core][ampere][fast_fusion_logged]") {
-    const auto lowered = LowerToMaxwell(std::array{CapturedFloatUp, Exit});
+    const auto lowered = LowerToMaxwell(std::array{FloatUp, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     HalfIR translation{lowered.instructions};
@@ -1477,20 +1683,21 @@ TEST_CASE("Fast Fusion captured signed integer to float rounds toward positive i
           std::pair{(std::numeric_limits<s32>::min)(), 0xcf000000U},
           std::pair{(std::numeric_limits<s32>::max)(), 0x4f000000U}}) {
         CAPTURE(input);
-        CHECK(translation.Run(u32(input), 6, 14) == expected);
+        CHECK(translation.Run(u32(input), FloatSource, FloatDestination) == expected);
     }
 }
 
-TEST_CASE("Fast Fusion captured immediate unsigned conversions preserve rounding and predicates",
+TEST_CASE("Ampere immediate unsigned conversions preserve rounding and predicates",
           "[video_core][ampere][fast_fusion_logged]") {
-    for (const auto original : {CapturedImmediateFloatUp, CapturedImmediatePackedFloatTrunc}) {
+    for (const auto original : {ImmediateFloatUp, ImmediateFloatTrunc}) {
         const bool round_up = original.Bits(0, 12) == 0x906;
-        const auto captured = LowerToMaxwell(std::array{original, Exit});
-        INFO(captured.error);
-        REQUIRE(captured);
-        REQUIRE(captured.instructions.size() == 2);
-        CHECK(captured.instructions[0] ==
-              (round_up ? 0x010420000007f007ULL : 0x010438000007f004ULL));
+        const auto baseline = LowerToMaxwell(std::array{original, Exit});
+        INFO(baseline.error);
+        REQUIRE(baseline);
+        REQUIRE(baseline.instructions.size() == 2);
+        const u32 exact_float = round_up ? 0x42140000U : 0x43820000U;
+        CHECK(baseline.instructions[0] ==
+              (0x010000000007f000ULL | (u64{exact_float} << 20) | original.Bits(16, 8)));
         for (const auto values :
              {std::array{0U, 0x00000000U, 0x00000000U}, std::array{1U, 0x3f800000U, 0x3f800000U},
               std::array{32U, 0x42000000U, 0x42000000U},
@@ -1546,8 +1753,7 @@ TEST_CASE("Fast Fusion captured immediate unsigned conversions preserve rounding
                 HalfIR translation{modified.instructions};
                 REQUIRE_FALSE(translation.block.Instructions().empty());
                 if (bit == 74) {
-                    CHECK(translation.Run(0, 0, original.Bits(16, 8)) ==
-                          (round_up ? 0x42000000U : 0x43800000U));
+                    CHECK(translation.Run(0, 0, original.Bits(16, 8)) == exact_float);
                 }
             } else {
                 CHECK_FALSE(modified);
@@ -1567,7 +1773,7 @@ TEST_CASE("Fast Fusion nonadjacent call links require a closed write-safe window
         {{0x08087227, 3, 0x078e00ff, 0}},
         {{0x00007944, 0x10, 0x03c00000, 0}},
         Exit,
-        CapturedImmediatePackedFloatTrunc,
+        ImmediateFloatTrunc,
         {{0x00047202, 9, 0xf00, 0}},
         {{0x04007950, 0xffffff90, 0x03c3ffff, 0}},
     }};
@@ -1606,7 +1812,8 @@ TEST_CASE("Fast Fusion nonadjacent call links require a closed write-safe window
     }
     for (const u32 site : {1U, 4U}) {
         auto unknown = original;
-        unknown[site] = Instruction{{0x02027209, 0x40000003, 0x07810200, 0}};
+        // FMNMX with a write width outside the link proof's understood opcodes.
+        unknown[site] = FixtureInstruction(0x209, 21, 26, 30, SourceTrue);
         const auto rejected = LowerToMaxwell(unknown);
         CHECK_FALSE(rejected);
         CHECK(rejected.error == "native call linkage mode");
@@ -1649,7 +1856,7 @@ TEST_CASE("Fast Fusion bounded callees reject branch and fallthrough entry",
         {{0x08087227, 3, 0x078e00ff, 0}},
         {{0x00007944, 0x10, 0x03c00000, 0}},
         Exit,
-        CapturedImmediatePackedFloatTrunc,
+        ImmediateFloatTrunc,
         {{0x00047202, 9, 0xf00, 0}},
         {{0x04007950, 0xffffff80, 0x03c3ffff, 0}},
     }};
@@ -1660,7 +1867,7 @@ TEST_CASE("Fast Fusion bounded callees reject branch and fallthrough entry",
         {{0x00007944, 0x20, 0x03c00000, 0}},
         Exit,
         {{0x00007918, 0, 0, 0}},
-        CapturedImmediatePackedFloatTrunc,
+        ImmediateFloatTrunc,
         {{0x00047202, 9, 0xf00, 0}},
         {{0x04007950, 0xffffff70, 0x03c3ffff, 0}},
     }};
@@ -1689,7 +1896,7 @@ TEST_CASE("Fast Fusion dead call intervals preserve source PCs and never accept 
         {{0x00007944, 0x50, 0x03c00000, 0}},
         {{0x00007918, 0, 0, 0}},
         Exit,
-        CapturedImmediatePackedFloatTrunc,
+        ImmediateFloatTrunc,
         {{0x00047202, 9, 0xf00, 0}},
         {{0x04007950, 0xffffff50, 0x03c3ffff, 0}},
         warp_sync,
@@ -1728,22 +1935,23 @@ TEST_CASE("Fast Fusion dead call intervals preserve source PCs and never accept 
     CHECK(reachable.error == "unsupported native opcode");
 }
 
-TEST_CASE("Fast Fusion captured register-lane shuffle preserves modes masks and predicates",
+TEST_CASE("Ampere register-lane shuffle preserves modes, masks and predicates",
           "[video_core][ampere][fast_fusion_logged]") {
-    const auto captured = LowerToMaxwell(std::array{CapturedShuffleDown, Exit});
-    INFO(captured.error);
-    REQUIRE(captured);
-    REQUIRE(captured.instructions.size() == 2);
-    CHECK(captured.instructions[0] == 0xef17007ca0570007ULL);
+    const auto baseline = LowerToMaxwell(std::array{ShuffleDown, Exit});
+    INFO(baseline.error);
+    REQUIRE(baseline);
+    REQUIRE(baseline.instructions.size() == 2);
+    CHECK(baseline.instructions[0] ==
+          (0xef100000a0070000ULL | (u64{ShufflePredicate} << 48) | (u64{ShuffleMask} << 34) |
+           (u64{ShuffleLane} << 20) | (u64{ShuffleSource} << 8) | ShuffleDestination));
     const std::array operations{IR::Opcode::ShuffleIndex, IR::Opcode::ShuffleUp,
                                 IR::Opcode::ShuffleDown, IR::Opcode::ShuffleButterfly};
     for (u32 mode = 0; mode < operations.size(); ++mode) {
         for (u32 guard : {3U, 7U, 11U}) {
             for (u32 mask : {0x1fU, 0x1c03U}) {
-                auto instruction = CapturedShuffleDown;
+                auto instruction = ShuffleDown;
                 instruction.words[0] = (instruction.words[0] & ~0xf000U) | (guard << 12);
-                instruction.words[1] = 5U | (mask << 8) | (mode << 26);
-                instruction.words[2] = 2U << 17;
+                instruction.words[1] = ShuffleLane | (mask << 8) | (mode << 26);
                 const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
                 INFO(lowered.error);
                 REQUIRE(lowered);
@@ -1765,7 +1973,7 @@ TEST_CASE("Fast Fusion captured register-lane shuffle preserves modes masks and 
                             REQUIRE(inst.Arg(operand).Inst()->GetOpcode() ==
                                     IR::Opcode::GetRegister);
                             CHECK(static_cast<u32>(inst.Arg(operand).Inst()->Arg(0).Reg()) ==
-                                  (operand ? 5U : 0U));
+                                  (operand ? ShuffleLane : ShuffleSource));
                         }
                         for (u32 operand = 2; operand < 4; ++operand) {
                             const auto& extract = *inst.Arg(operand).Inst();
@@ -1776,13 +1984,13 @@ TEST_CASE("Fast Fusion captured register-lane shuffle preserves modes masks and 
                         }
                     } else if (inst.GetOpcode() == IR::Opcode::SetPred) {
                         ++predicate_writes;
-                        CHECK(inst.Arg(0).Pred() == IR::Pred::P2);
+                        CHECK(inst.Arg(0).Pred() == static_cast<IR::Pred>(ShufflePredicate));
                         const auto& bounds = *inst.Arg(1).Inst();
                         REQUIRE(bounds.GetOpcode() == IR::Opcode::GetInBoundsFromOp);
                         CHECK(bounds.Arg(0).Inst() == shuffle);
                     } else if (inst.GetOpcode() == IR::Opcode::SetRegister) {
                         ++register_writes;
-                        CHECK(inst.Arg(0).Reg() == static_cast<IR::Reg>(7));
+                        CHECK(inst.Arg(0).Reg() == static_cast<IR::Reg>(ShuffleDestination));
                         CHECK(inst.Arg(1).Inst() == shuffle);
                     }
                 }
@@ -1794,30 +2002,30 @@ TEST_CASE("Fast Fusion captured register-lane shuffle preserves modes masks and 
     }
     for (u32 bit : {53U, 54U, 55U, 56U, 57U, 60U, 61U, 62U, 63U, 64U, 72U, 80U, 84U, 91U, 96U, 104U,
                     126U, 127U}) {
-        auto invalid = CapturedShuffleDown;
+        auto invalid = ShuffleDown;
         invalid.words[bit / 32] |= 1U << (bit % 32);
         CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
     }
     for (u32 bit : {16U, 24U, 32U}) {
-        auto scratch = CapturedShuffleDown;
+        auto scratch = ShuffleDown;
         scratch.words[bit / 32] =
             (scratch.words[bit / 32] & ~(255U << (bit % 32))) | (250U << (bit % 32));
         CHECK_FALSE(LowerToMaxwell(std::array{scratch, Exit}));
         CHECK_FALSE(LowerToMaxwell(std::array{UniformBank, scratch, Exit}));
     }
-    auto mirrored_lane = CapturedShuffleDown;
+    auto mirrored_lane = ShuffleDown;
     mirrored_lane.words[1] = (mirrored_lane.words[1] & ~255U) | 224U;
     CHECK_FALSE(LowerToMaxwell(std::array{UniformBank, mirrored_lane, Exit}));
     for (u32 bit : {16U, 24U, 32U}) {
-        auto zero_register = CapturedShuffleDown;
+        auto zero_register = ShuffleDown;
         zero_register.words[bit / 32] |= 255U << (bit % 32);
         CHECK(LowerToMaxwell(std::array{zero_register, Exit}));
     }
 }
 
-TEST_CASE("Fast Fusion captured immediate select shadows only its register operands",
+TEST_CASE("Ampere immediate select shadows only its register operands",
           "[video_core][ampere][fast_fusion_logged]") {
-    const auto lowered = LowerToMaxwell(std::array{UniformBank, CapturedImmediateSelect, Exit});
+    const auto lowered = LowerToMaxwell(std::array{UniformBank, ImmediateSelect, Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     for (const bool condition : {false, true}) {
@@ -1829,32 +2037,40 @@ TEST_CASE("Fast Fusion captured immediate select shadows only its register opera
         for (u32 reg = 0; reg < 255; ++reg) {
             if (reg < 246)
                 CHECK(machine.registers[0][reg] ==
-                      (reg == 216 ? machine.Constant(0x100, 4) : before[0][reg]));
+                      (reg == BankSeedMirror ? machine.Constant(BankSeedOffset, 4)
+                                             : before[0][reg]));
             CHECK(machine.registers[1][reg] ==
-                  (reg == 234 ? (condition ? 8U : 0U) : before[1][reg]));
+                  (reg == ImmediateSelectShadow ? (condition ? SelectImmediate : 0U)
+                                                : before[1][reg]));
         }
         CHECK(machine.predicates == predicates);
     }
 }
 
 TEST_CASE(
-    "Fast Fusion captured extended uniform adds consume both UP inputs without changing predicates",
+    "Ampere extended uniform adds consume both UP inputs without changing predicates",
     "[video_core][ampere][fast_fusion_logged]") {
-    for (const auto instruction : {CapturedExtendedCarry, CapturedExtendedTwoCarries}) {
+    for (const auto instruction : {UniformExtendedCarry, UniformExtendedTwoCarries}) {
         DYNAMIC_SECTION("mode " << instruction.words[2]) {
             const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
             INFO(lowered.error);
             REQUIRE(lowered);
+            const u32 destination = UniformMirror + instruction.Bits(16, 8);
+            const u32 source_a = UniformMirror + instruction.Bits(24, 8);
+            const u32 source_b = UniformMirror + instruction.Bits(32, 8);
+            const u32 source_c = instruction.Bits(64, 8);
             for (u32 packed = 0; packed < 128; ++packed) {
                 for (u32 a : {0U, 1U, 0x7fffffffU, 0x80000000U, 0xffffffffU}) {
                     for (u32 b : {0U, 1U, 0x7fffffffU, 0x80000000U, 0xffffffffU}) {
                         LoggedMachine machine;
-                        machine.registers[0][224] = a;
-                        machine.registers[0][instruction.words[1] == 7 ? 223 : 221] = b;
-                        machine.registers[0][239] = packed | 0xface0000U;
+                        machine.registers[0][source_a] = a;
+                        machine.registers[0][source_b] = b;
+                        machine.registers[0][UniformPredicates] = packed | 0xface0000U;
                         const auto before = machine.registers[0];
                         const auto predicates = machine.predicates;
-                        u32 expected = a + b + (instruction.words[1] == 5 ? before[223] : 0U);
+                        u32 expected =
+                            a + b + (source_c == ZeroUniform ? 0U
+                                                            : before[UniformMirror + source_c]);
                         for (u32 bit : {77U, 87U}) {
                             const u32 input = instruction.Bits(bit, 4), index = input & 7;
                             expected += (index == 7 || bool(packed & (1U << (6 - index)))) !=
@@ -1864,7 +2080,7 @@ TEST_CASE(
                         CAPTURE(a, b, packed);
                         for (u32 reg = 0; reg < 246; ++reg)
                             CHECK(machine.registers[0][reg] ==
-                                  (reg == 224 ? expected : before[reg]));
+                                  (reg == destination ? expected : before[reg]));
                         CHECK(machine.predicates == predicates);
                     }
                 }
@@ -1873,36 +2089,36 @@ TEST_CASE(
     }
 }
 
-TEST_CASE("Fast Fusion logged opcode support keeps nearby unsupported modes rejected",
+TEST_CASE("Ampere opcode support keeps nearby unsupported modes rejected",
           "[video_core][ampere][fast_fusion_logged]") {
     const auto reject = [](Instruction instruction, u32 bit) {
         instruction.words[2] ^= 1U << bit;
         CHECK_FALSE(LowerToMaxwell(std::array{UniformBank, instruction, Exit}));
     };
-    reject(LoggedMove, 12);
-    reject(LoggedZero, 12);
-    auto compare = LoggedCompare;
+    reject(ShadowMove, 12);
+    reject(ShadowZero, 12);
+    auto compare = ShadowCompare;
     compare.words[2] |= 0xc00U;
     CHECK_FALSE(LowerToMaxwell(std::array{UniformBank, compare, Exit}));
-    auto load = LoggedLoad;
+    auto load = ByteLoad;
     load.words[2] |= 0xe00U;
     CHECK_FALSE(LowerToMaxwell(std::array{load, Exit}));
-    reject(LoggedLoad, 27);
-    reject(LoggedMultiply, 10);
-    reject(LoggedMultiply, 17);
-    reject(CapturedMin, 10);
-    reject(CapturedSpecialZero, 16);
-    reject(CapturedMultiply, 10);
-    reject(CapturedHalfConversion, 27);
-    reject(CapturedHalfConversion, 9);
-    reject(CapturedHalfConversion, 12);
-    reject(CapturedHalfConversion, 15);
-    reject(CapturedHalfFloor, 9);
-    reject(CapturedHalfFloor, 12);
-    reject(CapturedIntegerHalf, 10);
-    reject(CapturedIntegerHalf, 14);
-    reject(CapturedFloatUp, 15);
-    for (const auto instruction : {CapturedHalfTrunc, CapturedHalfRound}) {
+    reject(ByteLoad, 27);
+    reject(UniformMultiply, 10);
+    reject(UniformMultiply, 17);
+    reject(ShadowMin, 10);
+    reject(ShadowPairZero, 16);
+    reject(ShadowMultiply, 10);
+    reject(HalfConversion, 27);
+    reject(HalfConversion, 9);
+    reject(HalfConversion, 12);
+    reject(HalfConversion, 15);
+    reject(HalfFloor, 9);
+    reject(HalfFloor, 12);
+    reject(SignedWordToHalf, 10);
+    reject(SignedWordToHalf, 14);
+    reject(FloatUp, 15);
+    for (const auto instruction : {HalfTrunc, HalfRound}) {
         reject(instruction, 14);
         auto modified = instruction;
         modified.words[1] |= 1U << 29;
@@ -1912,26 +2128,25 @@ TEST_CASE("Fast Fusion logged opcode support keeps nearby unsupported modes reje
         CHECK_FALSE(LowerToMaxwell(std::array{modified, Exit}));
     }
     for (u32 bit : {8U, 14U, 15U, 27U})
-        reject(CapturedUniformPack, bit);
-    auto uniform_pack = CapturedUniformPack;
+        reject(UniformPack, bit);
+    auto uniform_pack = UniformPack;
     uniform_pack.words[0] &= ~0xff000000U;
     CHECK_FALSE(LowerToMaxwell(std::array{uniform_pack, Exit}));
-    uniform_pack = CapturedUniformPack;
+    uniform_pack = UniformPack;
     uniform_pack.words[1] = 255;
     CHECK_FALSE(LowerToMaxwell(std::array{uniform_pack, Exit}));
     for (u32 bit : {2U, 3U, 9U, 10U, 11U, 13U, 14U, 15U, 16U, 26U})
-        reject(CapturedScopedLoad, bit);
-    auto scoped_load = CapturedScopedLoad;
+        reject(ScopedLoad, bit);
+    auto scoped_load = ScopedLoad;
     scoped_load.words[1] |= 1U << 6;
     CHECK_FALSE(LowerToMaxwell(std::array{scoped_load, Exit}));
-    scoped_load = CapturedScopedLoad;
-    scoped_load.words[1] = 13;
+    scoped_load = ScopedLoad;
+    scoped_load.words[1] = ScopedPolicyUniform + 1;
     CHECK_FALSE(LowerToMaxwell(std::array{scoped_load, Exit}));
-    scoped_load = CapturedScopedLoad;
+    scoped_load = ScopedLoad;
     scoped_load.words[0] += 1U << 16;
     CHECK_FALSE(LowerToMaxwell(std::array{scoped_load, Exit}));
-    for (const auto instruction :
-         {CapturedHalfConversion, CapturedHalfFloor, CapturedIntegerHalf}) {
+    for (const auto instruction : {HalfConversion, HalfFloor, SignedWordToHalf}) {
         auto modified = instruction;
         modified.words[0] |= 1U << 24;
         CHECK_FALSE(LowerToMaxwell(std::array{modified, Exit}));
@@ -1943,9 +2158,9 @@ TEST_CASE("Fast Fusion logged opcode support keeps nearby unsupported modes reje
         CHECK_FALSE(LowerToMaxwell(std::array{modified, Exit}));
     }
     for (u32 bit : {8U, 10U, 11U})
-        reject(CapturedTwoCarries, bit);
+        reject(UniformTwoCarries, bit);
     for (const auto instruction :
-         {CapturedCarry, CapturedTwoCarries, CapturedExtendedCarry, CapturedExtendedTwoCarries}) {
+         {UniformCarry, UniformTwoCarries, UniformExtendedCarry, UniformExtendedTwoCarries}) {
         for (u32 bit : {8U, 9U, 11U, 12U})
             reject(instruction, bit);
         auto guarded = instruction;
@@ -1955,18 +2170,19 @@ TEST_CASE("Fast Fusion logged opcode support keeps nearby unsupported modes reje
         modified.words[1] |= 1U << 31;
         CHECK_FALSE(LowerToMaxwell(std::array{modified, Exit}));
     }
-    auto duplicate_carry = CapturedTwoCarries;
-    duplicate_carry.words[2] &= ~(7U << 17);
+    auto duplicate_carry = UniformTwoCarries;
+    duplicate_carry.words[2] =
+        (duplicate_carry.words[2] & ~(7U << 17)) | (duplicate_carry.Bits(84, 3) << 17);
     CHECK_FALSE(LowerToMaxwell(std::array{duplicate_carry, Exit}));
-    auto predicates = CapturedPredicates;
+    auto predicates = ShadowPredicates;
     predicates.words[1] |= 0x80U;
     CHECK_FALSE(LowerToMaxwell(std::array{UniformBank, predicates, Exit}));
     for (u32 bit : {6U, 8U, 9U, 11U, 12U, 13U, 17U, 18U, 27U})
-        reject(LoggedCopy, bit);
-    auto copy = LoggedCopy;
+        reject(AsyncCopy, bit);
+    auto copy = AsyncCopy;
     copy.words[0] |= 1U << 24;
     CHECK_FALSE(LowerToMaxwell(std::array{copy, Exit}));
-    copy = LoggedCopy;
+    copy = AsyncCopy;
     copy.words[0] = (copy.words[0] & ~0xff000000U) | (246U << 24);
     CHECK_FALSE(LowerToMaxwell(std::array{copy, Exit}));
     const Instruction masked_wait{{0x0000791a, 0x00008001, 0, 0}};
@@ -1974,21 +2190,21 @@ TEST_CASE("Fast Fusion logged opcode support keeps nearby unsupported modes reje
     REQUIRE(ordered);
     REQUIRE(ordered.instructions.size() == 1);
     CHECK(ordered.instructions.front() == 0xe30000000007000fULL);
-    const auto copying = LowerToMaxwell(std::array{LoggedCopy, masked_wait, Exit});
+    const auto copying = LowerToMaxwell(std::array{AsyncCopy, masked_wait, Exit});
     REQUIRE(copying);
     CHECK(copying.instructions[copying.source_instruction_offsets[1]] == 0xef98000000070000ULL);
     CHECK(copying.source_instruction_offsets[2] == copying.source_instruction_offsets[1] + 1);
     auto invalid_wait = masked_wait;
     invalid_wait.words[1] |= 1U << 16;
     CHECK_FALSE(LowerToMaxwell(std::array{invalid_wait, Exit}));
-    CHECK_FALSE(Shader::Ampere::LowerToMaxwellWith(std::array{UniformBank, LoggedMove, Exit}, 2,
+    CHECK_FALSE(Shader::Ampere::LowerToMaxwellWith(std::array{UniformBank, ShadowMove, Exit}, 2,
                                                    false, false));
     for (u32 bit : {12U, 13U, 14U, 15U}) {
-        copy = LoggedCopy;
+        copy = AsyncCopy;
         copy.words[1] ^= 1U << bit;
         CHECK_FALSE(LowerToMaxwell(std::array{copy, Exit}));
     }
-    auto scratch = LoggedMove;
+    auto scratch = ShadowMove;
     scratch.words[0] = (scratch.words[0] & ~0xff0000U) | (246U << 16);
     CHECK_FALSE(LowerToMaxwell(std::array{scratch, Exit}));
 }

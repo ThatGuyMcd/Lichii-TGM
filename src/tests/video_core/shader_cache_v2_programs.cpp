@@ -33,6 +33,7 @@
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/stage.h"
 #include "tests/core/system_test_context.h"
+#include "tests/video_core/ampere_trap_fixture.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/gpu.h"
 #include "video_core/macro.h"
@@ -65,6 +66,7 @@ namespace {
 
 namespace V2 = VideoCommon::ShaderCacheV2;
 using Shader::Ampere::Instruction;
+using Shader::Ampere::Test::EncodeInstruction;
 using Shader::Ampere::TessellationStage;
 using namespace std::chrono_literals;
 
@@ -108,34 +110,26 @@ struct TestProgram {
     }
 };
 
-const Instruction ControlLoad{{0xff057321, 0x000018ff, 0x00009000, 0x000e6200}};
-const Instruction EvalLoad{{0xff057321, 0x000018ff, 0x00001000, 0x000e6200}};
+constexpr u32 PatchAttribute = 1U << 12, PatchOutput = 1U << 15;
+constexpr u32 PatchOffset = 0x2c, PatchOperand = 255U | (PatchOffset << 8);
+constexpr auto ControlLoad = EncodeInstruction(0x321, 23, 255, PatchOperand,
+                                               PatchAttribute | PatchOutput);
+constexpr auto EvalLoad = EncodeInstruction(0x321, 23, 255, PatchOperand, PatchAttribute);
 
-/// Guarded by bank 0 offset 0 being below 0x80000000 (ampere_trap_guards.cpp)
-const std::vector<Instruction> TrapProgram{{
-    {{0xff037624, 0, 0x078e00ff, 0}},
-    {{0x0300720c, 255, 0x03f06270, 0}},
-    {{0x0947, 16, 0x03800000, 0}},
-    {{0x795c, 4, 0x00300000, 0}},
-    Exit,
-}};
+namespace TrapFixture = Shader::Ampere::Test::Trap;
+const std::vector<Instruction> TrapProgram(TrapFixture::SingleProgram.begin(),
+                                           TrapFixture::SingleProgram.end());
+const std::vector<Instruction> ByteFill(TrapFixture::RectangleProgram.begin(),
+                                         TrapFixture::RectangleProgram.end());
 
-/// Fire Emblem's byte fill, two trap guards (ampere_trap_guards.cpp)
-const std::vector<Instruction> ByteFill{{
-    {{0xff017624, 0x0a00, 0x078e00ff, 0}},  {{0xff007a0c, 0x5f00, 0x03f05270, 0}},
-    {{0xff037624, 0x5b00, 0x078e00ff, 0}},  {{0xff007807, 1, 0x04000000, 0}},
-    {{0xff007a0c, 0x5f00, 0x03f05270, 0}},  {{0x03027a12, 0x5a00, 0x078efcff, 0}},
-    {{0xff007388, 0, 0, 0}},                {{0x0200780c, 0xffffffff, 0x04704670, 0}},
-    {{0x0947, 0x10, 0x03800000, 0}},        {{0x795c, 4, 0x00300000, 0}},
-    {{0x03007a10, 0x5d00, 0x07ffe0ff, 0}},  {{0xff027624, 0x5c00, 0x078e00ff, 0}},
-    {{0x7a0c, 0x5900, 0x03f04270, 0}},      {{0x02007a10, 0x5a00, 0x07ffe0ff, 0}},
-    {{0x7a0c, 0x5800, 0x04703270, 0}},      {{0xff007a0c, 0x5f00, 0x00702670, 0}},
-    {{0x0947, 0x10, 0x03800000, 0}},        {{0x795c, 4, 0x00300000, 0}},
-    Exit,
-}};
-
-/// Requires constant buffer 2 for its texture handles (ampere_fast_fusion.cpp)
-const Instruction Txd{{0x10047b6c, 0x20800c04, 0x041e0707, 0x00014800}};
+constexpr u32 TxdBinding = 6;
+constexpr u32 TxdDescriptorOffset = 0x5c;
+constexpr u32 TxdDimension2D = 1U << 29;
+constexpr u32 TxdMode = 0x001e0000 | (1U << 26);
+// Three enabled channels keep the third result in its own odd register.
+constexpr auto Txd = EncodeInstruction(
+    0xb6c, 12, 48, 22U | (TxdDescriptorOffset << 8) | (TxdBinding << 22) | TxdDimension2D,
+    TxdMode | (13U << 8) | 39U);
 
 const std::vector<Instruction> PlainProgram{{
     {{0x06007947, 0x10 | 3, 0x0b800000, 0}}, // BRA.CONV to the second EXIT
@@ -273,7 +267,7 @@ TEST_CASE("Shader cache v2: a program from its record is the code a lowering mak
     REQUIRE(fresh[2]->code != fresh[3]->code);
     REQUIRE(!fresh[6]->trap_prefix.empty());
     REQUIRE(!fresh[7]->trap_prefix.empty());
-    REQUIRE(fresh[8]->texture_bound == 2);
+    REQUIRE(fresh[8]->texture_bound == TxdBinding);
 
     WriteLog(file, records);
     const V2::LogFile log = V2::ReadLogFile(file);
@@ -529,7 +523,7 @@ TEST_CASE("Shader cache v2: compute environments take recorded programs with eve
     traps.inputs.native_code_address = fixture.Place(0x1000, traps.native);
     texture.inputs.native_code_address = fixture.Place(0x2000, texture.native);
     rejected.inputs.native_code_address = fixture.Place(0x3000, rejected.native);
-    fixture.SetConstant(0, 5); // The trap program's guard holds.
+    fixture.SetConstant(TrapFixture::SingleConstant, 5);
 
     // A session without records: the environment lowers.
     auto lowered_traps = fixture.Environment(traps.inputs.native_code_address, nullptr);
@@ -563,15 +557,15 @@ TEST_CASE("Shader cache v2: compute environments take recorded programs with eve
     RequireSameCode(*recorded_texture.LoweredNative(), *lowered_texture.LoweredNative());
     REQUIRE(recorded_traps.Analyze() == lowered_traps.Analyze());
     REQUIRE(recorded_texture.Analyze() == lowered_texture.Analyze());
-    REQUIRE(recorded_texture.TextureBoundBuffer() == 2);
+    REQUIRE(recorded_texture.TextureBoundBuffer() == TxdBinding);
     REQUIRE(recorded_traps.SourceSizeBytes() == lowered_traps.SourceSizeBytes());
     REQUIRE(recorded_texture.TakeProgramRecord() == nullptr);
 
     // Trap guards are checked against the constants of this dispatch.
-    fixture.SetConstant(0, 0x80000000);
+    fixture.SetConstant(TrapFixture::SingleConstant, 0x80000000);
     REQUIRE_THROWS_AS(fixture.Environment(traps.inputs.native_code_address, &cache),
                       Shader::Ampere::TrapGuardError);
-    fixture.SetConstant(0, 5);
+    fixture.SetConstant(TrapFixture::SingleConstant, 5);
 
     // Rejections by native key and by lowered hash still apply.
     REQUIRE(loaded(rejected) != nullptr);

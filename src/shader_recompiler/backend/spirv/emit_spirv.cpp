@@ -244,6 +244,10 @@ Id DefineMain(EmitContext& ctx, IR::Program& program) {
     const Id main{ctx.OpFunction(ctx.void_id, spv::FunctionControlMask::MaskNone, void_function)};
     for (IR::Block* const block : program.blocks) {
         block->SetDefinition(ctx.OpLabel());
+        // Definitions from an earlier emission belong to that module.
+        for (IR::Inst& inst : block->Instructions()) {
+            inst.SetDefinition(Id{});
+        }
     }
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         if (node.type == IR::AbstractSyntaxNode::Type::Block) {
@@ -724,28 +728,39 @@ void EmitPhiMove(EmitContext&) {
     throw LogicError("Unreachable instruction");
 }
 
-void EmitGetZeroFromOp(EmitContext&) {
-    throw LogicError("Unreachable instruction");
+namespace {
+void CheckPseudoOperation(IR::Inst* inst) {
+    // The parent emits the result before traversal reaches the pseudo-operation.
+    if (!Sirit::ValidId(inst->Definition<Id>())) {
+        const auto* parent = inst->Arg(0).TryInstRecursive();
+        throw LogicError("{} was not defined by its parent {}", inst->GetOpcode(),
+                         parent ? IR::NameOf(parent->GetOpcode()) : "(not an instruction)");
+    }
+}
+} // Anonymous namespace
+
+void EmitGetZeroFromOp(EmitContext&, IR::Inst* inst) {
+    CheckPseudoOperation(inst);
 }
 
-void EmitGetSignFromOp(EmitContext&) {
-    throw LogicError("Unreachable instruction");
+void EmitGetSignFromOp(EmitContext&, IR::Inst* inst) {
+    CheckPseudoOperation(inst);
 }
 
-void EmitGetCarryFromOp(EmitContext&) {
-    throw LogicError("Unreachable instruction");
+void EmitGetCarryFromOp(EmitContext&, IR::Inst* inst) {
+    CheckPseudoOperation(inst);
 }
 
-void EmitGetOverflowFromOp(EmitContext&) {
-    throw LogicError("Unreachable instruction");
+void EmitGetOverflowFromOp(EmitContext&, IR::Inst* inst) {
+    CheckPseudoOperation(inst);
 }
 
-void EmitGetSparseFromOp(EmitContext&) {
-    throw LogicError("Unreachable instruction");
+void EmitGetSparseFromOp(EmitContext&, IR::Inst* inst) {
+    CheckPseudoOperation(inst);
 }
 
-void EmitGetInBoundsFromOp(EmitContext&) {
-    throw LogicError("Unreachable instruction");
+void EmitGetInBoundsFromOp(EmitContext&, IR::Inst* inst) {
+    CheckPseudoOperation(inst);
 }
 
 } // namespace Shader::Backend::SPIRV

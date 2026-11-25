@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <spirv/unified1/spirv.hpp11>
 
 #include "shader_recompiler/backend/glasm/emit_glasm.h"
 #include "shader_recompiler/backend/glsl/emit_glsl.h"
@@ -45,6 +47,29 @@ public:
     }
     void Dump(u64, u64) override {}
 };
+
+TEST_CASE("3D gradient matching preserves an NDV sample with a constant shuffle input",
+          "[shader][maxwell][numeric]") {
+    Shader::ObjectPool<IR::Inst> pool{32};
+    IR::Block block{pool};
+    IR::IREmitter ir{block};
+    NumericEnvironment env;
+    IR::Program program;
+    program.blocks = {&block};
+    program.post_order_blocks = {&block};
+
+    const auto x = ir.GetAttribute(IR::Attribute::PositionX);
+    const auto inner = ir.FSwizzleAdd(ir.Imm32(1.0f), x, ir.Imm32(0U));
+    const auto outer = ir.FSwizzleAdd(inner, x, ir.Imm32(0U));
+    const auto coords = ir.CompositeConstruct(outer, x, x);
+    IR::TextureInstInfo info{};
+    info.type.Assign(Shader::TextureType::Color3D);
+    info.ndv_is_active.Assign(1);
+    const auto sample = ir.ImageSampleImplicitLod(ir.Imm32(0U), coords, {}, {}, {}, info);
+
+    Shader::Optimization::ConstantPropagationPass(env, program);
+    REQUIRE(sample.InstRecursive()->GetOpcode() == Opcode::BoundImageSampleImplicitLod);
+}
 
 f64 HalfValue(u16 bits) {
     const int exponent = (bits >> 10) & 31;
@@ -321,6 +346,99 @@ TEST_CASE("Maxwell unsigned I2F has backend-independent rounding", "[shader][max
             }
         }
     }
+}
+
+TEST_CASE("IADD overflow preserves both signed boundaries in shader output",
+          "[shader][maxwell][numeric_backend][iadd_overflow]") {
+    Shader::ObjectPool<IR::Inst> pool{32};
+    IR::Block block{pool};
+    IR::IREmitter ir{block};
+    const IR::U32 a = ir.LocalInvocationIdX();
+    const IR::U32 b = ir.LocalInvocationIdY();
+    const IR::U1 overflow = ir.GetOverflowFromOp(ir.IAdd(a, b));
+    const IR::U32 result = IR::U32{ir.Select(overflow, ir.Imm32(23), ir.Imm32(17))};
+    block.AppendNewInst(Opcode::WriteStorage32, {ir.Imm32(0), ir.Imm32(0), result});
+
+    IR::Program program;
+    program.stage = Shader::Stage::Compute;
+    program.workgroup_size = {8, 4, 1};
+    program.blocks = {&block};
+    program.post_order_blocks = {&block};
+    program.syntax_list = {{{.block = &block}, IR::AbstractSyntaxNode::Type::Block},
+                           {{}, IR::AbstractSyntaxNode::Type::Return}};
+    NumericEnvironment env;
+    Shader::Optimization::CollectShaderInfoPass(env, program);
+    program.info.used_storage_buffer_types = IR::Type::U32;
+    program.info.storage_buffers_descriptors = {{0, 0, 1, true}};
+    Shader::Profile profile{};
+    profile.supported_spirv = 0x00010400;
+    profile.min_ssbo_alignment = 16;
+    profile.unified_descriptor_binding = true;
+
+    const auto spirv = Shader::Backend::SPIRV::EmitSPIRV(profile, program);
+    const auto a_id = a.InstRecursive()->Definition<u32>();
+    const auto b_id = b.InstRecursive()->Definition<u32>();
+    const auto result_id = result.InstRecursive()->Definition<u32>();
+    using enum spv::Op;
+    std::unordered_map<u32, std::span<const u32>> definitions;
+    for (size_t offset = 5; offset < spirv.size();) {
+        const u32 count = spirv[offset] >> 16;
+        REQUIRE(count != 0);
+        REQUIRE(count <= spirv.size() - offset);
+        const auto inst = std::span{spirv}.subspan(offset, count);
+        switch (static_cast<spv::Op>(inst[0] & 0xffffU)) {
+        case OpConstant:
+        case OpISub:
+        case OpSGreaterThanEqual:
+        case OpSGreaterThan:
+        case OpSLessThan:
+        case OpSLessThanEqual:
+        case OpSelect:
+            definitions.emplace(inst[2], inst);
+            break;
+        default:
+            break;
+        }
+        offset += count;
+    }
+
+    constexpr s32 min = (std::numeric_limits<s32>::min)();
+    constexpr s32 max = (std::numeric_limits<s32>::max)();
+    constexpr std::array inputs{min, min + 1, min + 6, s32{-7}, s32{-1}, s32{0},
+                                s32{1}, s32{7}, max - 7, max - 6, max};
+    for (s32 lhs : inputs) {
+        for (s32 rhs : inputs) {
+            const auto evaluate = [&](auto&& self, u32 id) -> u32 {
+                if (id == a_id) {
+                    return std::bit_cast<u32>(lhs);
+                }
+                if (id == b_id) {
+                    return std::bit_cast<u32>(rhs);
+                }
+                const auto inst = definitions.at(id);
+                const auto arg = [&](size_t index) { return self(self, inst[index]); };
+                const auto signed_arg = [&](size_t index) { return std::bit_cast<s32>(arg(index)); };
+                switch (static_cast<spv::Op>(inst[0] & 0xffffU)) {
+                case OpConstant: return inst[3];
+                case OpISub: return arg(3) - arg(4);
+                case OpSGreaterThanEqual: return signed_arg(3) >= signed_arg(4);
+                case OpSGreaterThan: return signed_arg(3) > signed_arg(4);
+                case OpSLessThan: return signed_arg(3) < signed_arg(4);
+                case OpSLessThanEqual: return signed_arg(3) <= signed_arg(4);
+                case OpSelect: return arg(3) ? arg(4) : arg(5);
+                default: throw std::logic_error("Unsupported IADD overflow operation");
+                }
+            };
+            const auto wide_sum = static_cast<s64>(lhs) + rhs;
+            CAPTURE(lhs, rhs);
+            CHECK(evaluate(evaluate, result_id) == (wide_sum < min || wide_sum > max ? 23U : 17U));
+        }
+    }
+
+    const auto glsl = Shader::Backend::GLSL::EmitGLSL(profile, program);
+    CHECK(glsl.find(")>=0?") != std::string::npos);
+    CHECK(glsl.find(")>int(2147483647u-") != std::string::npos);
+    CHECK(glsl.find(")<=int(2147483647u-") != std::string::npos);
 }
 
 TEST_CASE("Maxwell U32 to F32 truncates without backend rounding support", "[shader][maxwell][numeric]") {

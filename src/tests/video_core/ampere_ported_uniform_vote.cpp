@@ -12,6 +12,11 @@ using Shader::Ampere::LowerToMaxwell;
 constexpr Instruction Exit{{0x794d, 0, 0x03800000, 0}};
 constexpr u64 MaxwellExit = 0xe30000000007000fULL;
 
+constexpr Instruction UniformVote(u32 target, u32 source = 7, u32 output = 7, u32 mode = 1) {
+    return {{0x886U | (7U << 12) | (target << 16), 0,
+             (source << 23) | (output << 17) | (mode << 8), 0}};
+}
+
 u64 Vote(u32 target, u32 source_predicate, u32 temporary, u32 mode) {
     return 0x50d8000000070000ULL | target | (u64{source_predicate} << 39) |
            (u64{temporary} << 45) | (u64{mode} << 48);
@@ -23,17 +28,14 @@ u32 LowUniform(u32 reg) {
 }
 } // namespace
 
-TEST_CASE("Ampere captured uniform votes lower into the mapped uniform register",
+TEST_CASE("Ampere uniform ANY votes lower into the mapped uniform register",
           "[video_core][ampere][uniform_vote]") {
-    // VOTEU.ANY UR16/UR18, UPT, PT: rejected by the uniform vote check in the 040074A01BF12000 log.
-    for (const Instruction captured : std::array{
-             Instruction{{0x00107886, 0x00000000, 0x038e0100, 0x000fe400}},
-             Instruction{{0x00127886, 0x00000000, 0x038e0100, 0x000fe400}}}) {
-        const auto lowered = LowerToMaxwell(std::array{captured, Exit});
+    for (const u32 target : {9U, 19U}) {
+        const auto lowered = LowerToMaxwell(std::array{UniformVote(target), Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
         REQUIRE(lowered.instructions.size() == 2);
-        REQUIRE(lowered.instructions[0] == Vote(216 + captured.Bits(16, 8), 7, 7, 1));
+        REQUIRE(lowered.instructions[0] == Vote(216 + target, 7, 7, 1));
         REQUIRE(lowered.instructions[1] == MaxwellExit);
     }
 }
@@ -44,8 +46,7 @@ TEST_CASE("Ampere uniform votes use the complete low uniform register bank",
         if (target >= 28 && target != 63) continue;
         for (u32 output = 0; output < 8; ++output) {
             for (u32 mode = 0; mode < 3; ++mode) {
-                const Instruction vote{{0x00007886U | (target << 16), 0,
-                                        0x03800000U | (output << 17) | (mode << 8), 0x000fe400}};
+                const auto vote = UniformVote(target, 7, output, mode);
                 const auto lowered = LowerToMaxwell(std::array{vote, Exit});
                 INFO(lowered.error);
                 REQUIRE(lowered);
@@ -72,7 +73,7 @@ TEST_CASE("Ampere uniform votes use the complete low uniform register bank",
 TEST_CASE("Ampere uniform votes reach UR28 to UR62 through the high uniform mirrors",
           "[video_core][ampere][uniform_vote]") {
     for (u32 target = 28; target < 63; ++target) {
-        const Instruction vote{{0x00007886U | (target << 16), 0, 0x038e0100, 0x000fe400}};
+        const auto vote = UniformVote(target);
         const auto lowered = LowerToMaxwell(std::array{vote, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
@@ -83,8 +84,7 @@ TEST_CASE("Ampere uniform votes reach UR28 to UR62 through the high uniform mirr
     }
     // Both ends of the high bank in one program share one mirror layout (UR28 at R180).
     const auto lowered = LowerToMaxwell(std::array{
-        Instruction{{0x003e7886, 0, 0x038e0100, 0x000fe400}},
-        Instruction{{0x001c7886, 0, 0x038e0100, 0x000fe400}}, Exit});
+        UniformVote(62), UniformVote(28), Exit});
     INFO(lowered.error);
     REQUIRE(lowered);
     REQUIRE(lowered.instructions.size() == 3);
@@ -95,7 +95,7 @@ TEST_CASE("Ampere uniform votes reach UR28 to UR62 through the high uniform mirr
     // the mirrors at R212: the vote reads UR28 there and the native move writes its shadow, R210.
     const auto shadowed = LowerToMaxwell(std::array{
         Instruction{{0x00d67802, 0x3f800000, 0x00000f00, 0x000fe400}},
-        Instruction{{0x001c7886, 0, 0x038e0100, 0x000fe400}}, Exit});
+        UniformVote(28), Exit});
     INFO(shadowed.error);
     REQUIRE(shadowed);
     REQUIRE(std::ranges::find(shadowed.instructions, Vote(212, 7, 7, 1)) !=
@@ -107,33 +107,31 @@ TEST_CASE("Ampere uniform votes reach UR28 to UR62 through the high uniform mirr
 TEST_CASE("Ampere uniform votes keep the source predicate and its negation",
           "[video_core][ampere][uniform_vote]") {
     for (const u32 source : {0U, 3U, 7U, 8U, 11U, 15U}) {
-        const Instruction vote{{0x00107886, 0, 0x000e0100U | (source << 23), 0x000fe400}};
+        const auto vote = UniformVote(9, source);
         const auto lowered = LowerToMaxwell(std::array{vote, Exit});
         INFO(lowered.error);
         REQUIRE(lowered);
-        REQUIRE(lowered.instructions[0] == Vote(232, source, 7, 1));
+        REQUIRE(lowered.instructions[0] == Vote(225, source, 7, 1));
     }
 }
 
 TEST_CASE("Ampere uniform votes reject unmapped registers and unsupported fields",
           "[video_core][ampere][uniform_vote]") {
-    const Instruction captured{{0x00107886, 0, 0x038e0100, 0x000fe400}};
+    constexpr auto vote = UniformVote(19);
     for (const u32 target : {64U, 100U, 215U}) {
-        auto invalid = captured;
-        invalid.words[0] = 0x00007886U | (target << 16);
+        const auto invalid = UniformVote(target);
         const auto lowered = LowerToMaxwell(std::array{invalid, Exit});
         REQUIRE_FALSE(lowered);
         REQUIRE(lowered.error == "native uniform vote mode");
     }
     for (const u32 target : {216U, 245U, 254U}) {
-        auto invalid = captured;
-        invalid.words[0] = 0x00007886U | (target << 16);
+        const auto invalid = UniformVote(target);
         REQUIRE_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
     }
     // Execution predicate, Ra, word 1, Rc, mode 3 and the unassigned bits of word 2.
     for (const u32 bit : {12U, 24U, 31U, 32U, 63U, 64U, 71U, 73U, 74U, 75U, 76U, 80U, 84U, 85U,
                           86U, 91U, 95U}) {
-        auto invalid = captured;
+        auto invalid = vote;
         invalid.words[bit / 32] ^= 1U << (bit % 32);
         const auto lowered = LowerToMaxwell(std::array{invalid, Exit});
         INFO("bit " << bit);

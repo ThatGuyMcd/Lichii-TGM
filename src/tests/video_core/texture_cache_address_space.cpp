@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <vector>
@@ -8,6 +9,8 @@
 #include <catch2/generators/catch_generators.hpp>
 #include "core/core.h"
 #include "core/device_memory.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/kernel.h"
 #include "tests/core/system_test_context.h"
 #include "tests/video_core/null_rasterizer.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -19,6 +22,7 @@ struct Runtime {
     struct Download {
         std::shared_ptr<std::vector<u8>> bytes;
         std::span<u8> mapped_span;
+        size_t offset{};
     };
     u32 failures = 0;
     size_t downloads = 0;
@@ -49,8 +53,15 @@ struct Runtime {
 struct Image : VideoCommon::ImageBase {
     using ImageBase::ImageBase;
     std::vector<u32> payload;
+    std::shared_ptr<int> lifetime;
     template <typename Copies>
-    void DownloadMemory(const Runtime::Download&, const Copies&) {}
+    void DownloadMemory(const Runtime::Download& download, const Copies&) {
+        if (!payload.empty()) {
+            const auto dst = download.mapped_span.subspan(download.offset);
+            REQUIRE(dst.size() >= payload.size() * sizeof(u32));
+            std::memcpy(dst.data(), payload.data(), payload.size() * sizeof(u32));
+        }
+    }
 };
 struct ImageView : VideoCommon::ImageViewBase {
     ImageView(Runtime&, VideoCommon::NullImageViewParams params) : ImageViewBase(params) {}
@@ -83,10 +94,136 @@ struct Params {
     using BufferType = u64;
 };
 using Cache = VideoCommon::TextureCache<Params>;
+
+struct ClockedRuntime : Runtime {
+    u64 current_tick{1};
+    u64 completed_tick{};
+    u64 freed_staging_tick{};
+    size_t uploaded_slices{};
+    u64 CurrentTick() const { return current_tick; }
+    bool IsFree(u64 tick) const { return tick <= completed_tick; }
+    Download UploadStagingBuffer(size_t size, bool deferred) {
+        REQUIRE(deferred);
+        auto bytes = std::make_shared<std::vector<u8>>(size);
+        return {bytes, *bytes};
+    }
+    void FreeDeferredStagingBuffer(const Download&) { freed_staging_tick = current_tick; }
+    template <typename Copies>
+    void AccelerateImageUpload(Image&, const Download&, const Copies&, u32, u32 slices) {
+        uploaded_slices += slices;
+    }
+};
+
+struct LifetimeParams : Params {
+    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
+    using Runtime = ClockedRuntime;
+    using AsyncBuffer = Runtime::Download;
+};
+using LifetimeCache = VideoCommon::TextureCache<LifetimeParams>;
+
+struct LifetimeFixture {
+    static constexpr GPUVAddr GpuAddress = 0x400000;
+    static constexpr DAddr CpuAddress = 0x30000;
+    static constexpr size_t MappingSize = 0x10000;
+
+    ScopedSystemTestContext context;
+    Core::System system;
+    Core::DeviceMemory physical;
+    Tegra::MaxwellDeviceMemoryManager device{physical};
+    VideoCore::Test::NullRasterizer rasterizer;
+    ClockedRuntime runtime;
+    std::unique_ptr<Kernel::KProcess> process;
+    Core::Asid asid{};
+    std::unique_ptr<Tegra::MemoryManager> memory;
+    Tegra::Control::ChannelState channel{0};
+    std::unique_ptr<LifetimeCache> cache;
+    u8* bytes{};
+
+    LifetimeFixture() {
+        REQUIRE(system.Initialize());
+        process = std::make_unique<Kernel::KProcess>(system.Kernel());
+        auto& table = process->GetPageTable().GetImpl();
+        table.Resize(24, 12);
+        bytes = physical.GetPointerFromRaw<u8>(CpuAddress);
+        std::memset(bytes, 0, MappingSize);
+        for (size_t page = 0; page < MappingSize / 0x1000; ++page) {
+            table.entries.GetAndFault((CpuAddress >> 12) + page)
+                .Store(false, Common::PageType::Memory, 1,
+                       reinterpret_cast<uintptr_t>(bytes) - CpuAddress);
+        }
+        process->GetMemory().SetCurrentPageTable(*process);
+        asid = device.RegisterProcess(&process->GetMemory());
+        device.BindInterface(&rasterizer);
+        device.Map(CpuAddress, CpuAddress, MappingSize, asid);
+        memory = std::make_unique<Tegra::MemoryManager>(system, device, 32, 1ULL << 31, 16);
+        memory->BindRasterizer(&rasterizer);
+        memory->Map(GpuAddress, CpuAddress, MappingSize, Tegra::PTEKind::INVALID, false);
+        channel.memory_manager = memory.get();
+        channel.payload.emplace(system, *memory, channel);
+        cache = std::make_unique<LifetimeCache>(runtime, device);
+        cache->CreateChannel(channel);
+        cache->BindToChannel(channel.bind_id);
+    }
+
+    ~LifetimeFixture() {
+        cache.reset();
+        memory.reset();
+        device.Unmap(CpuAddress, MappingSize);
+        device.UnregisterProcess(asid);
+        system.Kernel().UnregisterKernelObject(process.get());
+    }
+};
+
+VideoCommon::ImageInfo LifetimeImageInfo() {
+    VideoCommon::ImageInfo info{};
+    info.format = VideoCore::Surface::PixelFormat::A8B8G8R8_UNORM;
+    info.type = VideoCommon::ImageType::e2D;
+    info.size = {32, 8, 1};
+    info.resources = {1, 1};
+    return info;
+}
 }
 
 namespace VideoCommon {
 struct TextureCacheTestAccess {
+    static ImageId RegisterLifetimeImage(LifetimeCache& cache, const ImageInfo& info, GPUVAddr gpu,
+                                         DAddr cpu) {
+        const auto id = cache.slot_images.insert(info, gpu, cpu);
+        const auto alloc = cache.slot_image_allocs.insert();
+        cache.image_allocs_table.emplace(gpu, alloc);
+        cache.slot_image_allocs[alloc].images.push_back(id);
+        cache.RegisterImage(id);
+        return id;
+    }
+    static Image& LifetimeImage(LifetimeCache& cache, ImageId id) { return cache.slot_images[id]; }
+    static void RetireLifetimeImage(LifetimeCache& cache, ImageId id, bool immediate = false) {
+        cache.UnregisterImage(id);
+        cache.DeleteImage(id, immediate);
+    }
+    static void QueueLifetimeDownload(LifetimeCache& cache, ImageId id) {
+        cache.uncommitted_downloads.emplace_back(LifetimeCache::PendingDownload{true, 0, id});
+    }
+    static void ReapLifetimeImages(LifetimeCache& cache) { cache.ReapRetiredImages(); }
+    static u64 RetiredLifetimeBytes(const LifetimeCache& cache) {
+        return cache.gpu_sentenced_bytes;
+    }
+    static void QueueLifetimeUnswizzle(LifetimeCache& cache, ImageId id) {
+        cache.QueueAsyncUnswizzle(cache.slot_images[id], id);
+    }
+    static void ProcessOneUnswizzleSlice(LifetimeCache& cache) {
+        cache.current_unswizzle_frame = 0;
+        cache.swizzle_chunk_size = 512;
+        cache.swizzle_slices_per_batch = 1;
+        cache.TickAsyncUnswizzle();
+    }
+    static std::vector<ImageId> QueuedLifetimeUnswizzles(const LifetimeCache& cache) {
+        std::vector<ImageId> ids;
+        for (const auto& task : cache.unswizzle_queue) {
+            ids.push_back(task.image_id);
+        }
+        return ids;
+    }
+
     using Maxwell3D = Tegra::Engines::Maxwell3D;
     static ImageInfo ConfigureDepth(Cache& cache, Core::System& system, u32 width, u32 height) {
         using Maxwell = Tegra::Engines::Maxwell3D;
@@ -293,6 +430,95 @@ struct TextureCacheTestAccess {
         CHECK(cache.page_table.at(cpu >> 20).empty() == !present);
     }
 };
+}
+
+TEST_CASE("A retired image counts against memory until both timelines release it",
+          "[video_core][texture_image_lifetime]") {
+    using Access = VideoCommon::TextureCacheTestAccess;
+    LifetimeFixture f;
+    auto& cache = *f.cache;
+    const auto info = LifetimeImageInfo();
+    const auto id = Access::RegisterLifetimeImage(cache, info, f.GpuAddress, f.CpuAddress);
+    auto& image = Access::LifetimeImage(cache, id);
+    image.lifetime = std::make_shared<int>();
+    const std::weak_ptr<int> lifetime = image.lifetime;
+    image.payload.assign(image.unswizzled_size_bytes / sizeof(u32), 0x51515151);
+    Access::QueueLifetimeDownload(cache, id);
+
+    const bool download_first = GENERATE(false, true);
+    if (download_first) {
+        cache.CommitAsyncFlushes();
+    }
+    f.runtime.current_tick = 7;
+    Access::RetireLifetimeImage(cache, id, true);
+    REQUIRE(Access::RegisterLifetimeImage(cache, info, f.GpuAddress + 0x4000,
+                                          f.CpuAddress + 0x4000) == id);
+    const u64 retained_bytes = Access::RetiredLifetimeBytes(cache);
+    CHECK(retained_bytes > 0);
+    if (download_first) {
+        f.runtime.completed_tick = 1;
+        cache.PopAsyncFlushes();
+        Access::ReapLifetimeImages(cache);
+        CHECK_FALSE(lifetime.expired());
+        CHECK(Access::RetiredLifetimeBytes(cache) == retained_bytes);
+        CHECK(f.bytes[0] == 0x51);
+        f.runtime.completed_tick = 7;
+    } else {
+        f.runtime.completed_tick = 7;
+        Access::ReapLifetimeImages(cache);
+        CHECK_FALSE(lifetime.expired());
+        CHECK(Access::RetiredLifetimeBytes(cache) == retained_bytes);
+        CHECK(f.bytes[0] == 0);
+        f.runtime.current_tick = 8;
+        cache.CommitAsyncFlushes();
+        f.runtime.completed_tick = 8;
+        cache.PopAsyncFlushes();
+    }
+    Access::ReapLifetimeImages(cache);
+    CHECK(lifetime.expired());
+    CHECK(Access::RetiredLifetimeBytes(cache) == 0);
+    CHECK(f.bytes[0] == 0x51);
+    CHECK(f.bytes[0x4000] == 0);
+}
+
+TEST_CASE("Retiring an image drops only its queued GPU unswizzle",
+          "[video_core][texture_image_lifetime]") {
+    using Access = VideoCommon::TextureCacheTestAccess;
+    using VideoCommon::ImageType;
+    using VideoCore::Surface::PixelFormat;
+    LifetimeFixture f;
+    auto& cache = *f.cache;
+    auto volume = LifetimeImageInfo();
+    volume.type = ImageType::e3D;
+    volume.format = PixelFormat::BC1_RGBA_UNORM;
+    volume.size = {32, 32, 8};
+    const auto retiring = Access::RegisterLifetimeImage(cache, volume, f.GpuAddress, f.CpuAddress);
+    const auto queued = Access::RegisterLifetimeImage(cache, volume, f.GpuAddress + 0x4000,
+                                                       f.CpuAddress + 0x4000);
+    auto& image = Access::LifetimeImage(cache, retiring);
+    image.lifetime = std::make_shared<int>();
+    const std::weak_ptr<int> lifetime = image.lifetime;
+    Access::QueueLifetimeUnswizzle(cache, retiring);
+    Access::QueueLifetimeUnswizzle(cache, queued);
+    const bool submitted = GENERATE(false, true);
+    if (submitted) {
+        f.runtime.current_tick = 4;
+        Access::ProcessOneUnswizzleSlice(cache);
+        REQUIRE(f.runtime.uploaded_slices == 1);
+    }
+
+    f.runtime.current_tick = 5;
+    Access::RetireLifetimeImage(cache, retiring, true);
+    REQUIRE(Access::RegisterLifetimeImage(cache, LifetimeImageInfo(), f.GpuAddress + 0x8000,
+                                          f.CpuAddress + 0x8000) == retiring);
+    CHECK(Access::QueuedLifetimeUnswizzles(cache) == std::vector{queued});
+    CHECK(f.runtime.freed_staging_tick == (submitted ? 5u : 0u));
+    CHECK(lifetime.expired() == !submitted);
+    CHECK((Access::RetiredLifetimeBytes(cache) > 0) == submitted);
+    f.runtime.completed_tick = 5;
+    Access::ReapLifetimeImages(cache);
+    CHECK(lifetime.expired());
+    CHECK(Access::RetiredLifetimeBytes(cache) == 0);
 }
 
 TEST_CASE("Depth feedback follows the views bound by each draw",

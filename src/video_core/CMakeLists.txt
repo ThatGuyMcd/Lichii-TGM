@@ -130,6 +130,8 @@ add_library(video_core STATIC
     memory_manager.cpp
     memory_manager.h
     page_filter.h
+    native_indirect_reset.cpp
+    native_indirect_reset.h
     native_lowering.cpp
     native_lowering.h
     native_qmd.h

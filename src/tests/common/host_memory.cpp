@@ -30,7 +30,10 @@ static constexpr auto HEAP = false;
 
 TEST_CASE("Host RAM pressure keeps unknown readings neutral and respects small machines",
           "[common][host_memory]") {
-    CHECK_FALSE(Common::IsLowOnMemory(0, 16_GiB));
+    CHECK_FALSE(Common::IsLowOnMemory(std::nullopt, 16_GiB));
+    CHECK(Common::IsLowOnMemory(0, 16_GiB));
+    CHECK(Common::IsLowOnMemory(1, 16_GiB));
+    CHECK_FALSE(Common::IsLowOnMemory(0, 0));
     CHECK_FALSE(Common::IsLowOnMemory(1_GiB, 0));
     CHECK(Common::IsLowOnMemory(512_MiB, 4_GiB));
     CHECK_FALSE(Common::IsLowOnMemory(1_GiB, 4_GiB));
@@ -376,7 +379,7 @@ TEST_CASE("HostMemory: Trim zero pages keeps contents", "[common]") {
 
 TEST_CASE("HostMemory: cold hints only when the host is short of RAM", "[common]") {
     constexpr u64 GiB = u64{1} << 30;
-    REQUIRE_FALSE(Common::IsLowOnMemory(0, 32 * GiB)); // unknown
+    REQUIRE_FALSE(Common::IsLowOnMemory(std::nullopt, 32 * GiB));
     REQUIRE_FALSE(Common::IsLowOnMemory(18 * GiB, 32 * GiB));
     REQUIRE_FALSE(Common::IsLowOnMemory(5 * GiB, 32 * GiB));
     REQUIRE(Common::IsLowOnMemory(3 * GiB, 32 * GiB));

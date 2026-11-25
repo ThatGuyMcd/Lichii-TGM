@@ -11,10 +11,12 @@
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
 #include "shader_recompiler/object_pool.h"
 #include "shader_recompiler/geometry_output_limits.h"
+#include "tests/video_core/ampere_instruction_fixture.h"
 
 namespace {
 using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
+using Shader::Ampere::Test::EncodeInstruction;
 constexpr Instruction EXIT{{0x0000794d, 0, 0x03800000, 0}};
 
 bool Contains(const Shader::Ampere::LoweredProgram& lowered, u64 instruction) {
@@ -22,24 +24,37 @@ bool Contains(const Shader::Ampere::LoweredProgram& lowered, u64 instruction) {
            lowered.instructions.end();
 }
 
-constexpr std::array<Instruction, 16> GEOMETRY_PROGRAM{{
-    {{0x0000734e, 0, 0, 0}},
-    {{0x00037802, 0xd0, 0xf00, 0}},
-    {{0x00007210, 3, 0x07f1e0ff, 0}},
-    {{0xff017224, 0xff, 0x000e0401, 0}},
-    {{0x00007357, 0, 0, 0}},
-    {{0x00007802, 0, 0xf00, 0}},
-    {{0x00017802, 0, 0xf00, 0}},
-    {{0x00037802, 0, 0xf00, 0}},
-    {{0x0100720c, 0xff, 0x03f03070, 0}},
-    {{0x00017923, 0, 0, 0}},          // ISBERD R1, [R0]
-    {{0x00027324, 0xff, 0x4000, 0}},  // OUT.EMIT R2, R0, RZ
-    {{0x02037924, 0, 0x8000, 0}},     // OUT.CUT R3, R2, 0
+constexpr u32 Zero = 255;
+constexpr u32 HandlerIndex = 14;
+constexpr u32 GeometryInput = 23;
+constexpr u32 MappedVertex = 25;
+constexpr u32 EmittedVertex = 27;
+constexpr u32 EndedPrimitive = 29;
+
+constexpr Instruction Move(u32 destination, u32 immediate) {
+    return EncodeInstruction(0x802, destination, 0, immediate, 15U << 8);
+}
+
+constexpr std::array GEOMETRY_PROGRAM{
+    EncodeInstruction(0x34e, 0, 0, 0, 0),
+    Move(3, HandlerIndex * sizeof(Instruction)),
+    EncodeInstruction(0x210, 0, 0, 3, Zero | (15U << 13) | (7U << 20) | (15U << 23)),
+    EncodeInstruction(0x224, 1, Zero, Zero, 1U | (1U << 10) | (7U << 17)),
+    EncodeInstruction(0x357, 0, 0, 0, 0),
+    Move(0, 7),
+    Move(1, 35),
+    Move(3, 71),
+    EncodeInstruction(0x20c, 0, 1, Zero, 0x03f03070),
+    EncodeInstruction(0x923, MappedVertex, GeometryInput, 0, 0),
+    EncodeInstruction(0x324, EmittedVertex, GeometryInput, Zero, 1U << 14),
+    EncodeInstruction(0x924, EndedPrimitive, EmittedVertex, 0, 2U << 14),
+    Move(41, 9),
     EXIT,
-    {{0x00ff7324, 0xff, 0, 0}},
-    {{0x00007957, 0, 0, 0}},
+    EncodeInstruction(0x324, Zero, 0, Zero, 0),
+    EncodeInstruction(0x957, 0, 0, 0, 0),
     EXIT,
-}};
+};
+static_assert(HandlerIndex + 3 == GEOMETRY_PROGRAM.size());
 } // namespace
 
 TEST_CASE("Lowered geometry passthrough excludes vertex-only system inputs",
@@ -205,9 +220,9 @@ TEST_CASE("Ampere geometry programs lower their output instructions", "[video_co
     for (size_t index = 0; index <= Shader::Ampere::GeometryExitSetupInstructions; ++index) {
         REQUIRE(lowered.source_instruction_offsets[index] == 0);
     }
-    REQUIRE(Contains(lowered, 0x5c98078000070001ULL)); // MOV R1, R0
-    REQUIRE(Contains(lowered, 0xfbe000800ff70002ULL)); // OUT.EMIT R2, R0, RZ
-    REQUIRE(Contains(lowered, 0xf6e0010000070203ULL)); // OUT.CUT R3, R2, 0
+    REQUIRE(Contains(lowered, 0x5c98078000070000ULL | (u64{GeometryInput} << 20) | MappedVertex));
+    REQUIRE(Contains(lowered, 0xfbe000800ff70000ULL | (u64{GeometryInput} << 8) | EmittedVertex));
+    REQUIRE(Contains(lowered, 0xf6e0010000070000ULL | (u64{EmittedVertex} << 8) | EndedPrimitive));
     REQUIRE(Contains(lowered, 0xfbe000000ff700ffULL));
     REQUIRE(lowered.instructions.back() == 0xe30000000007000fULL);
 }

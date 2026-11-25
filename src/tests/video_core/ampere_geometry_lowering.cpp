@@ -9,16 +9,17 @@ namespace {
 using Shader::Ampere::Instruction;
 using Shader::Ampere::LowerToMaxwell;
 
-constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0x001fea00}};
-constexpr Instruction Final{{0x00ff7324, 0xff, 0, 0x0001e200}};
+constexpr u32 RegisterZero = 255;
+constexpr Instruction Exit{{0x94dU | (7U << 12), 0, 0x03800000, 0}};
+constexpr Instruction Final{{0x324U | (7U << 12) | (RegisterZero << 16), RegisterZero, 0, 0}};
 }
 
 TEST_CASE("Ampere geometry instructions require an explicit geometry stage",
           "[video_core][ampere][geometry]") {
     for (const Instruction instruction : std::array{
              Final,
-             Instruction{{0x030c7923, 0, 0, 0x000e2800}},
-             Instruction{{0x0000734e, 0, 0, 0x000fe400}}}) {
+             Instruction{{0x923U | (7U << 12) | (29U << 16) | (19U << 24), 0, 0, 0}},
+             Instruction{{0x34eU | (7U << 12), 0, 0, 0}}}) {
         REQUIRE_FALSE(LowerToMaxwell(std::array{instruction, Exit}));
     }
 }

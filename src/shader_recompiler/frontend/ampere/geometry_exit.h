@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
 #include "common/common_types.h"
+#include "shader_recompiler/frontend/ampere/instruction.h"
 
 namespace Shader::Ampere {
 
@@ -24,9 +27,52 @@ struct GeometryExitEnvelope {
 
 inline constexpr u32 GeometryExitSetupInstructions = 5;
 
+namespace GeometryExitEncoding {
+
+inline constexpr u32 Always = 7;
+inline constexpr u32 Never = Always | 8;
+inline constexpr u32 ZeroRegister = 255;
+inline constexpr u32 ModeMask = 0xc00001ffU;
+inline constexpr u32 DefaultExitPredicate = Always << 23;
+
+inline bool Matches(const Instruction& instruction, u32 opcode, u32 dest = 0, u32 src = 0,
+                    u32 operand = 0, u32 modifiers = 0) {
+    return instruction.Bits(0, 12) == opcode && instruction.Bits(12, 4) == Always &&
+           instruction.Bits(16, 8) == dest && instruction.Bits(24, 8) == src &&
+           instruction.words[1] == operand && instruction.words[2] == modifiers &&
+           (instruction.words[3] & ModeMask) == 0;
+}
+
+} // namespace GeometryExitEncoding
+
+// Accept only the register allocation the lowerer can discard after its liveness check.
+inline std::optional<u32> DecodeGeometryExitTarget(
+    std::span<const Instruction, GeometryExitSetupInstructions> setup) {
+    using namespace GeometryExitEncoding;
+    constexpr u32 PcLow = 0, PcHigh = 1, OffsetRegister = 3;
+    constexpr u32 CarryPredicate = 0, CarryIn = 1U << 10;
+    constexpr u32 DiscardCarry = Always << 17, DiscardSecondCarry = Always << 20;
+    constexpr u32 NoSecondCarryIn = Never << 13;
+    constexpr u32 LowAdd = ZeroRegister | NoSecondCarryIn | (CarryPredicate << 17) |
+                           DiscardSecondCarry | (Never << 23);
+    constexpr u32 HighAdd = ZeroRegister | CarryIn | NoSecondCarryIn |
+                            DiscardCarry | DiscardSecondCarry | (CarryPredicate << 23);
+    constexpr u32 HighMultiplyAdd = PcHigh | CarryIn | DiscardCarry | (CarryPredicate << 23);
+    const u32 target = setup[1].words[1];
+    if (!Matches(setup[0], 0x34e, PcLow) ||
+        !Matches(setup[1], 0x802, OffsetRegister, 0, target, 15U << 8) ||
+        !Matches(setup[2], 0x210, PcLow, PcLow, OffsetRegister, LowAdd) ||
+        !(Matches(setup[3], 0x210, PcHigh, PcHigh, ZeroRegister, HighAdd) ||
+          Matches(setup[3], 0x224, PcHigh, ZeroRegister, ZeroRegister, HighMultiplyAdd)) ||
+        !Matches(setup[4], 0x357, 0, PcLow)) {
+        return std::nullopt;
+    }
+    return target;
+}
+
 template <typename Code>
 GeometryExitEnvelope AnalyzeGeometryExit(const Code& code) {
-    constexpr u32 ModeMask = 0xc00001ffU;
+    using namespace GeometryExitEncoding;
     constexpr size_t Setup = GeometryExitSetupInstructions;
     GeometryExitEnvelope result;
     const auto fail = [&](size_t index, std::string_view reason) {
@@ -43,37 +89,37 @@ GeometryExitEnvelope AnalyzeGeometryExit(const Code& code) {
         if (offset / 32 + 1 < 4) value |= u64{words[offset / 32 + 1]} << 32;
         return static_cast<u32>((value >> (offset % 32)) & ((u64{1} << count) - 1));
     };
-    const auto is = [&](size_t index, u32 word0, u32 word1, u32 word2) {
-        const auto& words = code[index].words;
-        return words[0] == word0 && words[1] == word1 && words[2] == word2 &&
-               (words[3] & ModeMask) == 0;
-    };
     const auto is_exit = [&](size_t index) {
         const auto& words = code[index].words;
-        return (words[0] & ~0xf000U) == 0x94d && words[1] == 0 && words[2] == 0x03800000 &&
-               (words[3] & ModeMask) == 0 && bits(index, 12, 4) != 15;
+        return (words[0] & ~0xf000U) == 0x94d && words[1] == 0 &&
+               words[2] == DefaultExitPredicate && (words[3] & ModeMask) == 0 &&
+               bits(index, 12, 4) != Never;
     };
     const auto is_return = [&](size_t index) {
         const auto& words = code[index].words;
         const u64 raw = words[1] | (u64{words[2] & 0x3ffff} << 32);
         const s64 relative = static_cast<s64>(raw << 14) >> 14;
-        return (words[0] & 0x00ffffffU) == 0x00007950 && bits(index, 24, 8) < 249 &&
-               (words[2] & ~0x3ffffU) == 0x03c00000 && (words[3] & ModeMask) == 0 &&
+        constexpr u32 NoStackAdjustment = 1U << 22;
+        return bits(index, 0, 12) == 0x950 && bits(index, 12, 4) == Always &&
+               bits(index, 16, 8) == 0 && bits(index, 24, 8) < 249 &&
+               (words[2] & ~0x3ffffU) == (DefaultExitPredicate | NoStackAdjustment) &&
+               (words[3] & ModeMask) == 0 &&
                static_cast<s64>(index + 1) * 16 + relative == 0;
     };
 
     const size_t count = code.size();
     if (count < Setup + 4) return fail(count, "native exit envelope truncated");
-    const u32 target = code[1].words[1];
-    if (!is(0, 0x734e, 0, 0) || !is(1, 0x37802, target, 0xf00) || !is(2, 0x7210, 3, 0x07f1e0ff) ||
-        !(is(3, 0x01017210, 0xff, 0x007fe4ff) || is(3, 0xff017224, 0xff, 0x000e0401)) ||
-        !is(4, 0x7357, 0, 0))
+    const auto decoded_target =
+        DecodeGeometryExitTarget(std::span<const Instruction, Setup>{code.data(), Setup});
+    if (!decoded_target)
         return fail(0, "native exit handler installation");
+    const u32 target = *decoded_target;
     const size_t handler = target / 16;
     if (target % 16 || handler <= Setup + 1 || handler + 3 != count)
         return fail(1, "native exit handler location");
-    if (!is(handler, 0x00ff7324, 0xff, 0) || !is(handler + 1, 0x7957, 0, 0) ||
-        !is(handler + 2, 0x794d, 0, 0x03800000))
+    if (!Matches(code[handler], 0x324, ZeroRegister, 0, ZeroRegister) ||
+        !Matches(code[handler + 1], 0x957) ||
+        !Matches(code[handler + 2], 0x94d, 0, 0, 0, DefaultExitPredicate))
         return fail(handler, "native exit handler body");
     if (!(is_exit(handler - 1) && bits(handler - 1, 12, 4) == 7) && !is_return(handler - 1))
         return fail(handler - 1, "native exit handler reached by fallthrough");

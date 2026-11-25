@@ -7,6 +7,8 @@
 add_executable(tests
     core/kernel_core_fibers.cpp
     core/filesystem_buffer_bounds.cpp
+    core/album_png.cpp
+    core/window_system.cpp
     video_core/maxwell_fmz.cpp
     video_core/astc_bcn_batches.cpp
     video_core/astc_decompress.cpp
@@ -66,6 +68,7 @@ add_executable(tests
     video_core/aftermath_dump.cpp
     video_core/frame_dump_schedule.cpp
     video_core/spirv_inline_control.cpp
+    video_core/spirv_reemit.cpp
     video_core/nx2_stutter_trace.cpp
     video_core/nx2_profile_scope.cpp
     video_core/pipeline_build_trace.cpp
@@ -455,6 +458,17 @@ target_compile_features(astc_decode_allocation_tests PRIVATE cxx_std_20)
 target_include_directories(astc_decode_allocation_tests PRIVATE "${ASTC_ALLOCATION_DIR}")
 add_dependencies(tests astc_decode_allocation_tests)
 add_test(NAME astc_decode_allocation COMMAND astc_decode_allocation_tests)
+set(REINTERPRET_BARRIER_SOURCE
+    "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_texture_cache.cpp")
+set(REINTERPRET_BARRIER_BODY "${CMAKE_CURRENT_BINARY_DIR}/reinterpret_barrier.inc")
+add_custom_command(OUTPUT "${REINTERPRET_BARRIER_BODY}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/reinterpret_barrier_source.py"
+        "${REINTERPRET_BARRIER_SOURCE}" "${REINTERPRET_BARRIER_BODY}"
+    DEPENDS video_core/reinterpret_barrier_source.py "${REINTERPRET_BARRIER_SOURCE}"
+    VERBATIM)
+target_sources(tests PRIVATE video_core/reinterpret_barrier.cpp "${REINTERPRET_BARRIER_BODY}")
+add_test(NAME reinterpret_barrier COMMAND tests "[reinterpret_barrier]")
 set(TEXTURE_GC_FRAME "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_frame.inc")
 set(PADDED_DEPTH_BODIES
     "${CMAKE_CURRENT_BINARY_DIR}/padded_depth_lookup.inc"
@@ -542,6 +556,8 @@ add_test(NAME kernel_core_fibers COMMAND tests "[kernel_core_fibers]")
 add_test(NAME driver_blobs_same_session COMMAND tests "[driver_blobs_same_session]")
 add_test(NAME maxwell_fmz COMMAND tests "[fmz]")
 add_test(NAME filesystem_buffer_bounds COMMAND tests "[filesystem_buffer_bounds]")
+add_test(NAME album_png COMMAND tests "[album_png]")
+add_test(NAME window_system_exit COMMAND tests "[window_system_exit]")
 add_test(NAME linear_unswizzle COMMAND tests "[linear_unswizzle]")
 add_test(NAME expired_timing_event COMMAND tests "[expired_timing_event]")
 set_tests_properties(expired_timing_event PROPERTIES TIMEOUT 15)

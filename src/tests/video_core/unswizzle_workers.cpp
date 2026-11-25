@@ -203,6 +203,8 @@ TEST_CASE("Owned snapshot survives overlapping source and destination", "[unswiz
         const auto output = std::span{storage}.first(layout.HostBytes());
         REQUIRE(layout.Parallel(output, storage, true, worker, pool));
         REQUIRE(std::ranges::equal(output, expected));
+        // The single worker can still be finishing its queue bookkeeping.
+        pool.WaitForRequests();
     }
 }
 

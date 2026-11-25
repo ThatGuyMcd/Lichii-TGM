@@ -6,9 +6,12 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -133,6 +136,18 @@ public:
     [[nodiscard]] static PatchManager::Metadata GetMetadataFromBaseOrUpdate(Core::System& system, u64 application_id) noexcept;
 
 private:
+    friend struct PatchManagerTestAccess;
+
+    // Private fixture inputs replace digest values only. Offsets, lengths and writes remain
+    // defined by the built-in table, and the public entry point always uses its shipped digests.
+    struct OriginalFingerprintOverride {
+        size_t module_offset;
+        std::array<u8, 32> sha256;
+    };
+    [[nodiscard]] std::vector<u8> PatchNSOImpl(
+        const std::vector<u8>& nso, const std::string& name,
+        std::span<const OriginalFingerprintOverride> original_fingerprints) const;
+
     [[nodiscard]] VirtualDir GetModificationLoadRoot(bool sdmc = false) const;
     [[nodiscard]] std::vector<std::string> GetDisabledAddons() const;
     void ApplyLayeredFS(VirtualFile& romfs, ContentRecordType type) const;

@@ -647,6 +647,7 @@ private:
 
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false, const char* reason = "other");
+    void ReapRetiredImages();
 
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
@@ -825,6 +826,13 @@ private:
         Image image;
     };
     std::deque<GpuSentencedImage> gpu_sentenced_images;
+    struct RetainedImage {
+        u64 tick;
+        u64 bytes;
+        std::shared_ptr<Image> image;
+    };
+    std::deque<RetainedImage> retained_images;
+    /// Includes both sentenced images and images still held for queued downloads.
     u64 gpu_sentenced_bytes{};
 
     /// Bytes of images per device memory block, for the collector (refreshed every 60 frames).
@@ -850,7 +858,7 @@ private:
     std::vector<std::pair<DAddr, u64>> uploaded_ranges;
 
     std::deque<PendingUnswizzle> unswizzle_queue;
-    u8 current_unswizzle_frame;
+    u8 current_unswizzle_frame{};
 
     // Join caching
     boost::container::small_vector<ImageId, 4> join_overlap_ids;

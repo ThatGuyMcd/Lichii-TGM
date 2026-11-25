@@ -8,8 +8,8 @@
 namespace {
 using Shader::Ampere::Instruction;
 using Shader::Ampere::ProgramCaptureState;
-constexpr Instruction Exit{{0x0000794d, 0, 0x03800000, 0x000fea00}};
-constexpr Instruction Nop{{0x00007918, 0, 0, 0x000fc000}};
+constexpr Instruction Exit{{0x94dU | (7U << 12), 0, 0x03800000, 0}};
+constexpr Instruction Nop{{0x918U | (7U << 12), 0, 0, 0}};
 }
 
 TEST_CASE("Ampere branch convergence flags are not address bits", "[ampere][fast_fusion_branch]") {
@@ -38,13 +38,15 @@ TEST_CASE("Ampere branch convergence flags are not address bits", "[ampere][fast
     }
 }
 
-TEST_CASE("Bananza captured BRA.U preserves its predicate and relative target",
+TEST_CASE("Ampere forward BRA.U preserves its predicate and relative target",
           "[ampere][bananza][fast_fusion_branch]") {
-    INFO("040074A01BF12000 fragment "
-         "abb4ff477a60bdb67bd62961efb47fe5dd14cdf841130a1405ec49cde4cda9e9, code offset 0x5b0");
-    std::array<Instruction, 133> code;
+    constexpr u32 source = 11;
+    constexpr u32 target = 38;
+    constexpr u32 predicate = 8 | 3;
+    constexpr u32 offset = (target - source - 1) * sizeof(Instruction);
+    std::array<Instruction, target + 1> code;
     code.fill(Nop);
-    code[91] = Instruction{{0x00008947, 0x00000281, 0x03800000, 0x000fea00}};
+    code[source] = Instruction{{0x947 | (predicate << 12), offset | 1U, 7U << 23, 0}};
     code.back() = Exit;
 
     const auto lowered = Shader::Ampere::LowerToMaxwell(code);
@@ -52,8 +54,11 @@ TEST_CASE("Bananza captured BRA.U preserves its predicate and relative target",
     REQUIRE(lowered);
     REQUIRE(lowered.instructions.size() == code.size());
     CHECK(lowered.source_size == sizeof(code));
-    CHECK(lowered.instructions[91] == 0xe24000001b08000fULL);
-    CHECK(lowered.source_instruction_offsets[132] == 132);
+    // Maxwell inserts a control word for each group of three instructions.
+    constexpr u64 rel = 8 * (target + target / 3 - source - source / 3 - 1);
+    CHECK(lowered.instructions[source] ==
+          (0xe24000000000000fULL | (rel << 20) | (u64{predicate} << 16)));
+    CHECK(lowered.source_instruction_offsets[target] == target);
 }
 
 TEST_CASE("Ampere BRA.U preserves backward targets and both predicates",

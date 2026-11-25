@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <limits>
 #include <optional>
@@ -10,21 +9,12 @@
 
 namespace VideoCommon::NativeIndirectReset {
 
-// Bananza's pointer-list reset kernel, captured in the pre-upstream fork.
-inline constexpr std::array<u32, 44> Program{
-    0xff007321, 0x0002fcff, 0x00000000, 0x000e2400, 0x00007a11, 0x00004400, 0x078018ff,
-    0x001fca00, 0xff017624, 0x00004500, 0x000e06ff, 0x000fcc00, 0x00007381, 0x00000000,
-    0x001eab00, 0x000ea200, 0x00037802, 0x00000001, 0x00000f00, 0x000fca00, 0x00007386,
-    0x00000403, 0x0010a900, 0x004fe800, 0x00007386, 0x000000ff, 0x0010a900, 0x000fe800,
-    0x00007386, 0x000008ff, 0x0010a900, 0x000fe800, 0x00007386, 0x00000cff, 0x0010a900,
-    0x000fe800, 0x00007386, 0x000010ff, 0x0010a900, 0x000fe200, 0x0000794d, 0x00000000,
-    0x03800000, 0x000fea00,
-};
+inline constexpr size_t ProgramByteCount = 11 * 16;
 inline constexpr std::array<u32, 5> Record{0, 1, 0, 0, 0};
 
-inline bool Matches(std::span<const u32> code) {
-    return std::ranges::equal(code, Program);
-}
+using Fingerprint = std::array<u8, 32>;
+bool MatchesFingerprint(std::span<const u8> code, const Fingerprint& expected);
+bool Matches(std::span<const u8> code);
 
 struct ListRange {
     u64 address;

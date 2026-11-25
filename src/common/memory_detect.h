@@ -55,12 +55,12 @@ struct ProcessMemoryUsage {
 };
 
 [[nodiscard]] ProcessMemoryUsage GetProcessMemoryUsage();
-/// Physical memory the host can hand out now without paging anything out (0 when unknown).
-[[nodiscard]] u64 GetAvailablePhysicalMemory();
+/// Physical memory the host can hand out now without paging, or no value when unknown.
+[[nodiscard]] std::optional<u64> GetAvailablePhysicalMemory();
 
 /// Whether the host is short of RAM: less than a quarter of it, and less than 4 GiB, free.
-[[nodiscard]] constexpr bool IsLowOnMemory(u64 available, u64 total) {
-    return available != 0 && available < (std::min<u64>)(total / 4, u64{4} << 30);
+[[nodiscard]] constexpr bool IsLowOnMemory(std::optional<u64> available, u64 total) {
+    return available && *available < (std::min<u64>)(total / 4, u64{4} << 30);
 }
 
 /// Memory this process can still commit, in bytes, bounded by system and process limits.

@@ -182,6 +182,7 @@ add_executable(tests
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_storage_alignment.cpp
     video_core/spirv_fragment_shuffle.cpp
+    video_core/phi_identity_operand.cpp
     video_core/spirv_frag_depth_d24.cpp
     video_core/mesh_fallback.cpp
     video_core/multi_range_refresh.cpp
@@ -469,6 +470,15 @@ add_custom_command(OUTPUT "${REINTERPRET_BARRIER_BODY}"
     VERBATIM)
 target_sources(tests PRIVATE video_core/reinterpret_barrier.cpp "${REINTERPRET_BARRIER_BODY}")
 add_test(NAME reinterpret_barrier COMMAND tests "[reinterpret_barrier]")
+set(BLIT_RESOLVE_BODY "${CMAKE_CURRENT_BINARY_DIR}/blit_resolve_barrier.inc")
+add_custom_command(OUTPUT "${BLIT_RESOLVE_BODY}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/blit_resolve_barrier_source.py"
+        "${REINTERPRET_BARRIER_SOURCE}" "${BLIT_RESOLVE_BODY}"
+    DEPENDS video_core/blit_resolve_barrier_source.py "${REINTERPRET_BARRIER_SOURCE}"
+    VERBATIM)
+target_sources(tests PRIVATE video_core/blit_resolve_barrier.cpp "${BLIT_RESOLVE_BODY}")
+add_test(NAME blit_resolve_barrier COMMAND tests "[blit_resolve_barrier]")
 set(TEXTURE_GC_FRAME "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_frame.inc")
 set(PADDED_DEPTH_BODIES
     "${CMAKE_CURRENT_BINARY_DIR}/padded_depth_lookup.inc"
@@ -485,6 +495,24 @@ add_custom_command(OUTPUT ${PADDED_DEPTH_BODIES}
     VERBATIM)
 target_sources(tests PRIVATE ${PADDED_DEPTH_BODIES})
 add_test(NAME padded_depth_cache COMMAND tests "[padded_depth_cache]")
+
+set(OOT_EFFECTS_VIEW_DIR "${CMAKE_CURRENT_BINARY_DIR}/oot-effects-view")
+set(OOT_EFFECTS_VIEW_BODIES
+    "${OOT_EFFECTS_VIEW_DIR}/oot_effects_view_cache.inc"
+    "${OOT_EFFECTS_VIEW_DIR}/oot_effects_view_save.inc"
+    "${OOT_EFFECTS_VIEW_DIR}/oot_effects_view_mark.inc")
+set(OOT_EFFECTS_VIEW_CACHE "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/texture_cache_base.h")
+set(OOT_EFFECTS_VIEW_RASTERIZER "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_rasterizer.cpp")
+add_custom_command(OUTPUT ${OOT_EFFECTS_VIEW_BODIES}
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/oot_effects_view_source.py"
+        "${OOT_EFFECTS_VIEW_CACHE}" "${OOT_EFFECTS_VIEW_RASTERIZER}" "${OOT_EFFECTS_VIEW_DIR}"
+    DEPENDS video_core/oot_effects_view_source.py
+        "${OOT_EFFECTS_VIEW_CACHE}" "${OOT_EFFECTS_VIEW_RASTERIZER}"
+    VERBATIM)
+target_sources(tests PRIVATE video_core/oot_effects_view.cpp ${OOT_EFFECTS_VIEW_BODIES})
+add_test(NAME oot_effects_view COMMAND tests "[oot_effects_view]")
+add_test(NAME spirv_phi COMMAND tests "[spirv_phi]")
 
 set(PRESENT_COMPLETION_BODIES
     "${CMAKE_CURRENT_BINARY_DIR}/present_gpu_body.inc"
@@ -503,6 +531,17 @@ add_custom_command(OUTPUT ${PRESENT_COMPLETION_BODIES}
 target_sources(tests PRIVATE core/nx2_present_completion.cpp ${PRESENT_COMPLETION_BODIES})
 add_test(NAME nx2_present_completion COMMAND tests "[nx2_present],[nx2_present_completion]")
 set_tests_properties(nx2_present_completion PROPERTIES TIMEOUT 30)
+set(CACHED_GRAPHICS_SOURCE
+    "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp")
+set(CACHED_GRAPHICS_RESULT "${CMAKE_CURRENT_BINARY_DIR}/cached_graphics_result.inc")
+add_custom_command(OUTPUT "${CACHED_GRAPHICS_RESULT}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/cached_graphics_result_source.py"
+        "${CACHED_GRAPHICS_SOURCE}" "${CACHED_GRAPHICS_RESULT}"
+    DEPENDS video_core/cached_graphics_result_source.py "${CACHED_GRAPHICS_SOURCE}"
+    VERBATIM)
+target_sources(tests PRIVATE "${CACHED_GRAPHICS_RESULT}")
+add_test(NAME cached_graphics_result COMMAND tests "[cached_graphics_result]")
 set(TEXTURE_GC_BUDGET "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_budget.inc")
 add_custom_command(OUTPUT "${TEXTURE_GC_FRAME}" "${TEXTURE_GC_BUDGET}"
     COMMAND "${Python3_EXECUTABLE}" -I

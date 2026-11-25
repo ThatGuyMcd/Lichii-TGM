@@ -1615,10 +1615,12 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
                 scene.size.width == oot_motion.extent.width &&
                 scene.size.height == oot_motion.extent.height && !scene.IsRescaled() &&
                 scene.range == VideoCommon::SubresourceRange{}) {
-                oot_effects_scene = scene.Handle(Shader::TextureType::Color2D);
+                oot_effects_view = scene_id;
+                oot_effects_view_generation = texture_cache.ImageViewGeneration(scene_id);
                 oot_effects_address = scene.gpu_addr;
                 oot_effects_frame = render_trace_frame;
-                oot_live_dlss->SaveEffectsBase(oot_effects_scene, oot_motion.extent,
+                oot_live_dlss->SaveEffectsBase(scene.Handle(Shader::TextureType::Color2D),
+                                               oot_motion.extent,
                                                render_trace_frame);
             }
         }
@@ -2910,7 +2912,11 @@ void RasterizerVulkan::DispatchCompute() {
         if (std::ranges::any_of(written, [this](VideoCommon::ImageViewId id) {
                 return id && texture_cache.GetImageView(id).gpu_addr == oot_effects_address;
             })) {
-            oot_live_dlss->MarkEffects(oot_effects_scene, render_trace_frame);
+            if (const auto* scene = texture_cache.GetImageViewIfCurrent(
+                    oot_effects_view, oot_effects_view_generation)) {
+                oot_live_dlss->MarkEffects(scene->Handle(Shader::TextureType::Color2D),
+                                           render_trace_frame);
+            }
             oot_effects_frame.reset();
         }
     }

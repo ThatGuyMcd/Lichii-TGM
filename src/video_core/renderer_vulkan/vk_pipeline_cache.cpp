@@ -1868,10 +1868,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::TranslateCachedGraphics(
     auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), statistics, false,
                                           nullptr, nullptr, false, true, nullptr, nullptr,
                                           &frozen_pointer_word)};
+    const u32 read_properties = host_info.EnvironmentReadProperties();
     incomplete = frozen_pointer_word ||
-                 (!pipeline && std::ranges::any_of(envs, [this](const FileEnvironment& env) {
-                     return env.LacksRecordedValue(host_info.EnvironmentReadProperties());
-                 }));
+                 std::ranges::any_of(envs, [read_properties](const FileEnvironment& env) {
+                     return env.LacksRecordedValue(read_properties);
+                 });
+    if (incomplete) {
+        return nullptr;
+    }
     return pipeline;
 }
 

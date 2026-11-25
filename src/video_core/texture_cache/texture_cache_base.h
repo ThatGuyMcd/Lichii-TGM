@@ -365,6 +365,14 @@ public:
         return id.index < image_view_generations.size() ? image_view_generations[id.index] : 0;
     }
 
+    [[nodiscard]] const ImageView* GetImageViewIfCurrent(ImageViewId id,
+                                                        u32 generation) const noexcept {
+        if (!slot_image_views.contains(id) || ImageViewGeneration(id) != generation) {
+            return nullptr;
+        }
+        return &slot_image_views[id];
+    }
+
     /// Capture after resolving the draw's views, before render-target work can retire them.
     [[nodiscard]] u64 ImageViewRemovalSerial() const noexcept {
         return image_view_removal_serial;

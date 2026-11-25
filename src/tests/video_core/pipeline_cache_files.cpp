@@ -781,6 +781,62 @@ TEST_CASE("A missing value is conclusive where the record was made, or for an ol
     REQUIRE(lacks_elsewhere == std::vector<bool>{false, true});
 }
 
+struct CachedGraphicsResultProbe {
+    using FileEnvironment = VideoCommon::FileEnvironment;
+
+    struct {
+        u32 read_properties;
+
+        u32 EnvironmentReadProperties() const noexcept {
+            return read_properties;
+        }
+    } host_info;
+
+    std::unique_ptr<int> Finish(std::unique_ptr<int> pipeline,
+                                std::span<const FileEnvironment> envs,
+                                bool frozen_pointer_word, bool& incomplete) const {
+#include "cached_graphics_result.inc"
+    }
+};
+
+TEST_CASE("Cached graphics cannot retain a translation with missing inputs",
+          "[pipeline_cache_files][cached_graphics_result]") {
+    TempDir temp;
+    const auto path = temp.path / "incomplete-graphics.bin";
+    AppendPipeline(path, 9, Shader::Stage::Fragment);
+    size_t loaded{};
+    VideoCommon::LoadPipelines(
+        {}, path, VideoCommon::VulkanPipelineCacheVersion,
+        [](std::ifstream&, VideoCommon::FileEnvironment) { FAIL("Unexpected compute record"); },
+        [&](std::ifstream&, std::vector<VideoCommon::FileEnvironment> envs) {
+            const CachedGraphicsResultProbe same_host{{ReadProperties}};
+            const CachedGraphicsResultProbe other_host{{ReadProperties ^ 1}};
+            bool incomplete = true;
+            auto built = same_host.Finish(std::make_unique<int>(7), envs, false, incomplete);
+            REQUIRE(built);
+            CHECK(*built == 7);
+            CHECK_FALSE(incomplete);
+
+            CHECK_FALSE(same_host.Finish(nullptr, envs, false, incomplete));
+            CHECK_FALSE(incomplete);
+            CHECK_FALSE(same_host.Finish(std::make_unique<int>(7), envs, true, incomplete));
+            CHECK(incomplete);
+
+            REQUIRE_THROWS_AS(static_cast<void>(envs.front().ReadCbufValue(1, 20)),
+                              Shader::LogicError);
+            CHECK_FALSE(same_host.Finish(std::make_unique<int>(7), envs, false, incomplete));
+            CHECK(incomplete);
+            CHECK_FALSE(same_host.Finish(nullptr, envs, false, incomplete));
+            CHECK(incomplete);
+            built = other_host.Finish(std::make_unique<int>(7), envs, false, incomplete);
+            REQUIRE(built);
+            CHECK(*built == 7);
+            CHECK_FALSE(incomplete);
+            ++loaded;
+        });
+    CHECK(loaded == 1);
+}
+
 TEST_CASE("Removing pipelines keeps every other byte of the cache",
           "[pipeline_cache_files][remove_pipelines]") {
     TempDir temp;

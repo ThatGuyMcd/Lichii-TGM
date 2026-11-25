@@ -54,6 +54,7 @@ add_executable(tests
     video_core/ngx_runtime_path.cpp
     video_core/driver_cache_stats.cpp
     video_core/image_layout_guards.cpp
+    video_core/mip_chain_overlap.cpp
     video_core/vulkan_device_order.cpp
     video_core/query_stream.cpp
     common/rtc_offset.cpp
@@ -513,6 +514,7 @@ add_custom_command(OUTPUT ${OOT_EFFECTS_VIEW_BODIES}
 target_sources(tests PRIVATE video_core/oot_effects_view.cpp ${OOT_EFFECTS_VIEW_BODIES})
 add_test(NAME oot_effects_view COMMAND tests "[oot_effects_view]")
 add_test(NAME spirv_phi COMMAND tests "[spirv_phi]")
+add_test(NAME mip_chain_overlap COMMAND tests "[mip_chain_overlap]")
 
 set(PRESENT_COMPLETION_BODIES
     "${CMAKE_CURRENT_BINARY_DIR}/present_gpu_body.inc"

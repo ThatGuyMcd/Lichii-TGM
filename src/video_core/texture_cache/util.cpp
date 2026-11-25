@@ -428,7 +428,15 @@ template <u32 GOB_EXTENT>
         return std::nullopt;
     }
     const ImageInfo& info = overlap.info;
-    if (!IsBlockLinearSizeCompatible(new_info, info, base->level, 0, strict_size)) {
+    if (!IsBlockLinearSizeCompatible(info, new_info, base->level, 0, strict_size)) {
+        return std::nullopt;
+    }
+    if (base->level != 0 &&
+        (new_info.type != info.type || new_info.size != info.size || new_info.block != info.block ||
+         new_info.num_samples != info.num_samples || new_info.native_tiling != info.native_tiling ||
+         new_info.tile_width_spacing != info.tile_width_spacing ||
+         new_info.layer_stride != info.layer_stride ||
+         new_info.maybe_unaligned_layer_stride != info.maybe_unaligned_layer_stride)) {
         return std::nullopt;
     }
     if (new_info.block != MipBlockSize(info, base->level)) {
@@ -1614,12 +1622,27 @@ bool IsPitchLinearSameSize(const ImageInfo& lhs, const ImageInfo& rhs, bool stri
     }
 }
 
+namespace {
+// These single-layer images can share level zero even though the mip tail changes the stride.
+bool CanShareMipChainBase(const ImageInfo& lhs, const ImageInfo& rhs) noexcept {
+    return lhs.type == ImageType::e2D && rhs.type == ImageType::e2D &&
+           lhs.resources.layers == 1 && rhs.resources.layers == 1 &&
+           ((lhs.resources.levels == 1 && rhs.resources.levels > 1) ||
+            (rhs.resources.levels == 1 && lhs.resources.levels > 1)) &&
+           lhs.size == rhs.size && lhs.format == rhs.format && lhs.block == rhs.block &&
+           lhs.block.depth == 0 && lhs.tile_width_spacing == rhs.tile_width_spacing &&
+           lhs.num_samples == rhs.num_samples && lhs.native_tiling == rhs.native_tiling &&
+           !lhs.is_sparse && !rhs.is_sparse && lhs.astc_opaque == rhs.astc_opaque;
+}
+} // Anonymous namespace
+
 std::optional<OverlapResult> ResolveOverlap(const ImageInfo& new_info, GPUVAddr gpu_addr,
                                             VAddr cpu_addr, const ImageBase& overlap,
                                             bool strict_size, bool broken_views, bool native_bgr) {
     ASSERT(new_info.type != ImageType::Linear);
     ASSERT(overlap.info.type != ImageType::Linear);
-    if (!IsLayerStrideCompatible(new_info, overlap.info)) {
+    if (!IsLayerStrideCompatible(new_info, overlap.info) &&
+        !(gpu_addr == overlap.gpu_addr && CanShareMipChainBase(new_info, overlap.info))) {
         return std::nullopt;
     }
     if (!IsViewCompatible(overlap.info.format, new_info.format, broken_views, native_bgr)) {
@@ -1685,7 +1708,8 @@ std::optional<SubresourceBase> FindSubresource(const ImageInfo& candidate, const
             return std::nullopt;
         }
     }
-    if (!IsLayerStrideCompatible(existing, candidate)) {
+    if (!IsLayerStrideCompatible(existing, candidate) &&
+        !(candidate_addr == image.gpu_addr && CanShareMipChainBase(existing, candidate))) {
         return std::nullopt;
     }
     if (existing.type != candidate.type) {

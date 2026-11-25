@@ -19,6 +19,10 @@ settings and save locations intact.
   data the cache never recorded. The renderer can then build the pipeline
   from live data. Thanks to Zortos.
   [Lichii #2516](https://github.com/zortos293/Lichii/pull/2516)
+- I've fixed how the texture cache matches a compatible render target to
+  the base level of a mip chain. Interior views stay attached to the
+  correct parent. Thanks to Zortos.
+  [Lichii #2482](https://github.com/zortos293/Lichii/pull/2482)
 
 I've kept frame generation off by default. Existing per-game choices still apply.
 The Windows ZIP and Linux AppImage come from the same source commit.

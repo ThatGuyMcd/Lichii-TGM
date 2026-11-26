@@ -126,10 +126,15 @@ struct LifetimeFixture {
     static constexpr DAddr CpuAddress = 0x30000;
     static constexpr size_t MappingSize = 0x10000;
 
+    static Core::DeviceMemory& InitializeTestMemory(Core::System& system) {
+        REQUIRE(system.Initialize());
+        return system.DeviceMemory();
+    }
+
     ScopedSystemTestContext context;
     Core::System system;
-    Core::DeviceMemory physical;
-    Tegra::MaxwellDeviceMemoryManager device{physical};
+    // The system already owns the guest backing. A second allocation doubles host commit.
+    Tegra::MaxwellDeviceMemoryManager device{InitializeTestMemory(system)};
     VideoCore::Test::NullRasterizer rasterizer;
     ClockedRuntime runtime;
     std::unique_ptr<Kernel::KProcess> process;
@@ -140,11 +145,10 @@ struct LifetimeFixture {
     u8* bytes{};
 
     LifetimeFixture() {
-        REQUIRE(system.Initialize());
         process = std::make_unique<Kernel::KProcess>(system.Kernel());
         auto& table = process->GetPageTable().GetImpl();
         table.Resize(24, 12);
-        bytes = physical.GetPointerFromRaw<u8>(CpuAddress);
+        bytes = system.DeviceMemory().GetPointerFromRaw<u8>(CpuAddress);
         std::memset(bytes, 0, MappingSize);
         for (size_t page = 0; page < MappingSize / 0x1000; ++page) {
             table.entries.GetAndFault((CpuAddress >> 12) + page)

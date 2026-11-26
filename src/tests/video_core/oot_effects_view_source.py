@@ -15,7 +15,6 @@ cache, rasterizer, out = map(Path, sys.argv[1:])
 cache_text = cache.read_text(encoding="utf-8")
 rasterizer_text = rasterizer.read_text(encoding="utf-8")
 generation = "[[nodiscard]] u32 ImageViewGeneration("
-bump = "void BumpImageViewGeneration("
 lookup = "[[nodiscard]] const ImageView* GetImageViewIfCurrent("
 
 
@@ -28,7 +27,7 @@ mark = section(rasterizer_text, "    if (marking_effects) {", "\n    const auto*
 assert save.count("SaveEffectsBase(") == 1 and mark.count("MarkEffects(") == 1
 out.mkdir(parents=True, exist_ok=True)
 (out / "oot_effects_view_cache.inc").write_text(
-    member(generation) + member(bump) + (member(lookup) if lookup in cache_text else ""),
+    member(generation) + member(lookup),
     encoding="utf-8",
 )
 (out / "oot_effects_view_save.inc").write_text(save, encoding="utf-8")

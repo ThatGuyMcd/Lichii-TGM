@@ -408,6 +408,7 @@ add_library(video_core STATIC
     texture_cache/initial_contents.h
     texture_cache/image_view_base.cpp
     texture_cache/image_view_base.h
+    texture_cache/image_view_slots.h
     texture_cache/image_view_info.cpp
     texture_cache/image_view_info.h
     texture_cache/render_targets.h

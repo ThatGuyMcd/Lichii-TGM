@@ -348,6 +348,129 @@ TEST_CASE("Maxwell unsigned I2F has backend-independent rounding", "[shader][max
     }
 }
 
+TEST_CASE("R2P preserves unmasked predicates and condition flags across all source bytes",
+          "[shader][maxwell][r2p]") {
+    enum class MaskSource { Immediate, Register, ConstantBuffer };
+    constexpr u32 SourceRegister = 23;
+    constexpr u32 MaskRegister = 17;
+    constexpr u32 BufferIndex = 2;
+    constexpr u32 BufferWord = 13;
+    constexpr u32 SourceBits = 0xd26b9eb1;
+    constexpr u32 Initial = 0x56;
+    constexpr std::array get_flag{Opcode::GetZFlag, Opcode::GetSFlag, Opcode::GetCFlag,
+                                  Opcode::GetOFlag};
+    constexpr std::array set_flag{Opcode::SetZFlag, Opcode::SetSFlag, Opcode::SetCFlag,
+                                  Opcode::SetOFlag};
+
+    for (const auto kind : {MaskSource::Immediate, MaskSource::Register, MaskSource::ConstantBuffer}) {
+        for (const bool cc : {false, true}) {
+            for (u32 byte = 0; byte < 4; ++byte) {
+                for (const u32 mask : {0U, 0x149U, 0x1ffU}) {
+                    CAPTURE(static_cast<int>(kind), cc, byte, mask);
+                    Shader::ObjectPool<IR::Inst> pool{128};
+                    IR::Block block{pool};
+                    NumericEnvironment env;
+                    Shader::Maxwell::TranslatorVisitor translate{env, block};
+
+                    // The test calls the translator directly with independently chosen fields.
+                    const u64 fields = (u64{SourceRegister} << 8) | (u64{cc} << 40) |
+                                       (u64{byte} << 41);
+                    switch (kind) {
+                    case MaskSource::Immediate: translate.R2P_imm(fields | (u64{mask} << 20)); break;
+                    case MaskSource::Register:
+                        translate.R2P_reg(fields | (u64{MaskRegister} << 20));
+                        break;
+                    case MaskSource::ConstantBuffer:
+                        translate.R2P_cbuf(fields | (u64{BufferWord} << 20) |
+                                          (u64{BufferIndex} << 34));
+                        break;
+                    }
+                    IR::Program program;
+                    program.blocks = {&block};
+                    program.post_order_blocks = {&block};
+                    Shader::Optimization::ConstantPropagationPass(env, program);
+
+                    u32 state = Initial;
+                    u32 written{};
+                    u32 live_selects{};
+                    u32 extracts{};
+                    std::unordered_map<const IR::Inst*, u32> values;
+                    const auto bit = [](u32 value, u32 index) { return (value >> index) & 1; };
+                    const auto write_bit = [&](u32 index, u32 value) {
+                        written |= 1U << index;
+                        state = (state & ~(1U << index)) | (value << index);
+                    };
+                    for (const IR::Inst& inst : block) {
+                        const auto value = [&](size_t index) -> u32 {
+                            const IR::Value operand = inst.Arg(index);
+                            if (!operand.IsImmediate()) {
+                                return values.at(operand.Inst());
+                            }
+                            return operand.Type() == IR::Type::U1 ? operand.U1() : operand.U32();
+                        };
+                        u32 result{};
+                        switch (inst.GetOpcode()) {
+                        case Opcode::Void: break;
+                        case Opcode::Identity: result = value(0); break;
+                        case Opcode::GetRegister: {
+                            const auto reg = static_cast<u32>(inst.Arg(0).Reg());
+                            REQUIRE((reg == SourceRegister || reg == MaskRegister));
+                            result = reg == SourceRegister ? SourceBits : mask;
+                            break;
+                        }
+                        case Opcode::GetCbufU32:
+                            REQUIRE(value(0) == BufferIndex);
+                            REQUIRE(value(1) == BufferWord * sizeof(u32));
+                            result = mask;
+                            break;
+                        case Opcode::BitFieldUExtract:
+                            REQUIRE(value(1) < 32);
+                            REQUIRE(value(2) == 1);
+                            result = bit(value(0), value(1));
+                            extracts += inst.HasUses();
+                            break;
+                        case Opcode::GetZeroFromOp:
+                        case Opcode::LogicalNot: result = value(0) == 0; break;
+                        case Opcode::IEqual: result = value(0) == value(1); break;
+                        case Opcode::INotEqual: result = value(0) != value(1); break;
+                        case Opcode::SelectU1:
+                            result = value(0) ? value(1) : value(2);
+                            live_selects += inst.HasUses();
+                            break;
+                        case Opcode::GetPred: result = bit(state, static_cast<u32>(inst.Arg(0).Pred())); break;
+                        case Opcode::SetPred: write_bit(static_cast<u32>(inst.Arg(0).Pred()), value(1)); break;
+                        default:
+                            if (const auto op = std::ranges::find(get_flag, inst.GetOpcode());
+                                op != get_flag.end()) {
+                                result = bit(state, static_cast<u32>(op - get_flag.begin()));
+                            } else if (const auto set = std::ranges::find(set_flag, inst.GetOpcode());
+                                       set != set_flag.end()) {
+                                write_bit(static_cast<u32>(set - set_flag.begin()), value(0));
+                            } else {
+                                FAIL("Unexpected R2P IR opcode " << IR::NameOf(inst.GetOpcode()));
+                            }
+                            break;
+                        }
+                        values.emplace(&inst, result);
+                    }
+
+                    const u32 available = cc ? 0x0f : 0x7f;
+                    const u32 selected = mask & available;
+                    CHECK(state == ((Initial & ~selected) | ((SourceBits >> (8 * byte)) & selected)));
+                    if (kind == MaskSource::Immediate) {
+                        CHECK(written == selected);
+                        CHECK(live_selects == 0);
+                        CHECK(extracts == static_cast<u32>(std::popcount(selected)));
+                    } else {
+                        CHECK(written == available);
+                        CHECK(live_selects == static_cast<u32>(std::popcount(available)));
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST_CASE("IADD overflow preserves both signed boundaries in shader output",
           "[shader][maxwell][numeric_backend][iadd_overflow]") {
     Shader::ObjectPool<IR::Inst> pool{32};

@@ -89,6 +89,30 @@ void EncryptSharedFont(const std::vector<u32>& input, std::vector<u8>& output, s
     offset += transformed_font.size() * sizeof(u32);
 }
 
+std::vector<u32> ReadSharedFont(FileSys::VirtualFile installed_romfs, std::string_view filename,
+                                std::size_t available_bytes,
+                                const std::function<FileSys::VirtualFile()>& open_builtin) {
+    const auto read_words = [&](FileSys::VirtualFile romfs) -> std::vector<u32> {
+        const auto directory = romfs ? FileSys::ExtractRomFS(std::move(romfs)) : nullptr;
+        const auto font = directory ? directory->GetFile(filename) : nullptr;
+        if (!font) {
+            return {};
+        }
+        const auto size = font->GetSize();
+        if (size <= 2 * sizeof(u32) || size % sizeof(u32) != 0 || size >= available_bytes) {
+            return {};
+        }
+        std::vector<u32> words(size / sizeof(u32));
+        if (font->ReadBytes(words.data(), size) != size) {
+            return {};
+        }
+        std::transform(words.begin(), words.end(), words.begin(), Common::swap32);
+        return words.front() == EXPECTED_MAGIC ? std::move(words) : std::vector<u32>{};
+    };
+    auto words = read_words(std::move(installed_romfs));
+    return words.empty() ? read_words(open_builtin()) : std::move(words);
+}
+
 struct IPlatformServiceManager::Impl {
     const FontRegion& GetSharedFontRegion(std::size_t index) const {
         return index < shared_font_regions.size() ? shared_font_regions[index] : EMPTY_REGION;
@@ -146,37 +170,21 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
     // Rebuild shared fonts from data ncas or synthesize
     for (size_t font_index = 0; font_index < SHARED_FONTS.size(); ++font_index) {
         const auto& font = SHARED_FONTS[font_index];
-        FileSys::VirtualFile romfs;
         const auto nca =
             nand->GetEntry(static_cast<u64>(font.first), FileSys::ContentRecordType::Data);
-        if (nca) {
-            romfs = nca->GetRomFS();
-        }
-
-        if (!romfs) {
-            romfs = FileSys::SystemArchive::SynthesizeSystemArchive(static_cast<u64>(font.first));
-        }
-
-        if (!romfs) {
-            LOG_ERROR(Service_NS, "Failed to find or synthesize {:016X}! Skipping", font.first);
+        const auto font_data_u32 = ReadSharedFont(
+            nca ? nca->GetRomFS() : nullptr, font.second, impl->shared_font.size() - offset, [&] {
+                if (nca) {
+                    LOG_WARNING(Service_NS, "Cannot read \"{}\" from {:016X}, using the built-in font",
+                                font.second, font.first);
+                }
+                return FileSys::SystemArchive::SynthesizeSystemArchive(static_cast<u64>(font.first));
+            });
+        if (font_data_u32.empty()) {
+            LOG_ERROR(Service_NS, "{:016X} has no readable font \"{}\"! Skipping",
+                      font.first, font.second);
             continue;
         }
-
-        const auto extracted_romfs = FileSys::ExtractRomFS(romfs);
-        if (!extracted_romfs) {
-            LOG_ERROR(Service_NS, "Failed to extract RomFS for {:016X}! Skipping", font.first);
-            continue;
-        }
-        const auto font_fp = extracted_romfs->GetFile(font.second);
-        if (!font_fp) {
-            LOG_ERROR(Service_NS, "{:016X} has no file \"{}\"! Skipping", font.first, font.second);
-            continue;
-        }
-        std::vector<u32> font_data_u32(font_fp->GetSize() / sizeof(u32));
-        font_fp->ReadBytes<u32>(font_data_u32.data(), font_fp->GetSize());
-        // We need to be BigEndian as u32s for the xor encryption
-        std::transform(font_data_u32.begin(), font_data_u32.end(), font_data_u32.begin(),
-                       Common::swap32);
         // Font offset and size do not account for the header
         const FontRegion region{u32(offset + 8), u32((font_data_u32.size() * sizeof(u32)) - 8)};
         DecryptSharedFont(font_data_u32, impl->shared_font, offset);

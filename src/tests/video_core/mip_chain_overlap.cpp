@@ -23,30 +23,25 @@ ImageInfo MakeImage(Extent3D size, s32 levels, Extent3D block, s32 layers = 1) {
     return info;
 }
 
-TEST_CASE("Single-layer mip chains can share a compatible level zero",
+TEST_CASE("Explicit unequal mip strides prevent sharing level zero",
           "[video_core][texture_cache][mip_chain_overlap]") {
     const auto target = MakeImage({608, 336, 1}, 1, {0, 4, 0});
     const auto chain = MakeImage(target.size, 4, target.block);
     REQUIRE(chain.layer_stride != target.layer_stride);
     REQUIRE(chain.maybe_unaligned_layer_stride != target.maybe_unaligned_layer_stride);
     const ImageBase target_image{target, GpuAddress, DeviceAddress};
-    const auto joined =
-        ResolveOverlap(chain, GpuAddress, DeviceAddress, target_image, true, false, false);
-    CHECK(joined.has_value());
-    if (joined) {
-        CHECK(joined->resources.levels == 4);
-        CHECK(joined->resources.layers == 1);
-    }
-
+    CHECK_FALSE(ResolveOverlap(chain, GpuAddress, DeviceAddress, target_image, true, false, false));
     const ImageBase chain_image{chain, GpuAddress, DeviceAddress};
-    const auto view = FindSubresource(target, chain_image, GpuAddress, {}, false, false);
-    CHECK(view.has_value());
-    if (view) {
-        CHECK(view->level == 0);
-        CHECK(view->layer == 0);
-    }
+    CHECK_FALSE(FindSubresource(target, chain_image, GpuAddress, {}, false, false));
 
-    // The stride exemption owes its validity to matching layout and the same base address.
+    auto unspecified_stride = target;
+    unspecified_stride.layer_stride = 0;
+    const auto view =
+        FindSubresource(unspecified_stride, chain_image, GpuAddress, {}, false, false);
+    REQUIRE(view);
+    CHECK(view->level == 0);
+    CHECK(view->layer == 0);
+
     auto tiled = target;
     tiled.native_tiling = !chain.native_tiling;
     auto sparse = target;
@@ -67,7 +62,7 @@ TEST_CASE("Single-layer mip chains can share a compatible level zero",
     CHECK_FALSE(FindSubresource(target, chain_image, GpuAddress + mip1, {}, false, false));
 }
 
-TEST_CASE("An interior mip view does not replace its parent",
+TEST_CASE("Interior view matching and overlap reconciliation keep their own rules",
           "[video_core][texture_cache][mip_chain_overlap]") {
     const auto chain = MakeImage({64, 64, 1}, 2, {});
     const ImageBase chain_image{chain, GpuAddress, DeviceAddress};
@@ -84,7 +79,11 @@ TEST_CASE("An interior mip view does not replace its parent",
     auto wrong = MakeImage({128, 128, 1}, 1, {});
     wrong.layer_stride = 0;
     CHECK_FALSE(FindSubresource(wrong, chain_image, GpuAddress + mip1, {}, false, false));
-    CHECK_FALSE(ResolveOverlap(wrong, GpuAddress + mip1, DeviceAddress + mip1, chain_image,
-                               true, false, false));
+    const auto overlap = ResolveOverlap(wrong, GpuAddress + mip1, DeviceAddress + mip1,
+                                        chain_image, true, false, false);
+    REQUIRE(overlap);
+    CHECK(overlap->gpu_addr == GpuAddress);
+    CHECK(overlap->cpu_addr == DeviceAddress);
+    CHECK(overlap->resources.levels == chain.resources.levels);
 }
 } // Anonymous namespace

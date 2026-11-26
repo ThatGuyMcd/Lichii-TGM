@@ -480,6 +480,16 @@ add_custom_command(OUTPUT "${BLIT_RESOLVE_BODY}"
     VERBATIM)
 target_sources(tests PRIVATE video_core/blit_resolve_barrier.cpp "${BLIT_RESOLVE_BODY}")
 add_test(NAME blit_resolve_barrier COMMAND tests "[blit_resolve_barrier]")
+set(BCN_UNSWIZZLE_SOURCE "${PROJECT_SOURCE_DIR}/src/video_core/renderer_vulkan/vk_compute_pass.cpp")
+set(BCN_UNSWIZZLE_BODY "${CMAKE_CURRENT_BINARY_DIR}/bcn_unswizzle_3d.inc")
+add_custom_command(OUTPUT "${BCN_UNSWIZZLE_BODY}"
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/video_core/bcn_unswizzle_3d_source.py"
+        "${BCN_UNSWIZZLE_SOURCE}" "${BCN_UNSWIZZLE_BODY}"
+    DEPENDS video_core/bcn_unswizzle_3d_source.py "${BCN_UNSWIZZLE_SOURCE}"
+    VERBATIM)
+target_sources(tests PRIVATE video_core/bcn_unswizzle_3d.cpp "${BCN_UNSWIZZLE_BODY}")
+add_test(NAME bcn_unswizzle_3d COMMAND tests "[bcn_unswizzle_3d]")
 set(TEXTURE_GC_FRAME "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_frame.inc")
 set(PADDED_DEPTH_BODIES
     "${CMAKE_CURRENT_BINARY_DIR}/padded_depth_lookup.inc"
@@ -513,8 +523,15 @@ add_custom_command(OUTPUT ${OOT_EFFECTS_VIEW_BODIES}
     VERBATIM)
 target_sources(tests PRIVATE video_core/oot_effects_view.cpp ${OOT_EFFECTS_VIEW_BODIES})
 add_test(NAME oot_effects_view COMMAND tests "[oot_effects_view]")
+add_executable(slot_vector_retire_tests common/slot_vector_retirement.cpp)
+target_compile_features(slot_vector_retire_tests PRIVATE cxx_std_20)
+target_link_libraries(slot_vector_retire_tests PRIVATE common)
+add_dependencies(tests slot_vector_retire_tests)
+add_test(NAME slot_vector_retirement COMMAND slot_vector_retire_tests)
 add_test(NAME spirv_phi COMMAND tests "[spirv_phi]")
 add_test(NAME mip_chain_overlap COMMAND tests "[mip_chain_overlap]")
+add_test(NAME shared_font_fallback COMMAND tests "[shared_font_fallback]")
+add_test(NAME r2p_immediate_predicates COMMAND tests "[r2p]")
 
 set(PRESENT_COMPLETION_BODIES
     "${CMAKE_CURRENT_BINARY_DIR}/present_gpu_body.inc"

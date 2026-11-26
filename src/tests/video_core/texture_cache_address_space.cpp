@@ -318,7 +318,6 @@ struct TextureCacheTestAccess {
     static void RetireView(Cache& cache, ImageViewId id) {
         cache.RemoveImageViewReferences(std::span{&id, 1});
         cache.slot_image_views.erase(id);
-        cache.BumpImageViewGeneration(id);
     }
     static void FeedbackTargets(Cache& cache, ImageViewId depth, ImageViewId color = {}) {
         cache.render_targets.depth_buffer_id = depth;

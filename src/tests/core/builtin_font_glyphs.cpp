@@ -13,9 +13,56 @@
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/system_archive/system_archive.h"
 #include "core/file_sys/vfs/vfs.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 #include "core/hle/service/ns/platform_service_manager.h"
 
 namespace {
+
+FileSys::VirtualFile FontArchive(std::string_view name, std::vector<u8> contents) {
+    std::vector<FileSys::VirtualFile> files{
+        std::make_shared<FileSys::VectorVfsFile>(std::move(contents), std::string(name))};
+    return FileSys::CreateRomFS(std::make_shared<FileSys::VectorVfsDirectory>(std::move(files)));
+}
+
+TEST_CASE("Shared fonts use a built-in archive when the installed entry cannot be read",
+          "[core][shared_font_fallback]") {
+    constexpr std::string_view filename = "independent-font.bfttf";
+    const auto make_font = [](u32 word) {
+        std::vector<u8> bytes(3 * sizeof(u32));
+        std::size_t offset{};
+        Service::NS::EncryptSharedFont({word}, bytes, offset);
+        return bytes;
+    };
+    const auto installed = make_font(0x01020304);
+    const auto builtin = make_font(0x18273645);
+    const auto fallback_archive = FontArchive(filename, builtin);
+    const auto installed_archive = FontArchive(filename, installed);
+    REQUIRE(fallback_archive);
+    REQUIRE(installed_archive);
+
+    int fallback_calls = 0;
+    const auto fallback = [&] {
+        ++fallback_calls;
+        return fallback_archive;
+    };
+    constexpr std::size_t capacity = 256;
+    const auto expected_builtin =
+        Service::NS::ReadSharedFont(fallback_archive, filename, capacity, fallback);
+    REQUIRE(expected_builtin.size() == 3);
+    const auto current = Service::NS::ReadSharedFont(installed_archive, filename, capacity, fallback);
+    REQUIRE(current.size() == 3);
+    CHECK(current != expected_builtin);
+    CHECK(fallback_calls == 0);
+    for (const auto& invalid : {FileSys::VirtualFile{}, FontArchive("other-name", installed),
+                                FontArchive(filename, std::vector<u8>(12)),
+                                FontArchive(filename, std::vector<u8>(11))}) {
+        CHECK(Service::NS::ReadSharedFont(invalid, filename, capacity, fallback) ==
+              expected_builtin);
+    }
+    CHECK(fallback_calls == 4);
+    CHECK(Service::NS::ReadSharedFont(installed_archive, filename, 12, fallback).empty());
+    CHECK(fallback_calls == 5);
+}
 
 u16 Be16(const std::vector<u8>& data, size_t offset) {
     REQUIRE(offset + 2 <= data.size());

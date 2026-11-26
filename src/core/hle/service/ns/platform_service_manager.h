@@ -6,8 +6,11 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <string_view>
 #include <vector>
+#include "core/file_sys/vfs/vfs_types.h"
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/set/settings_types.h"
@@ -54,6 +57,9 @@ constexpr std::array<std::pair<FontArchives, const char*>, 7> SHARED_FONTS{
 
 void DecryptSharedFontToTTF(const std::vector<u32>& input, std::vector<u8>& output);
 void EncryptSharedFont(const std::vector<u32>& input, std::vector<u8>& output, std::size_t& offset);
+std::vector<u32> ReadSharedFont(FileSys::VirtualFile installed_romfs, std::string_view filename,
+                                std::size_t available_bytes,
+                                const std::function<FileSys::VirtualFile()>& open_builtin);
 
 class IPlatformServiceManager final : public ServiceFramework<IPlatformServiceManager> {
 public:

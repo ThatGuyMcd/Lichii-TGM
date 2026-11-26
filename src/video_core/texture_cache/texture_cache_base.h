@@ -48,6 +48,7 @@
 #include "video_core/texture_cache/image_base.h"
 #include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/image_view_base.h"
+#include "video_core/texture_cache/image_view_slots.h"
 #include "video_core/texture_cache/render_targets.h"
 #include "video_core/texture_cache/sampled_views.h"
 #include "video_core/texture_cache/stale_pages.h"
@@ -362,15 +363,12 @@ public:
     /// Bumped each time the slot's view is deleted: a kept id names the same view while its
     /// generation holds.
     [[nodiscard]] u32 ImageViewGeneration(ImageViewId id) const noexcept {
-        return id.index < image_view_generations.size() ? image_view_generations[id.index] : 0;
+        return slot_image_views.Generation(id);
     }
 
     [[nodiscard]] const ImageView* GetImageViewIfCurrent(ImageViewId id,
                                                         u32 generation) const noexcept {
-        if (!slot_image_views.contains(id) || ImageViewGeneration(id) != generation) {
-            return nullptr;
-        }
-        return &slot_image_views[id];
+        return slot_image_views.GetIfCurrent(id, generation);
     }
 
     /// Capture after resolving the draw's views, before render-target work can retire them.
@@ -759,15 +757,7 @@ private:
     /// The CPU address an image at gpu_addr is keyed by: its backing, or a fixed stand-in.
     [[nodiscard]] std::optional<DAddr> ImageCpuAddress(GPUVAddr gpu_addr, size_t size) const;
 
-    void BumpImageViewGeneration(ImageViewId id) {
-        if (id.index >= image_view_generations.size()) {
-            image_view_generations.resize(id.index + 1);
-        }
-        ++image_view_generations[id.index];
-    }
-
     bool has_deleted_images = false;
-    std::vector<u32> image_view_generations; ///< ImageViewGeneration
     std::vector<ImageId>* prepare_log{}; ///< LogPrepares
     bool prepare_log_dry{};
     /// True while a clear binds its render targets (UpdateRenderTargets(true)), so JoinImages can
@@ -794,7 +784,7 @@ private:
 
     Common::SlotVector<Image> slot_images;
     Common::SlotVector<ImageMapView> slot_map_views;
-    Common::SlotVector<ImageView> slot_image_views;
+    ImageViewSlots<ImageView> slot_image_views;
     Common::SlotVector<ImageAlloc> slot_image_allocs;
     Common::SlotVector<Sampler> slot_samplers;
     Common::SlotVector<Framebuffer> slot_framebuffers;

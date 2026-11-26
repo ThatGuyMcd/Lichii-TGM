@@ -907,6 +907,7 @@ private:
         std::vector<IR::U1> demote_conds;
         u32 num_epilogues{};
         u32 branch_depth{};
+        u32 loop_depth{};
         for (const IR::AbstractSyntaxNode& node : syntax_list) {
             if (node.type == Type::If) {
                 ++branch_depth;
@@ -914,14 +915,20 @@ private:
             if (node.type == Type::EndIf) {
                 --branch_depth;
             }
+            if (node.type == Type::Loop) {
+                ++loop_depth;
+            }
+            if (node.type == Type::Repeat) {
+                --loop_depth;
+            }
             if (node.type != Type::Block) {
                 continue;
             }
             for (const IR::Inst& inst : node.data.block->Instructions()) {
                 const IR::Opcode op{inst.GetOpcode()};
                 if (op == IR::Opcode::DemoteToHelperInvocation) {
-                    // Skip reordering nested demote branches.
-                    if (branch_depth <= 1) {
+                    // A loop may leave before computing this iteration's condition.
+                    if (branch_depth <= 1 && loop_depth == 0) {
                         demote_blocks.push_back(node.data.block);
                     }
                     break;
@@ -941,6 +948,15 @@ private:
             LOG_DEBUG(Shader, "Combining demotes with more than one return is not implemented.");
             return;
         }
+        // Moving any demote requires a selection around every candidate.
+        const auto is_if_body = [&](const IR::Block* block) {
+            return std::ranges::any_of(syntax_list, [&](const IR::AbstractSyntaxNode& node) {
+                return node.type == Type::If && node.data.if_node.body == block;
+            });
+        };
+        if (!std::ranges::all_of(demote_blocks, is_if_body)) {
+            return;
+        }
         s64 last_iterator_offset{};
         auto& asl{syntax_list};
         for (const IR::Block* demote_block : demote_blocks) {
@@ -949,8 +965,6 @@ private:
                 return asn.type == Type::If && asn.data.if_node.body == demote_block;
             })};
             if (asl_it == asl.end()) {
-                // Demote without a conditional branch.
-                // No need to proceed since all fragment instances will be demoted regardless.
                 return;
             }
             const IR::Block* const end_if = asl_it->data.if_node.merge;

@@ -490,6 +490,8 @@ add_custom_command(OUTPUT "${BCN_UNSWIZZLE_BODY}"
     VERBATIM)
 target_sources(tests PRIVATE video_core/bcn_unswizzle_3d.cpp "${BCN_UNSWIZZLE_BODY}")
 add_test(NAME bcn_unswizzle_3d COMMAND tests "[bcn_unswizzle_3d]")
+target_sources(tests PRIVATE video_core/demote_reorder.cpp)
+add_test(NAME demote_reorder COMMAND tests "[demote_reorder]")
 set(TEXTURE_GC_FRAME "${CMAKE_CURRENT_BINARY_DIR}/texture_gc_frame.inc")
 set(PADDED_DEPTH_BODIES
     "${CMAKE_CURRENT_BINARY_DIR}/padded_depth_lookup.inc"

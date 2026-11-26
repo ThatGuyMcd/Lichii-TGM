@@ -21,6 +21,10 @@ Lantern UI, Horizon Couch Mode, settings and save locations intact.
 - I've reduced unnecessary shader translation work for immediate
   register-to-predicate masks. Thanks to Reiixan.
   [Lichii #2577](https://github.com/zortos293/Lichii/pull/2577)
+- I've fixed shader discard reordering so a discarded pixel stays
+  discarded when the instruction is inside a loop or a block that
+  can't safely be moved.
+  [Lichii #2607](https://github.com/zortos293/Lichii/pull/2607)
 - I've made shared fonts fall back to the existing built-in archive
   when the installed copy can't be read. Thanks to Zortos.
   [Lichii #2591](https://github.com/zortos293/Lichii/pull/2591)

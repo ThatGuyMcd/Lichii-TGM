@@ -598,10 +598,14 @@ using Access = VideoCommon::BufferCacheTestAccess;
 
 template <class R, class C>
 struct BasicFixture {
+    static Core::DeviceMemory& InitializeTestMemory(Core::System& system) {
+        REQUIRE(system.Initialize());
+        return system.DeviceMemory();
+    }
+
     ScopedSystemTestContext context;
     Core::System system;
-    Core::DeviceMemory physical;
-    Tegra::MaxwellDeviceMemoryManager device{physical};
+    Tegra::MaxwellDeviceMemoryManager device{InitializeTestMemory(system)};
     Tegra::GPU gpu{system, false, false};
     Null::RasterizerNull rasterizer{gpu};
     std::optional<Tegra::MemoryManager> memory;
@@ -612,11 +616,10 @@ struct BasicFixture {
     u8* bytes{};
 
     BasicFixture() {
-        system.Initialize();
         process = std::make_unique<Kernel::KProcess>(system.Kernel());
         auto& table = process->GetPageTable().GetImpl();
         table.Resize(24, 12);
-        bytes = physical.GetPointerFromRaw<u8>(0x10000);
+        bytes = system.DeviceMemory().GetPointerFromRaw<u8>(0x10000);
         std::memset(bytes, 0, 0x40000);
         for (u64 page = 0; page < 64; ++page) {
             table.entries.GetAndFault(0x10 + page)

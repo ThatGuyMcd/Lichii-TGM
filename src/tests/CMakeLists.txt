@@ -355,6 +355,8 @@ add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
 add_test(NAME test_system_directory_isolation COMMAND tests "[test_system_directory_isolation]")
+add_test(NAME sampled_subresource_guard COMMAND tests "[sampled_subresource_guard]")
+add_test(NAME ssa_opaque_phi COMMAND tests "[ssa_opaque_phi]")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(GPFIFO_SUBMIT_DIR "${CMAKE_CURRENT_BINARY_DIR}/gpfifo-submit")
 set(GPFIFO_SUBMIT_BODIES

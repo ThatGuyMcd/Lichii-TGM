@@ -580,6 +580,7 @@ private:
 
     /// Create a new image view from a guest descriptor
     [[nodiscard]] ImageViewId CreateImageView(const TICEntry& config);
+    [[nodiscard]] ImageViewId CreateImageViewForImage(const TICEntry& config, ImageId image_id);
 
     /// Find or create an image from the given parameters
     [[nodiscard]] ImageId FindOrInsertImage(const ImageInfo& info, GPUVAddr gpu_addr,

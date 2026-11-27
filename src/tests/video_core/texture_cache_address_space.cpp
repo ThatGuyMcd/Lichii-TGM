@@ -200,6 +200,12 @@ struct TextureCacheTestAccess {
         return id;
     }
     static Image& LifetimeImage(LifetimeCache& cache, ImageId id) { return cache.slot_images[id]; }
+    static ImageViewId CreateImageView(LifetimeCache& cache, const TICEntry& config, ImageId id) {
+        return cache.CreateImageViewForImage(config, id);
+    }
+    static const ImageViewBase& LifetimeImageView(const LifetimeCache& cache, ImageViewId id) {
+        return cache.slot_image_views[id];
+    }
     static void RetireLifetimeImage(LifetimeCache& cache, ImageId id, bool immediate = false) {
         cache.UnregisterImage(id);
         cache.DeleteImage(id, immediate);
@@ -433,6 +439,54 @@ struct TextureCacheTestAccess {
         CHECK(cache.page_table.at(cpu >> 20).empty() == !present);
     }
 };
+}
+
+TEST_CASE("Sampled descriptors without a matching image subresource bind the null view",
+          "[video_core][sampled_subresource_guard]") {
+    using namespace Tegra::Texture;
+    using namespace VideoCommon;
+    using Access = TextureCacheTestAccess;
+    LifetimeFixture fixture;
+    auto& cache = *fixture.cache;
+
+    TICEntry config{};
+    config.address_low = static_cast<u32>(fixture.GpuAddress);
+    config.header_version.Assign(TICHeaderVersion::BlockLinear);
+    config.texture_type.Assign(TextureType::Texture2DArray);
+    config.format.Assign(TextureFormat::A8B8G8R8);
+    config.r_type.Assign(ComponentType::UNORM);
+    config.g_type.Assign(ComponentType::UNORM);
+    config.b_type.Assign(ComponentType::UNORM);
+    config.a_type.Assign(ComponentType::UNORM);
+    config.width_minus_one.Assign(31);
+    config.height_minus_1.Assign(7);
+    config.depth_minus_1.Assign(1);
+
+    const ImageInfo info{config};
+    const auto id = Access::RegisterLifetimeImage(cache, info, fixture.GpuAddress,
+                                                   fixture.CpuAddress);
+    const auto& image = Access::LifetimeImage(cache, id);
+    REQUIRE(info.layer_stride > 64);
+    config.address_low += 64;
+    REQUIRE_FALSE(image.TryFindBase(config.Address()).has_value());
+    CHECK(Access::CreateImageView(cache, config, id) == NULL_IMAGE_VIEW_ID);
+    CHECK(image.image_view_ids.empty());
+    CHECK_FALSE(True(image.flags & ImageFlagBits::Strong));
+
+    // An aligned descriptor still selects the second layer and retains the view.
+    config.address_low = static_cast<u32>(fixture.GpuAddress + info.layer_stride);
+    config.depth_minus_1.Assign(0);
+    const auto valid = Access::CreateImageView(cache, config, id);
+    REQUIRE(valid != NULL_IMAGE_VIEW_ID);
+    const auto& view = Access::LifetimeImageView(cache, valid);
+    CHECK(view.image_id == id);
+    CHECK(view.range.base.level == 0);
+    CHECK(view.range.base.layer == 1);
+    CHECK(view.range.extent.layers == 1);
+    CHECK(True(view.flags & ImageViewFlagBits::Strong));
+    CHECK(True(image.flags & ImageFlagBits::Strong));
+    CHECK(Access::CreateImageView(cache, config, id) == valid);
+    CHECK(image.image_view_ids.size() == 1);
 }
 
 TEST_CASE("A retired image counts against memory until both timelines release it",

@@ -124,3 +124,52 @@ TEST_CASE("SSA reads of predicates, flags and branch variables merge their defin
     CHECK(Resolved(in_merge.carry, &merge) == Definitions{{&merge, before.carry}});
     CHECK(Resolved(in_merge.overflow, &merge) == Definitions{{&merge, before.overflow}});
 }
+
+TEST_CASE("SSA opaque phi cycles without concrete types terminate",
+          "[video_core][shader][ssa][ssa_opaque_phi]") {
+    Shader::ObjectPool<IR::Inst> pool{16};
+    IR::Block header{pool}, latch{pool};
+    header.AddBranch(&latch);
+    latch.AddBranch(&header);
+
+    auto& header_phi = *header.PrependNewInst(
+        header.end(), IR::Opcode::Phi, {}, static_cast<u32>(IR::Type::Opaque));
+    auto& latch_phi = *latch.PrependNewInst(
+        latch.end(), IR::Opcode::Phi, {}, static_cast<u32>(IR::Type::Opaque));
+    auto& identity = *latch.PrependNewInst(latch.end(), IR::Opcode::Identity, {IR::Value{&latch_phi}});
+    header_phi.AddPhiOperand(&latch, IR::Value{&identity});
+    latch_phi.AddPhiOperand(&header, IR::Value{&header_phi});
+
+    Run({&header, &latch}, {&latch, &header});
+
+    CHECK(header_phi.Type() == IR::Type::Opaque);
+    CHECK(latch_phi.Type() == IR::Type::Opaque);
+    CHECK(header_phi.Arg(0).Resolve() == IR::Value{&latch_phi});
+    CHECK(latch_phi.Arg(0).Resolve() == IR::Value{&header_phi});
+}
+
+TEST_CASE("SSA opaque phi cycles can still reach a concrete type",
+          "[video_core][shader][ssa][ssa_opaque_phi]") {
+    Shader::ObjectPool<IR::Inst> pool{16};
+    IR::Block entry{pool}, header{pool}, latch{pool};
+    entry.AddBranch(&header);
+    header.AddBranch(&latch);
+    latch.AddBranch(&header);
+
+    auto& header_phi = *header.PrependNewInst(
+        header.end(), IR::Opcode::Phi, {}, static_cast<u32>(IR::Type::Opaque));
+    auto& latch_phi = *latch.PrependNewInst(
+        latch.end(), IR::Opcode::Phi, {}, static_cast<u32>(IR::Type::Opaque));
+    auto& identity = *latch.PrependNewInst(latch.end(), IR::Opcode::Identity, {IR::Value{&latch_phi}});
+    header_phi.AddPhiOperand(&latch, IR::Value{&identity});
+    header_phi.AddPhiOperand(&entry, IR::Value{u32{17}});
+    latch_phi.AddPhiOperand(&header, IR::Value{&header_phi});
+
+    Run({&entry, &header, &latch}, {&latch, &header, &entry});
+
+    CHECK(header_phi.Type() == IR::Type::U32);
+    CHECK(latch_phi.Type() == IR::Type::U32);
+    CHECK(header_phi.PhiBlock(0) == &entry);
+    CHECK(header_phi.Arg(0).U32() == 17);
+    CHECK(header_phi.Arg(1).Resolve() == IR::Value{&latch_phi});
+}

@@ -82,6 +82,7 @@ add_library(video_core STATIC
     host1x/codecs/decoder.h
     host1x/codecs/h264.cpp
     host1x/codecs/h264.h
+    host1x/codecs/h264_surface_offsets.h
     host1x/codecs/vp8.cpp
     host1x/codecs/vp8.h
     host1x/codecs/vp9.cpp

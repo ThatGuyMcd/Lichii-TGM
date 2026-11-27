@@ -66,15 +66,6 @@ protected:
     };
     static_assert(sizeof(Reloc) == 0x10, "Reloc has incorrect size");
 
-    struct SyncptIncr {
-        u32 id{};
-        u32 increments{};
-        u32 unk0{};
-        u32 unk1{};
-        u32 unk2{};
-    };
-    static_assert(sizeof(SyncptIncr) == 0x14, "SyncptIncr has incorrect size");
-
     struct IoctlGetSyncpoint {
         // Input
         u32_le param{};

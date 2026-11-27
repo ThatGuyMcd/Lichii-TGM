@@ -84,6 +84,7 @@ add_executable(tests
     video_core/hdr_output.cpp
     core/nx2_streamplay.cpp
     core/nx2_video_ready.cpp
+    core/nvdrv_video_bounds.cpp
     core/nx2_debug_server.cpp
     core/general_channel.cpp
     core/nx2_auto_resolution.cpp
@@ -619,6 +620,7 @@ add_test(NAME unique_function_ownership COMMAND tests "[unique_function_ownershi
 add_test(NAME kernel_core_fibers COMMAND tests "[kernel_core_fibers]")
 add_test(NAME driver_blobs_same_session COMMAND tests "[driver_blobs_same_session]")
 add_test(NAME maxwell_fmz COMMAND tests "[fmz]")
+add_test(NAME nvdrv_video_bounds COMMAND tests "[nvdrv_video_bounds]")
 add_test(NAME filesystem_buffer_bounds COMMAND tests "[filesystem_buffer_bounds]")
 add_test(NAME album_png COMMAND tests "[album_png]")
 add_test(NAME window_system_exit COMMAND tests "[window_system_exit]")

@@ -171,7 +171,14 @@ public:
     void StartDevice(s32 fd, ChannelType type, u32 syncpt);
     void StopDevice(s32 fd, ChannelType type);
 
+    [[nodiscard]] static constexpr bool ValidFd(s32 fd) {
+        return fd >= 0 && static_cast<std::size_t>(fd) < DeviceCapacity;
+    }
+
     void PushEntries(s32 fd, ChCommandHeaderList&& entries) {
+        if (!ValidFd(fd)) {
+            return;
+        }
         if (auto const nvdec = std::get_if<Tegra::Host1x::Nvdec>(&devices[fd])) {
             nvdec->PushEntries(std::move(entries));
         } else if (auto const vic = std::get_if<Tegra::Host1x::Vic>(&devices[fd])) {
@@ -185,11 +192,12 @@ public:
     Tegra::MemoryManager gmmu_manager;
     Common::FlatAllocator<u32, 0, 32> allocator;
     FrameQueue frame_queue;
+    static constexpr std::size_t DeviceCapacity = 1024;
     std::array<std::variant<
         std::monostate,
         Tegra::Host1x::Nvdec,
         Tegra::Host1x::Vic
-    >, 1024> devices;
+    >, DeviceCapacity> devices;
 #ifdef YUZU_LEGACY
     std::once_flag nvdec_first_init;
     std::once_flag vic_first_init;

@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -85,6 +87,8 @@ public:
     }
 
 private:
+    [[nodiscard]] std::optional<std::pair<u64, u64>> GetPictureSurfaceBases() const;
+
     H264DecoderContext current_context{};
     std::array<u8, 64> scan_scratch;
     Common::ScratchBuffer<u8> frame_scratch;

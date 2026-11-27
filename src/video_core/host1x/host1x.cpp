@@ -22,6 +22,10 @@ Host1x::Host1x(Core::System& system_)
 Host1x::~Host1x() = default;
 
 void Host1x::StartDevice(s32 fd, ChannelType type, u32 syncpt) {
+    if (!ValidFd(fd)) {
+        LOG_ERROR(HW_GPU, "No Host1x device for fd {} ({} slots)", fd, devices.size());
+        return;
+    }
     switch (type) {
     case ChannelType::NvDec:
 #ifdef YUZU_LEGACY
@@ -42,6 +46,9 @@ void Host1x::StartDevice(s32 fd, ChannelType type, u32 syncpt) {
 }
 
 void Host1x::StopDevice(s32 fd, ChannelType type) {
+    if (!ValidFd(fd)) {
+        return;
+    }
     devices[fd].emplace<std::monostate>();
 }
 

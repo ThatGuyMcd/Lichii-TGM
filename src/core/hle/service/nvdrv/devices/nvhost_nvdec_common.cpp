@@ -15,6 +15,7 @@
 #include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
+#include "core/hle/service/nvdrv/devices/nvdec_submit.h"
 #include "core/hle/service/nvdrv/devices/nvhost_nvdec_common.h"
 #include "core/memory.h"
 #include "video_core/host1x/host1x.h"
@@ -83,12 +84,16 @@ NvResult nvhost_nvdec_common::SetNVMAPfd(IoctlSetNvmapFD& params) {
 
 NvResult nvhost_nvdec_common::Submit(IoctlSubmit& params, std::span<u8> data, DeviceFD fd) {
     LOG_DEBUG(Service_NVDRV, "called NVDEC Submit, cmd_buffer_count={}", params.cmd_buffer_count);
+    if (!host1x.ValidFd(fd)) {
+        LOG_ERROR(Service_NVDRV, "No Host1x device for fd {}: submit refused", fd);
+        return NvResult::BadParameter;
+    }
 
     // Instantiate param buffers
     std::vector<CommandBuffer> command_buffers(params.cmd_buffer_count);
     std::vector<Reloc> relocs(params.relocation_count);
     std::vector<u32> reloc_shifts(params.relocation_count);
-    std::vector<SyncptIncr> syncpt_increments(params.syncpoint_count);
+    std::vector<NvdecSyncpointIncrement> syncpt_increments(params.syncpoint_count);
     std::vector<u32> fence_thresholds(params.fence_count);
 
     // Slice input into their respective buffers
@@ -101,10 +106,13 @@ NvResult nvhost_nvdec_common::Submit(IoctlSubmit& params, std::span<u8> data, De
 
     auto* session = core.GetSession(sessions[fd]);
 
-    for (std::size_t i = 0; i < syncpt_increments.size(); i++) {
-        const SyncptIncr& syncpt_incr = syncpt_increments[i];
-        fence_thresholds[i] =
-            syncpoint_manager.IncrementSyncpointMaxExt(syncpt_incr.id, syncpt_incr.increments);
+    const auto invalid_syncpoint = ApplyNvdecSyncpointIncrements(
+        syncpt_increments, fence_thresholds, [this](u32 id, u32 increments) {
+            return syncpoint_manager.IncrementSyncpointMaxExt(id, increments);
+        });
+    if (invalid_syncpoint) {
+        LOG_ERROR(Service_NVDRV, "Submit refused: syncpoint {} is out of range", *invalid_syncpoint);
+        return NvResult::BadParameter;
     }
 
     for (const auto& cmd_buffer : command_buffers) {

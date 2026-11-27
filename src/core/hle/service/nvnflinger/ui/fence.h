@@ -9,7 +9,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
+#include <span>
 
 #include "common/common_types.h"
 #include "core/hle/service/nvdrv/nvdata.h"
@@ -25,6 +28,10 @@ public:
         fence.fences[2].id = -1;
         fence.fences[3].id = -1;
         return fence;
+    }
+
+    [[nodiscard]] constexpr std::span<const Service::Nvidia::NvFence> ActiveFences() const {
+        return std::span{fences}.first((std::min)(std::size_t{num_fences}, fences.size()));
     }
 
     u32 num_fences{};

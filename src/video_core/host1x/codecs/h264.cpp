@@ -7,9 +7,11 @@
 #include <array>
 #include <bit>
 
+#include "common/logging.h"
 #include "common/scratch_buffer.h"
 #include "common/settings.h"
 #include "video_core/host1x/codecs/h264.h"
+#include "video_core/host1x/codecs/h264_surface_offsets.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
 
@@ -23,26 +25,36 @@ H264::H264(Host1x::Host1x& host1x_, const Host1x::NvdecCommon::NvdecRegisters& r
 
 H264::~H264() = default;
 
+std::optional<std::pair<u64, u64>> H264::GetPictureSurfaceBases() const {
+    const auto index = static_cast<u32>(current_context.h264_parameter_set.curr_pic_idx.Value());
+    const auto surface = FindH264SurfaceOffsets(regs, index);
+    if (!surface) {
+        LOG_ERROR(HW_GPU, "H264 picture index {} past the {} surfaces", index,
+                  regs.surface_luma_offsets.size());
+    }
+    return surface;
+}
+
 std::tuple<u64, u64> H264::GetProgressiveOffsets() {
-    auto pic_idx{current_context.h264_parameter_set.curr_pic_idx};
-    auto luma{regs.surface_luma_offsets[pic_idx].Address() +
-              current_context.h264_parameter_set.luma_frame_offset.Address()};
-    auto chroma{regs.surface_chroma_offsets[pic_idx].Address() +
-                current_context.h264_parameter_set.chroma_frame_offset.Address()};
-    return {luma, chroma};
+    const auto surface = GetPictureSurfaceBases();
+    if (!surface) {
+        return {0, 0};
+    }
+    const auto& [luma, chroma] = *surface;
+    const auto& params = current_context.h264_parameter_set;
+    return {luma + params.luma_frame_offset.Address(), chroma + params.chroma_frame_offset.Address()};
 }
 
 std::tuple<u64, u64, u64, u64> H264::GetInterlacedOffsets() {
-    auto pic_idx{current_context.h264_parameter_set.curr_pic_idx};
-    auto luma_top{regs.surface_luma_offsets[pic_idx].Address() +
-                  current_context.h264_parameter_set.luma_top_offset.Address()};
-    auto luma_bottom{regs.surface_luma_offsets[pic_idx].Address() +
-                     current_context.h264_parameter_set.luma_bot_offset.Address()};
-    auto chroma_top{regs.surface_chroma_offsets[pic_idx].Address() +
-                    current_context.h264_parameter_set.chroma_top_offset.Address()};
-    auto chroma_bottom{regs.surface_chroma_offsets[pic_idx].Address() +
-                       current_context.h264_parameter_set.chroma_bot_offset.Address()};
-    return {luma_top, luma_bottom, chroma_top, chroma_bottom};
+    const auto surface = GetPictureSurfaceBases();
+    if (!surface) {
+        return {0, 0, 0, 0};
+    }
+    const auto& [luma, chroma] = *surface;
+    const auto& params = current_context.h264_parameter_set;
+    return {luma + params.luma_top_offset.Address(), luma + params.luma_bot_offset.Address(),
+            chroma + params.chroma_top_offset.Address(),
+            chroma + params.chroma_bot_offset.Address()};
 }
 
 bool H264::IsInterlaced() {

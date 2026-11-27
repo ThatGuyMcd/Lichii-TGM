@@ -25,6 +25,9 @@ Horizon Couch Mode, settings and save locations intact.
   [#2624](https://github.com/zortos293/Lichii/pull/2624),
   [#2628](https://github.com/zortos293/Lichii/pull/2628),
   [#2643](https://github.com/zortos293/Lichii/pull/2643)
+- I've made NVDRV retire pending syncpoint callbacks before releasing
+  their event slots. Thanks to Daniel Jesús Martín Flores and RomainROCH.
+  [Lichii #2621](https://github.com/zortos293/Lichii/pull/2621)
 - I've isolated the automated System and patch-manager test directories,
   so those tests can run together and leave each other's files alone.
   Thanks to Daniel Jesús Martín Flores.

@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -29,6 +28,8 @@
 #include "core/ocarina_photo_mode.h"
 #include "core/oot_ultrawide.h"
 #include "core/oot_fps_patches.h"
+#include "tests/common/temp_dir.h"
+#include "tests/core/system_test_context.h"
 
 namespace FileSys {
 struct PatchManagerTestAccess {
@@ -112,11 +113,12 @@ class PatchManagerTestContext {
 public:
     explicit PatchManagerTestContext(std::optional<u32> user_mod_word = std::nullopt,
                                      size_t user_mod_offset = PatchOffset) {
+        const auto& root = directory.Path();
         for (size_t i = 0; i < TestDirectories.size(); ++i) {
             const auto& [path, name] = TestDirectories[i];
             previous[i] = Common::FS::GetEdenPath(path);
+            std::filesystem::create_directories(previous[i]);
             std::filesystem::create_directories(root / name);
-            Common::FS::SetEdenPath(path, root / name);
         }
         const auto title_dir = root / "load" / fmt::format("{:016X}", OcarinaTitleId);
         std::filesystem::create_directories(title_dir);
@@ -126,36 +128,69 @@ public:
             WriteIps(exefs / fmt::format("{}.ips", OcarinaBuildIdHex), *user_mod_word,
                      user_mod_offset);
         }
-        system.SetFilesystem(std::make_shared<FileSys::RealVfsFilesystem>());
-        system.SetContentProvider(std::make_unique<FileSys::ContentProviderUnion>());
-        system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
+        try {
+            for (const auto& [path, name] : TestDirectories) {
+                Common::FS::SetEdenPath(path, root / name);
+            }
+            system.emplace();
+            system->SetFilesystem(std::make_shared<FileSys::RealVfsFilesystem>());
+            system->SetContentProvider(std::make_unique<FileSys::ContentProviderUnion>());
+            system->GetFileSystemController().CreateFactories(*system->GetFilesystem());
+        } catch (...) {
+            system.reset();
+            RestorePaths();
+            throw;
+        }
     }
 
     ~PatchManagerTestContext() {
-        for (size_t i = 0; i < TestDirectories.size(); ++i) {
-            Common::FS::SetEdenPath(TestDirectories[i].first, previous[i]);
-        }
+        system.reset();
+        RestorePaths();
         Settings::values.disabled_addons.erase(OcarinaTitleId);
-        std::error_code error;
-        std::filesystem::remove_all(root, error);
     }
 
     PatchManagerTestContext(const PatchManagerTestContext&) = delete;
     PatchManagerTestContext& operator=(const PatchManagerTestContext&) = delete;
 
     FileSys::PatchManager Manager(u64 title_id = OcarinaTitleId) {
-        return FileSys::PatchManager{title_id, system.GetFileSystemController(),
-                                     system.GetContentProvider()};
+        return FileSys::PatchManager{title_id, system->GetFileSystemController(),
+                                     system->GetContentProvider()};
     }
 
 private:
+    void RestorePaths() const {
+        for (size_t i = 0; i < TestDirectories.size(); ++i) {
+            Common::FS::SetEdenPath(TestDirectories[i].first, previous[i]);
+        }
+    }
+
     std::array<std::filesystem::path, TestDirectories.size()> previous;
-    const std::filesystem::path root =
-        std::filesystem::temp_directory_path() /
-        ("builtin-patch-test-" +
-         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    Core::System system;
+    const Tests::TempDir directory{"builtin-patch-test"};
+    std::optional<Core::System> system;
 };
+
+TEST_CASE("Patch manager fixtures preserve the caller's filesystem log",
+          "[patch_manager][test_system_directory_isolation]") {
+    using Common::FS::EdenPath;
+    const ScopedSystemTestContext outer;
+    const auto sdmc = Common::FS::GetEdenPath(EdenPath::SDMCDir);
+    REQUIRE(sdmc == Common::FS::GetEdenPath(EdenPath::NANDDir) / "sdmc");
+    const auto sentinel = sdmc / "FsAccessLog.txt";
+    {
+        std::ofstream stream{sentinel};
+        REQUIRE(stream.is_open());
+        stream << "outer fixture";
+    }
+    {
+        PatchManagerTestContext patch_manager;
+        CHECK(Common::FS::GetEdenPath(EdenPath::SDMCDir) != sdmc);
+    }
+    CHECK(Common::FS::GetEdenPath(EdenPath::SDMCDir) == sdmc);
+    std::string contents;
+    std::ifstream stream{sentinel};
+    std::getline(stream, contents);
+    CHECK(contents == "outer fixture");
+}
 
 std::vector<u8> MakeMain(const FileSys::PatchManager::BuildID& build_id, u32 word) {
     std::vector<u8> nso(PatchOffset + 0x100);

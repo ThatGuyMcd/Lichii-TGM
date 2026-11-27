@@ -118,6 +118,7 @@ add_executable(tests
     core/oot_ultrawide.cpp
     video_core/oot_ultrawide.cpp
     core/builtin_font_glyphs.cpp
+    core/system_test_context.cpp
     core/system_test_context.h
     video_core/ampere_branch_modifiers.cpp
     video_core/ampere_fast_fusion_logged.cpp
@@ -353,6 +354,7 @@ add_test(NAME nca_discovery COMMAND tests "[nca_discovery]")
 add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
+add_test(NAME test_system_directory_isolation COMMAND tests "[test_system_directory_isolation]")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(GPFIFO_SUBMIT_DIR "${CMAKE_CURRENT_BINARY_DIR}/gpfifo-submit")
 set(GPFIFO_SUBMIT_BODIES

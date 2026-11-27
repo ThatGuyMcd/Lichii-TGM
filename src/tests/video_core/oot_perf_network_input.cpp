@@ -88,8 +88,8 @@ TEST_CASE("OOT network bypass copies a fresh known tonemap instead of its HDR sc
     };
     publish();
     const auto note_tonemap = [&](u64 address = 0x500000, u64 hash = 0xbded5ce917183214ULL) {
-        rasterizer.state.NoteDraw(hash, {address, 1920, 1080, 0, 0, 0}, rasterizer.frame,
-                                  rasterizer.channel, rasterizer.mapping);
+        rasterizer.state.NoteDraw(hash, {address, input.Width(), input.Height(), 0, 0, 0},
+                                  rasterizer.frame, rasterizer.channel, rasterizer.mapping);
     };
 
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));
@@ -103,6 +103,33 @@ TEST_CASE("OOT network bypass copies a fresh known tonemap instead of its HDR sc
     REQUIRE(rasterizer.last_source.addr_lower != input.Address());
     REQUIRE(rasterizer.last_source.format == Tegra::RenderTargetFormat::B10G11R11_FLOAT);
     REQUIRE(rasterizer.last_config.filter == Tegra::Engines::Fermi2D::Filter::Point);
+
+    input.width_minus_one.Assign(1439);
+    input.height_minus_1.Assign(809);
+    publish();
+    note_tonemap();
+    REQUIRE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    CHECK(rasterizer.last_config.filter == Tegra::Engines::Fermi2D::Filter::Bilinear);
+    CHECK(rasterizer.last_config.src_x1 == 1440);
+    CHECK(rasterizer.last_config.src_y1 == 810);
+    CHECK(rasterizer.last_config.dst_x1 == 1920);
+    CHECK(rasterizer.last_config.dst_y1 == 1080);
+    rasterizer.copy_success = false;
+    note_tonemap();
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    CHECK_FALSE(rasterizer.state.output_replaced.load());
+    rasterizer.copy_success = true;
+
+    input.width_minus_one.Assign(1920);
+    publish();
+    note_tonemap();
+    const auto copies_before_oversize = rasterizer.copies;
+    REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, OutputProgramKey));
+    CHECK(rasterizer.copies == copies_before_oversize);
+    input.width_minus_one.Assign(1919);
+    input.height_minus_1.Assign(1079);
+    publish();
+
     note_tonemap();
     // Earlier success and a valid current source still cannot guarantee a later copy succeeds.
     REQUIRE_FALSE(compute.BypassOotNetwork(ProgramId, PrepassProgramKey));

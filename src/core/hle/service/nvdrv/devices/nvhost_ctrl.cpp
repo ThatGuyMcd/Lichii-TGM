@@ -96,7 +96,9 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
     bool must_unmark_fail = !is_allocation;
     const u32 event_id = params.value.raw;
     SCOPE_EXIT {
-        if (must_unmark_fail) {
+        // The wait-path lock is declared later and is already released here.
+        if (must_unmark_fail && event_id < MaxNvEvents) {
+            auto lock = NvEventsLock();
             events[event_id].fails = 0;
         }
     };

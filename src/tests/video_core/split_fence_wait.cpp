@@ -4,8 +4,10 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -18,6 +20,17 @@
 #include "video_core/fence_manager.h"
 #include "video_core/gpu.h"
 #include "video_core/renderer_null/null_rasterizer.h"
+
+namespace VideoCommon {
+
+struct FenceManagerTestAccess {
+    template <typename Traits>
+    static std::stop_token WorkerStopToken(const FenceManager<Traits>& manager) {
+        return manager.fence_thread.get_stop_token();
+    }
+};
+
+} // namespace VideoCommon
 
 namespace {
 
@@ -44,6 +57,13 @@ struct Traits {
     static constexpr bool HAS_ASYNC_CHECK = true;
 };
 
+struct ShutdownProbe {
+    std::stop_token stop_token;
+    std::promise<void> entered_wait;
+    std::atomic<bool> derived_finished{};
+    std::atomic<bool> wait_returned_live{};
+};
+
 struct Submission {
     std::mutex mutex;
     std::condition_variable cv;
@@ -51,6 +71,7 @@ struct Submission {
     std::atomic<bool> timed_out{};
     bool wrong_owner{};
     const std::thread::id owner = std::this_thread::get_id();
+    ShutdownProbe* shutdown_probe{};
 };
 
 struct BatchOutput {
@@ -81,6 +102,13 @@ public:
         : VideoCommon::FenceManager<Traits>{rasterizer_, gpu_, texture, buffer, query},
           submission{submission_} {}
 
+    ~FenceManager() override {
+        StopFenceThread();
+        if (submission.shutdown_probe) {
+            submission.shutdown_probe->derived_finished.store(true);
+        }
+    }
+
     u64 queued{};
     u32 submissions{};
 
@@ -100,6 +128,14 @@ protected:
 
     void WaitFence(std::shared_ptr<Fence>& fence) override {
         std::unique_lock lock{submission.mutex};
+        if (auto* probe = submission.shutdown_probe) {
+            std::condition_variable_any release;
+            probe->entered_wait.set_value();
+            release.wait_for(lock, probe->stop_token, std::chrono::seconds{5}, [] { return false; });
+            probe->wait_returned_live.store(probe->stop_token.stop_requested() &&
+                                            !probe->derived_finished.load());
+            return;
+        }
         if (!submission.cv.wait_for(lock, std::chrono::seconds{2},
                                     [&] { return submission.submitted >= fence->tick; })) {
             submission.timed_out.store(true);
@@ -284,4 +320,25 @@ TEST_CASE("Recycled fence operation lists release captures and stop across idle 
         Submission submission;
         FenceManager manager{rasterizer, gpu, texture, buffer, query, submission};
     }
+}
+
+TEST_CASE("Fence teardown joins the worker before the backend destructor completes",
+          "[video_core][split_fence_wait]") {
+    ScopedSystemTestContext context;
+    Core::System system;
+    Tegra::GPU gpu{system, false, false};
+    Null::RasterizerNull rasterizer{gpu};
+    Cache texture, buffer, query;
+    ShutdownProbe probe;
+    Submission submission;
+    submission.shutdown_probe = &probe;
+    auto entered = probe.entered_wait.get_future();
+    {
+        FenceManager manager{rasterizer, gpu, texture, buffer, query, submission};
+        probe.stop_token = VideoCommon::FenceManagerTestAccess::WorkerStopToken<Traits>(manager);
+        manager.SignalFence([] {});
+        REQUIRE(entered.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+    }
+    CHECK(probe.derived_finished.load());
+    CHECK(probe.wait_returned_live.load());
 }

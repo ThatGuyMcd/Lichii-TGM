@@ -56,6 +56,7 @@ public:
     explicit FenceManager(VideoCore::RasterizerInterface& rasterizer, Tegra::GPU& gpu,
                           TextureCache& texture_cache, BufferCache& buffer_cache,
                           QueryCache& query_cache, const Device& device, Scheduler& scheduler);
+    ~FenceManager() override;
 
 protected:
     Fence CreateFence(bool is_stubbed) override;
@@ -65,6 +66,8 @@ protected:
     void SubmitDeferredWork() override;
 
 private:
+    friend class RasterizerVulkan;
+
     Scheduler& scheduler;
 };
 

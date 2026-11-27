@@ -221,9 +221,21 @@ protected:
 
     virtual ~FenceManager() {
         if constexpr (can_async_check) {
+            if (fence_thread.joinable()) {
+                LOG_ERROR(HW_GPU, "The fencing thread outlived its derived fence manager");
+                StopFenceThread();
+            }
+        }
+    }
+
+    /// Call before derived state is destroyed, since the worker invokes backend fences.
+    void StopFenceThread() {
+        if constexpr (can_async_check) {
+            if (!fence_thread.joinable()) {
+                return;
+            }
             {
-                // The stop predicate and the transition into cv.wait share this lock. Without
-                // it, the stop notification can arrive between the predicate and the wait.
+                // Share the wait predicate's lock so the stop cannot miss the worker's wait.
                 std::scoped_lock lock{guard};
                 fence_thread.request_stop();
             }
@@ -252,6 +264,8 @@ protected:
     TQueryCache& query_cache;
 
 private:
+    friend struct FenceManagerTestAccess;
+
     template <bool force_wait>
     void TryReleasePendingFences() {
         while (!fences.empty()) {

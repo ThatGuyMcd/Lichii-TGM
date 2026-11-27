@@ -358,6 +358,9 @@ add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
 add_test(NAME test_system_directory_isolation COMMAND tests "[test_system_directory_isolation]")
 add_test(NAME sampled_subresource_guard COMMAND tests "[sampled_subresource_guard]")
 add_test(NAME ssa_opaque_phi COMMAND tests "[ssa_opaque_phi]")
+add_test(NAME split_fence_wait COMMAND tests "[split_fence_wait]")
+add_test(NAME oot_tonemap_copy COMMAND tests
+    "OOT network bypass copies a fresh known tonemap instead of its HDR scene input")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(GPFIFO_SUBMIT_DIR "${CMAKE_CURRENT_BINARY_DIR}/gpfifo-submit")
 set(GPFIFO_SUBMIT_BODIES

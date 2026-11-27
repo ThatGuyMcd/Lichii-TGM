@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <chrono>
+#include <cstdlib>
+#include <future>
 #include <thread>
 #include <vector>
 
@@ -175,4 +177,67 @@ TEST_CASE("An older syncpoint mirror owner cannot clear its replacement",
     manager.ClearGuestMirror(&second);
     manager.IncrementGuest(1);
     REQUIRE(second_calls == 1);
+}
+
+TEST_CASE("Retiring a running host action waits for its callback",
+          "[video_core][syncpoint_actions][host_syncpoint_retirement]") {
+    using namespace std::chrono_literals;
+    SyncpointManager manager;
+    std::promise<void> callback_entered;
+    auto entered = callback_entered.get_future();
+    std::promise<void> unblock_callback;
+    auto unblocked = unblock_callback.get_future();
+    const auto handle = manager.RegisterHostAction(5, 1, [&] {
+        callback_entered.set_value();
+        unblocked.wait();
+    });
+    std::jthread incrementer{[&] { manager.IncrementHost(5); }};
+    const bool entered_on_time = entered.wait_for(3s) == std::future_status::ready;
+    std::promise<void> retirement_started;
+    auto started = retirement_started.get_future();
+    auto retirement = std::async(std::launch::async, [&] {
+        retirement_started.set_value();
+        manager.DeregisterHostAction(5, handle);
+    });
+    const bool started_on_time = started.wait_for(3s) == std::future_status::ready;
+    const bool returned_early = retirement.wait_for(50ms) == std::future_status::ready;
+    unblock_callback.set_value();
+    if (retirement.wait_for(3s) != std::future_status::ready) {
+        std::abort();
+    }
+    retirement.get();
+    incrementer.join();
+    REQUIRE(entered_on_time);
+    REQUIRE(started_on_time);
+    CHECK_FALSE(returned_early);
+}
+
+TEST_CASE("Retiring a completed host action does not wait for a different callback",
+          "[video_core][syncpoint_actions][host_syncpoint_retirement]") {
+    using namespace std::chrono_literals;
+    SyncpointManager manager;
+    std::promise<void> callback_entered;
+    auto entered = callback_entered.get_future();
+    std::promise<void> unblock_callback;
+    auto unblocked = unblock_callback.get_future();
+    manager.RegisterHostAction(6, 1, [&] {
+        callback_entered.set_value();
+        unblocked.wait();
+    });
+    // Equal-value actions run newest first.
+    const auto completed = manager.RegisterHostAction(6, 1, [] {});
+    std::jthread incrementer{[&] { manager.IncrementHost(6); }};
+    const bool entered_on_time = entered.wait_for(3s) == std::future_status::ready;
+    auto retirement = std::async(std::launch::async, [&] {
+        manager.DeregisterHostAction(6, completed);
+    });
+    const bool returned_while_blocked = retirement.wait_for(3s) == std::future_status::ready;
+    unblock_callback.set_value();
+    if (retirement.wait_for(3s) != std::future_status::ready) {
+        std::abort();
+    }
+    retirement.get();
+    incrementer.join();
+    REQUIRE(entered_on_time);
+    CHECK(returned_while_blocked);
 }

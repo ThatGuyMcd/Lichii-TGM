@@ -31,6 +31,10 @@ nvhost_ctrl::nvhost_ctrl(Core::System& system_, EventInterface& events_interface
 
 nvhost_ctrl::~nvhost_ctrl() {
     for (auto& event : events) {
+        if (event.wait_handle != 0) {
+            system.Host1x().GetSyncpointManager().DeregisterHostAction(event.assigned_syncpt,
+                                                                      event.wait_handle);
+        }
         if (!event.registered) {
             continue;
         }
@@ -288,12 +292,15 @@ NvResult nvhost_ctrl::IocCtrlClearEventWait(IocCtrlEventClearParams& params) {
     if (!event.registered) {
         return NvResult::BadParameter;
     }
-    if (event.status.exchange(EventState::Cancelling, std::memory_order_acq_rel) ==
-        EventState::Waiting) {
+    const auto previous = event.status.exchange(EventState::Cancelling, std::memory_order_acq_rel);
+    // A signalling callback can finish after the state exchange. Retire its handle before reuse.
+    if (event.wait_handle != 0) {
         auto& host1x_syncpoint_manager = system.Host1x().GetSyncpointManager();
         host1x_syncpoint_manager.DeregisterHostAction(event.assigned_syncpt, event.wait_handle);
-        syncpoint_manager.UpdateMin(event.assigned_syncpt);
         event.wait_handle = {};
+    }
+    if (previous == EventState::Waiting) {
+        syncpoint_manager.UpdateMin(event.assigned_syncpt);
     }
     event.fails++;
     event.status.store(EventState::Cancelled, std::memory_order_release);

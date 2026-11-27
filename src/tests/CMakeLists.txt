@@ -628,6 +628,13 @@ add_test(NAME driver_blobs_same_session COMMAND tests "[driver_blobs_same_sessio
 add_test(NAME maxwell_fmz COMMAND tests "[fmz]")
 add_test(NAME nvdrv_video_bounds COMMAND tests "[nvdrv_video_bounds]")
 add_test(NAME host_syncpoint_retirement COMMAND tests "[host_syncpoint_retirement]")
+target_sources(tests PRIVATE
+    core/nvdrv_syncpoint_complete.cpp
+    video_core/cdma_pusher_teardown.cpp
+    video_core/cdma_pusher_wait_stop.cpp
+)
+add_test(NAME host1x_video_close COMMAND tests "[host1x_video_close]")
+set_tests_properties(host1x_video_close PROPERTIES TIMEOUT 30)
 add_test(NAME filesystem_buffer_bounds COMMAND tests "[filesystem_buffer_bounds]")
 add_test(NAME album_png COMMAND tests "[album_png]")
 add_test(NAME window_system_exit COMMAND tests "[window_system_exit]")

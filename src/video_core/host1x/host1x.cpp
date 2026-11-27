@@ -19,7 +19,11 @@ Host1x::Host1x(Core::System& system_)
     , allocator{1 << 12}
 {}
 
-Host1x::~Host1x() = default;
+Host1x::~Host1x() {
+    for (s32 fd = 0; fd < static_cast<s32>(devices.size()); ++fd) {
+        StopDeviceThread(fd);
+    }
+}
 
 void Host1x::StartDevice(s32 fd, ChannelType type, u32 syncpt) {
     if (!ValidFd(fd)) {
@@ -31,12 +35,14 @@ void Host1x::StartDevice(s32 fd, ChannelType type, u32 syncpt) {
 #ifdef YUZU_LEGACY
         std::call_once(nvdec_first_init, []() {std::this_thread::sleep_for(std::chrono::milliseconds{500});}); // HACK: For Astroneer
 #endif
+        StopDeviceThread(fd);
         devices[fd].emplace<Tegra::Host1x::Nvdec>(*this, fd, syncpt);
         break;
     case ChannelType::VIC:
 #ifdef YUZU_LEGACY
         std::call_once(vic_first_init, []() {std::this_thread::sleep_for(std::chrono::milliseconds{500});}); // HACK: For Astroneer
 #endif
+        StopDeviceThread(fd);
         devices[fd].emplace<Tegra::Host1x::Vic>(*this, fd, syncpt);
         break;
     default:
@@ -49,7 +55,18 @@ void Host1x::StopDevice(s32 fd, ChannelType type) {
     if (!ValidFd(fd)) {
         return;
     }
+    StopDeviceThread(fd);
     devices[fd].emplace<std::monostate>();
+}
+
+void Host1x::StopDeviceThread(s32 fd) {
+    // The worker can still dispatch virtual methods while a stop is in flight.
+    // Keep the active variant alive until the worker has joined.
+    if (auto* nvdec = std::get_if<Nvdec>(&devices[fd])) {
+        nvdec->StopThread();
+    } else if (auto* vic = std::get_if<Vic>(&devices[fd])) {
+        vic->StopThread();
+    }
 }
 
 } // namespace Tegra::Host1x

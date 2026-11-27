@@ -118,6 +118,27 @@ void SyncpointManager::WaitHost(u32 syncpoint_id, u32 expected_value) {
     Wait(syncpoints_host[syncpoint_id], wait_host_cv, expected_value);
 }
 
+bool SyncpointManager::WaitHost(u32 syncpoint_id, u32 expected_value,
+                                const std::stop_token& stop_token) {
+    if (syncpoint_id >= syncpoints_host.size()) {
+        LOG_ERROR(HW_GPU, "Invalid host syncpoint {} in command wait", syncpoint_id);
+        return false;
+    }
+    const auto reached = [&] { return IsReadyHost(syncpoint_id, expected_value); };
+    if (reached()) {
+        return true;
+    }
+    // Take the same mutex as the waiter so cancellation cannot notify between the stop check
+    // and sleeping. Register before locking because an already-stopped token calls us inline.
+    const std::stop_callback wake{stop_token, [this] {
+        std::scoped_lock lk(guard);
+        wait_host_cv.notify_all();
+    }};
+    std::unique_lock lk(guard);
+    wait_host_cv.wait(lk, [&] { return reached() || stop_token.stop_requested(); });
+    return reached();
+}
+
 void SyncpointManager::Increment(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv,
                                  std::list<RegisteredAction>& action_storage,
                                  std::optional<u32> mirrored_id) {

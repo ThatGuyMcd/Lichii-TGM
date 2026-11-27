@@ -186,6 +186,10 @@ public:
         }
     }
 
+private:
+    void StopDeviceThread(s32 fd);
+
+public:
     Core::System& system;
     SyncpointManager syncpoint_manager;
     Tegra::MaxwellDeviceMemoryManager memory_manager;

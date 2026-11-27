@@ -118,11 +118,17 @@ public:
 protected:
     explicit CDmaPusher(Host1x::Host1x& host1x, s32 id);
 
+    /// Stops and joins the worker before its device is destroyed. The current list ends at
+    /// its next word. A directly owned derived device must also stop first in its destructor.
+    void StopThread();
+
     virtual void ProcessMethod(u32 method, u32 arg) = 0;
 
 private:
+    friend class Host1x::Host1x;
+
     /// Invoke command class devices to execute the command based on the current state
-    void ExecuteCommand(u32 state_offset, u32 data);
+    void ExecuteCommand(u32 state_offset, u32 data, const std::stop_token& stop_token);
 
 protected:
     ThiRegisters thi_regs{};

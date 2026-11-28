@@ -183,13 +183,27 @@ bool ReadMatches(const FileSys::VirtualFile& file, const std::vector<u8>& conten
                       content.begin() + static_cast<std::ptrdiff_t>(offset));
 }
 
-std::size_t DirectoryBytes(const fs::path& dir) {
+std::size_t SpillBytes(const fs::path& dir) {
     std::size_t total = 0;
+#ifdef __linux__
+    // The spill stays available through its open descriptor after unlinking.
+    const auto spill_dir = fs::canonical(dir);
+    for (const auto& entry : fs::directory_iterator{"/proc/self/fd"}) {
+        std::error_code error;
+        const auto target = fs::read_symlink(entry.path(), error);
+        if (error || target.parent_path() != spill_dir ||
+            !target.filename().string().ends_with(".tmp (deleted)")) {
+            continue;
+        }
+        total += fs::file_size(entry.path());
+    }
+#else
     // Windows directory entries can report a stale size for a file that is still open.
     for (const auto& entry : fs::directory_iterator(dir)) {
         std::ifstream stream{entry.path(), std::ios::binary | std::ios::ate};
         total += static_cast<std::size_t>(stream.tellg());
     }
+#endif
     return total;
 }
 
@@ -377,7 +391,8 @@ TEST_CASE("NUP zstd members of several frames decode in memory and spilled", "[n
     }
 }
 
-TEST_CASE("NUP zstd spill file grows only as far as reads need", "[nup][nup-read]") {
+TEST_CASE("NUP zstd spill file grows only as far as reads need",
+          "[nup][nup-read][nup_spill_lifetime]") {
     const auto content = Content(8 << 20, 3);
     const auto bytes = BuildNup({ZstdMember(content)});
     TempDir t;
@@ -385,9 +400,14 @@ TEST_CASE("NUP zstd spill file grows only as far as reads need", "[nup][nup-read
     REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
     const auto file = nup.OpenFile(0);
     REQUIRE(ReadMatches(file, content, 0, 4096));
-    REQUIRE(DirectoryBytes(t.path) < content.size() / 4);
+    const auto initial_bytes = SpillBytes(t.path);
+    REQUIRE(initial_bytes > 0);
+    REQUIRE(initial_bytes < content.size() / 4);
+#ifdef __linux__
+    REQUIRE(fs::is_empty(t.path));
+#endif
     REQUIRE(ReadMatches(file, content, content.size() - 4096, 4096));
-    REQUIRE(DirectoryBytes(t.path) == content.size());
+    REQUIRE(SpillBytes(t.path) == content.size());
 }
 
 TEST_CASE("NUP zstd reads fail cleanly on corrupt or truncated extents", "[nup][nup-read]") {

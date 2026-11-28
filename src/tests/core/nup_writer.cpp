@@ -470,7 +470,11 @@ TEST_CASE("NUP reads zstd members above the memory cache through a temporary fil
         }
         REQUIRE(file->Read(reinterpret_cast<u8*>(chunk.data()), 10, large.size()) == 0);
 
+#ifdef __linux__
+        REQUIRE(fs::is_empty(spill_dir));
+#else
         REQUIRE(std::distance(fs::directory_iterator(spill_dir), fs::directory_iterator{}) > 0);
+#endif
         REQUIRE(PackedTree(nup.GetRomFSDir(0)) == SourceTree(root / "Base/RomFS"));
         REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
     }

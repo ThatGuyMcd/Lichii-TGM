@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <random>
 #include <sstream>
@@ -377,6 +378,28 @@ TEST_CASE("Mesh prewarming opt-in and per-game opt-out persist", "[config]") {
     game.Reload();
     REQUIRE(enabled.UsingGlobal());
     REQUIRE(enabled.GetValue());
+}
+
+TEST_CASE("Input profile filenames round trip in UTF-8", "[config][utf8_input_profile]") {
+    ConfigDirectory directory;
+    const std::string name = "Pad-\xC5\x81-\xE6\x8E\xA7";
+    const auto expected = directory.path / "input" / Common::FS::ToU8String(name + ".ini");
+    {
+        FileConfig config{name, Config::ConfigType::InputProfile};
+        const auto path = std::filesystem::path{Common::FS::ToU8String(config.GetConfigFilePath())};
+        CHECK(path == expected);
+        CHECK(std::filesystem::is_regular_file(path));
+    }
+    const std::filesystem::directory_iterator first{directory.path / "input"};
+    REQUIRE(first != std::filesystem::directory_iterator{});
+    auto filename = first->path().filename();
+    CHECK(Common::FS::PathToUTF8String(filename.replace_extension()) == name);
+    {
+        FileConfig reopened{name, Config::ConfigType::InputProfile};
+        CHECK(reopened.GetConfigFilePath() == Common::FS::PathToUTF8String(expected));
+    }
+    CHECK(std::distance(std::filesystem::directory_iterator{directory.path / "input"},
+                        std::filesystem::directory_iterator{}) == 1);
 }
 
 TEST_CASE("Missing per-game and input profiles are not seeded", "[config]") {

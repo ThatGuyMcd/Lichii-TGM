@@ -487,6 +487,12 @@ private:
                     if (!member.file.IsOpen()) {
                         return fail("cannot create the temporary file");
                     }
+#ifdef __linux__
+                    // An open descriptor retains the contents even after its name is removed.
+                    if (std::filesystem::remove(member.path, ec)) {
+                        member.path.clear();
+                    }
+#endif
                 } else {
                     member.data = std::make_unique_for_overwrite<u8[]>(
                         static_cast<std::size_t>(uncompressed_size));

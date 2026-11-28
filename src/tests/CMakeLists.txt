@@ -356,7 +356,6 @@ add_test(NAME nca_missing_keys COMMAND tests "[nca_missing_keys]")
 add_test(NAME unmapped_write_logging COMMAND tests "[unmapped_write_logging]")
 add_test(NAME test_log_isolation COMMAND tests "[test_log_isolation]")
 add_test(NAME test_system_directory_isolation COMMAND tests "[test_system_directory_isolation]")
-add_test(NAME utf8_input_profile COMMAND tests "[utf8_input_profile]")
 add_test(NAME nup_spill_lifetime COMMAND tests "[nup_spill_lifetime]")
 add_test(NAME sampled_subresource_guard COMMAND tests "[sampled_subresource_guard]")
 add_test(NAME ssa_opaque_phi COMMAND tests "[ssa_opaque_phi]")
@@ -809,6 +808,7 @@ if (NOT ANDROID)
     target_link_libraries(config_tests PRIVATE common SimpleIni::SimpleIni Catch2::Catch2WithMain
         ${PLATFORM_LIBRARIES})
     add_test(NAME config_tests COMMAND config_tests)
+    add_test(NAME utf8_input_profile COMMAND config_tests "[utf8_input_profile]")
 
     add_executable(profile_import_tests
         frontend_common/profile_import.cpp

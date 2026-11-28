@@ -544,6 +544,7 @@ add_test(NAME spirv_phi COMMAND tests "[spirv_phi]")
 add_test(NAME mip_chain_overlap COMMAND tests "[mip_chain_overlap]")
 add_test(NAME shared_font_fallback COMMAND tests "[shared_font_fallback]")
 add_test(NAME r2p_immediate_predicates COMMAND tests "[r2p]")
+add_test(NAME ampere_uniform_ms_fetch COMMAND tests "[ampere_uniform_ms_fetch]")
 
 set(PRESENT_COMPLETION_BODIES
     "${CMAKE_CURRENT_BINARY_DIR}/present_gpu_body.inc"

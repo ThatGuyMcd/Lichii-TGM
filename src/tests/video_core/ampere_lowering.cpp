@@ -96,6 +96,76 @@ TEST_CASE("Ampere TLD.SCR.LZ takes its handle from a uniform register", "[video_
     REQUIRE(((tld >> 31) & 0xf) == 7);
 }
 
+TEST_CASE("Ampere 2D multisample texel fetch keeps the uniform handle and sample in order",
+          "[video_core][ampere][ampere_uniform_ms_fetch]") {
+    constexpr u32 dest = 39, x = 27, b = 73, handle = 13, second = 91, mask = 0b1101;
+    constexpr u32 predicate = 11;
+    constexpr u32 ms = 1U << 2;
+    const auto fetch = [](u32 flags, u32 dimension, u32 source_a, u32 source_b) {
+        const u32 operands = source_b | (handle << 8) | (1U << 28) | (dimension << 29);
+        const u32 modes = second | (mask << 8) | (flags << 12) | (7U << 17) | (1U << 23) |
+                          (1U << 26) | (1U << 27);
+        return NativeInstruction(0xf66, dest, source_a, operands, modes, predicate);
+    };
+
+    for (const bool multisample : {false, true}) {
+        CAPTURE(multisample);
+        const auto lowered = LowerToMaxwell(std::array{fetch(multisample ? ms : 0, 1, x, b), EXIT});
+        INFO(lowered.error);
+        REQUIRE(static_cast<bool>(lowered));
+        REQUIRE(CountMaxwell(lowered, 0xdd, 56) == 1);
+
+        constexpr u32 x_value = 14, y_value = 35, sample = 3, handle_value = 0x894;
+        constexpr std::array results{0x27U, 0x3cU, 0x7fU};
+        std::array<u32, 256> registers{};
+        registers[x] = x_value;
+        registers[x + 1] = y_value;
+        registers[b] = sample;
+        registers[216 + handle] = handle_value;
+        registers[dest + 2] = 123;
+
+        // Follow just the emitted register moves and inspect the operands at the fetch.
+        for (const u64 word : lowered.instructions) {
+            const u32 output = word & 0xff;
+            const u32 operand = (word >> 20) & 0xff;
+            if ((word >> 48) == 0x5c98) {
+                CHECK(((word >> 16) & 0xf) == predicate);
+                registers[output] = registers[operand];
+            } else if ((word >> 56) == 0xdd) {
+                const u32 coordinates = (word >> 8) & 0xff;
+                CHECK(((word >> 16) & 0xf) == predicate);
+                CHECK(((word >> 28) & 7) == 2); // 2D
+                CHECK(((word >> 31) & 0xf) == mask);
+                CHECK(((word >> 49) & 1) == 1); // NODEP
+                CHECK(((word >> 50) & 1) == multisample);
+                CHECK(((word >> 55) & 1) == 0); // Level zero
+                CHECK(registers[coordinates] == x_value);
+                CHECK(registers[coordinates + 1] == (multisample ? y_value : sample));
+                CHECK(registers[operand] == handle_value);
+                CHECK(registers[operand + 1] == (multisample ? sample : 0));
+                std::copy(results.begin(), results.end(), registers.begin() + output);
+            }
+        }
+        CHECK(registers[dest] == results[0]);
+        CHECK(registers[dest + 1] == results[1]);
+        CHECK(registers[second] == results[2]);
+        CHECK(registers[dest + 2] == 123);
+    }
+
+    for (const u32 flag : {1U, 2U, 8U, 16U}) {
+        const auto rejected = LowerToMaxwell(std::array{fetch(ms | flag, 1, x, b), EXIT});
+        CHECK_FALSE(rejected);
+        CHECK(rejected.error == "native bindless texel fetch mode");
+    }
+    for (const u32 dimension : {0U, 2U, 5U}) {
+        const auto rejected = LowerToMaxwell(std::array{fetch(ms, dimension, x, b), EXIT});
+        CHECK_FALSE(rejected);
+        CHECK(rejected.error == "native bindless texel fetch mode");
+    }
+    CHECK_FALSE(LowerToMaxwell(std::array{fetch(ms, 1, 215, b), EXIT}));
+    CHECK_FALSE(LowerToMaxwell(std::array{fetch(ms, 1, x, 255), EXIT}));
+}
+
 TEST_CASE("Ampere register-handle texel fetch spans cannot overwrite uniform shadows",
           "[video_core][ampere]") {
     // Independently assemble TLD.B.LZ from its fields: two or three coordinates followed by
